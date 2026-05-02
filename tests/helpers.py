@@ -69,24 +69,33 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
 
 
 @contextlib.contextmanager
-def tmux_patch(**stubs):
-    """Temporarily replace one or more functions on `claudeteam.runtime.tmux`.
+def attr_patch(module, **stubs):
+    """Temporarily replace named attributes on `module` with the given
+    callables (or any value). Restored on exit, even if the test raises.
 
-    Pass keyword args mapping function name → callable. All originals are
-    saved and restored on exit, even if the test raises.
+        with attr_patch(some_module, helper=fake): ...
 
-        with tmux_patch(has_session=lambda s: False, kill_session=lambda s: True):
-            ...
-
-    Use this instead of hand-rolling save/restore boilerplate in every
-    test file.
+    Use for one-off mocking when there's no module-specific helper
+    (`tmux_patch` wraps this for the most common case).
     """
-    from claudeteam.runtime import tmux as _tmux
-    saved = {name: getattr(_tmux, name) for name in stubs}
-    for name, fn in stubs.items():
-        setattr(_tmux, name, fn)
+    saved = {name: getattr(module, name) for name in stubs}
+    for name, value in stubs.items():
+        setattr(module, name, value)
     try:
         yield
     finally:
-        for name, fn in saved.items():
-            setattr(_tmux, name, fn)
+        for name, value in saved.items():
+            setattr(module, name, value)
+
+
+def tmux_patch(**stubs):
+    """Temporarily replace one or more functions on `claudeteam.runtime.tmux`.
+
+    Sugar over `attr_patch` for the common case — see attr_patch for the
+    general form.
+
+        with tmux_patch(has_session=lambda s: False, kill_session=lambda s: True):
+            ...
+    """
+    from claudeteam.runtime import tmux as _tmux
+    return attr_patch(_tmux, **stubs)

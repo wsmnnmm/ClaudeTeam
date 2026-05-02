@@ -13,10 +13,9 @@ from __future__ import annotations
 import contextlib
 import json
 
-from helpers import isolated_env
+from helpers import isolated_env, tmux_patch
 from claudeteam.feishu import subscribe
 from claudeteam.feishu.deliver import apply
-from claudeteam.runtime import tmux
 from claudeteam.store import local_facts
 
 
@@ -48,12 +47,8 @@ def _fake_inject():
         })
         return True
 
-    original = tmux.inject
-    tmux.inject = fake
-    try:
+    with tmux_patch(inject=fake):
         yield state
-    finally:
-        tmux.inject = original
 
 
 def _ndjson_event(message_id: str, sender_id: str, text: str,

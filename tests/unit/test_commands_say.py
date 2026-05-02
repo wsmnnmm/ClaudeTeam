@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import contextlib
 
-from helpers import isolated_env, run_cli
+from helpers import attr_patch, isolated_env, run_cli
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.store import local_facts
 
@@ -27,12 +27,8 @@ def _fake_send():
         })
         return state["result"]
 
-    original = feishu_chat.send_text
-    feishu_chat.send_text = fake
-    try:
+    with attr_patch(feishu_chat, send_text=fake):
         yield state
-    finally:
-        feishu_chat.send_text = original
 
 
 
