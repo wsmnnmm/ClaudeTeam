@@ -11,10 +11,23 @@ across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
 capability requires them.  Currently ~8 100 LOC (src + tests), 381 tests green.
 
+## Prerequisites
+
+- Python 3.10+ (the project pins `requires-python = ">=3.10"`)
+- `tmux`, `node` + `npx` (for `lark-cli`)
+- At least one of: `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI),
+  `kimi` (Moonshot Kimi CLI) on `$PATH` — whichever your `team.json` agents
+  declare via the `cli` field. The team.json `cli` identifiers map as:
+  `claude-code` → `claude`, `codex-cli` → `codex`, `kimi-code` → `kimi`.
+
 ## Quick start
 
 ```bash
-# 1. Install (editable from the repo)
+# 1. Install (editable from the repo, in a venv)
+#    Many hosts ship Python under uv / Homebrew / system manager that PEP 668
+#    blocks bare `pip install` against; a venv side-steps that.
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 
 # 2. Bootstrap config files in the current directory
@@ -28,18 +41,40 @@ export CLAUDETEAM_STATE_DIR="$PWD/state"
 claudeteam up
 claudeteam health                # green/red snapshot — no surprises
 
-# 5. Use the local message bus
-claudeteam send worker_codex manager "review the auth module"
+# 5. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
+claudeteam send worker_codex manager "review the auth module"   # writes inbox.json
 claudeteam inbox worker_codex
 claudeteam status worker_codex 进行中 "auditing auth"
 claudeteam team                  # shows ♥ heartbeat per agent
 
-# 6. Talk in the Feishu chat (router routes inbound, `say` posts outbound)
+# 6. Talk in the Feishu chat (the only path that injects into a worker pane)
+#    Default identity is `--as bot`; pass `--as user` only if the lark-cli
+#    profile has user OAuth and the bot lacks the scope you need.
+#    On hosts with HTTPS_PROXY set, also export LARK_CLI_NO_PROXY=1 — the
+#    lark-cli wrapper warns about the proxy but won't strip it for you.
+export LARK_CLI_NO_PROXY=1       # only if HTTPS_PROXY/HTTP_PROXY is set
 claudeteam say manager "标题党：smoke test #$(date +%s)"
 
 # 7. Tear it all down
 claudeteam down
 ```
+
+## Two transports — `send` is *not* `say`
+
+Two ways a message can travel inside a deployment, and they don't reach
+the same place:
+
+| command | what it does | reaches the worker's tmux pane? |
+|---|---|---|
+| `claudeteam send <to> <from> <msg>` | append a row to the local `inbox.json` | **no** — only `claudeteam inbox <to>` reads it back |
+| `claudeteam say <agent> <msg>` | post into the Feishu chat as that agent | only if the router daemon is running and routes the message back |
+| Feishu group → router → `deliver.apply` | inbound chat → inbox row + tmux pane inject | **yes** — this is the only path that wakes the worker |
+
+If you want a worker pane to actually receive a task, the message has to
+travel through Feishu (humans @-mention from the chat → router picks it
+up, OR `claudeteam say <peer>` posts a chat message that mentions the
+target). Pure `claudeteam send` writes to the inbox file but does not
+touch tmux — that's a deliberate split between persistence and delivery.
 
 ## Commands
 
