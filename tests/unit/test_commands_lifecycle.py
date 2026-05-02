@@ -197,6 +197,39 @@ def test_hire_creates_window_spawns_and_writes_status():
         assert identity.identity_path("new").exists()
 
 
+def test_hire_lazy_agent_skips_spawn_and_marks_standby():
+    team = {"session": "S",
+            "agents": {"manager": {}, "lazy_w": {"cli": "claude-code", "lazy": True}}}
+    with _isolated_team(team), _fake_tmux() as fake:
+        fake["session_exists"].add("S")
+        rc, out, _ = run_cli(["hire", "lazy_w"])
+        assert rc == 0
+        assert "hired (lazy)" in out
+        # window created but no spawn_agent call
+        assert "S:lazy_w" in fake["windows"]
+        assert not [c for c in fake["calls"] if c[0] == "spawn_agent" and c[1] == "S:lazy_w"]
+        snap = local_facts.get_status("lazy_w")
+        assert snap["status"] == "待命"
+
+
+def test_start_lazy_agent_creates_window_no_spawn():
+    team = {
+        "session": "T",
+        "agents": {
+            "manager": {"cli": "claude-code"},
+            "sleeper": {"cli": "kimi-code", "lazy": True},
+        },
+    }
+    with _isolated_team(team), _fake_tmux() as fake:
+        rc, out, _ = run_cli(["start"])
+        assert rc == 0
+        assert "lazy-pane ready" in out
+        spawn_targets = [c[1] for c in fake["calls"] if c[0] == "spawn_agent"]
+        assert "T:manager" in spawn_targets
+        assert "T:sleeper" not in spawn_targets
+        assert local_facts.get_status("sleeper")["status"] == "待命"
+
+
 def test_hire_when_window_already_exists_is_idempotent():
     team = {"session": "S", "agents": {"manager": {}, "x": {}}}
     with _isolated_team(team), _fake_tmux() as fake:

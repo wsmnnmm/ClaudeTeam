@@ -13,8 +13,9 @@ import signal
 import subprocess
 import sys
 
+from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
-from claudeteam.runtime import config, paths
+from claudeteam.runtime import config, paths, wake
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -86,11 +87,15 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             print("❌ lark-cli started without stdout pipe", file=sys.stderr)
             return 1
+        def _apply_with_wake(decision):
+            return _deliver_apply(decision, wake_fn=wake.wake_if_dormant)
+
         stats = process_lines(
             proc.stdout,
             team_agents=agents,
             chat_id=chat,
             default_target="manager",
+            apply_fn=_apply_with_wake,
         )
         print(f"router exited: handled={stats.handled} dropped={stats.dropped}")
         return 0 if proc.wait() == 0 else 1

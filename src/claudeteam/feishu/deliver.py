@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from claudeteam.feishu.router import Action, Decision
-from claudeteam.runtime import config, tmux
+from claudeteam.runtime import config, tmux, wake
 from claudeteam.store import local_facts
 
 
@@ -29,6 +29,7 @@ def apply(decision: Decision, *,
           adapter_for_agent: Callable | None = None,
           tmux_inject: Callable | None = None,
           append_message: Callable | None = None,
+          wake_fn: Callable | None = None,
           session: str | None = None) -> DeliveryReport:
     """Apply `decision`. Side-effects: local_facts.append_message + tmux.inject.
 
@@ -59,10 +60,15 @@ def apply(decision: Decision, *,
             print(f"  ⚠️ inbox write failed for {agent}: {e}")
             continue
 
-        # 2) best-effort pane injection — only if the agent has a tmux window
+        # 2) best-effort pane injection — wake CLI if dormant, then inject
         target = tmux.Target(session, agent)
         try:
             adapter = adapter_for_agent(agent)
+            if wake_fn is not None:
+                spawn_cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
+                ready = wake_fn(target, adapter, spawn_cmd=spawn_cmd)
+                if not ready:
+                    print(f"  ⚠️ {agent} pane not ready; injecting anyway")
             ok = tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
         except Exception as e:
             print(f"  ⚠️ inject error for {agent}: {e}")

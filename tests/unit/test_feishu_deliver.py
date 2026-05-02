@@ -12,6 +12,12 @@ class _FakeAdapter:
     def submit_keys(self):
         return ["Enter"]
 
+    def spawn_cmd(self, agent, model):
+        return f"fake-cli {agent} {model}"
+
+    def ready_markers(self):
+        return ["fake-ready"]
+
 
 def _adapter_factory(_agent):
     return _FakeAdapter()
@@ -150,6 +156,62 @@ def test_append_message_exception_skips_inject_for_that_agent():
 
 
 # ── adapter integration ─────────────────────────────────────────
+
+
+# ── lazy wake integration ──────────────────────────────────────
+
+
+_WAKE_TEAM = {"agents": {"worker_a": {"cli": "claude-code", "model": "opus"}}}
+
+
+def test_wake_fn_called_per_target_with_spawn_cmd():
+    decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
+    wake_calls = []
+
+    def fake_wake(target, adapter, *, spawn_cmd):
+        wake_calls.append((str(target), spawn_cmd))
+        return True
+
+    with isolated_env(team=_WAKE_TEAM):
+        apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: True,
+            wake_fn=fake_wake,
+            session="S",
+        )
+    assert len(wake_calls) == 1
+    assert wake_calls[0][0] == "S:worker_a"
+    assert "worker_a" in wake_calls[0][1]
+    assert "opus" in wake_calls[0][1]
+
+
+def test_wake_fn_returning_false_still_attempts_inject():
+    decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
+    inject_calls = []
+    with isolated_env(team=_WAKE_TEAM):
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: inject_calls.append(a) or True,
+            wake_fn=lambda *a, **kw: False,
+            session="S",
+        )
+    assert len(inject_calls) == 1
+    assert report.injected == ["worker_a"]
+
+
+def test_no_wake_fn_skips_wake_step():
+    """Backward-compat: deliver without wake_fn does nothing wake-related."""
+    decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
+    with isolated_env():
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: True,
+            session="S",
+        )
+    assert report.injected == ["worker_a"]
 
 
 def test_each_agent_uses_its_own_submit_keys():

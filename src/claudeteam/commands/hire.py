@@ -43,6 +43,13 @@ def main(argv: list[str]) -> int:
         print(f"❌ failed to create window for {agent}", file=sys.stderr)
         return 1
 
+    identity.write(agent)
+    cfg = config.agent_config(agent)
+    if cfg.get("lazy"):
+        local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
+        print(f"✅ hired (lazy): {agent} ({config.agent_cli(agent)}) → {target}")
+        return 0
+
     adapter = adapter_for_agent(agent)
     cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
     if not tmux.spawn_agent(target, cmd):
@@ -50,6 +57,5 @@ def main(argv: list[str]) -> int:
         return 1
 
     local_facts.upsert_status(agent, "进行中", "initializing")
-    identity.write(agent)
     print(f"✅ hired: {agent} ({config.agent_cli(agent)}) → {target}")
     return 0
