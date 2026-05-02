@@ -10,6 +10,7 @@ Returns a tally of (handled, dropped) so callers can log heartbeat.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -21,7 +22,7 @@ from claudeteam.feishu.router import classify_event
 class LoopStats:
     handled: int = 0
     dropped: int = 0
-    drops_by_reason: dict[str, int] = field(default_factory=dict)
+    drops_by_reason: Counter = field(default_factory=Counter)
     seen_msg_ids: set[str] = field(default_factory=set)
 
 
@@ -72,7 +73,7 @@ def process_lines(lines: Iterable[str], *,
             payload = json.loads(line)
         except json.JSONDecodeError:
             stats.dropped += 1
-            stats.drops_by_reason["bad_json"] = stats.drops_by_reason.get("bad_json", 0) + 1
+            stats.drops_by_reason["bad_json"] += 1
             continue
         event = _normalise(payload)
         decision = classify_event(
@@ -85,8 +86,7 @@ def process_lines(lines: Iterable[str], *,
         )
         if decision.is_drop():
             stats.dropped += 1
-            r = decision.reason or "drop"
-            stats.drops_by_reason[r] = stats.drops_by_reason.get(r, 0) + 1
+            stats.drops_by_reason[decision.reason or "drop"] += 1
             continue
         if decision.msg_id:
             stats.seen_msg_ids.add(decision.msg_id)
