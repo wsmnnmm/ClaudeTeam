@@ -55,6 +55,19 @@ def test_run_returns_none_on_nonzero_exit():
     assert lark.call(["x"], run=rec) is None
 
 
+def test_run_returns_none_when_api_says_ok_false():
+    """lark-cli exits 0 even when the API returns ok=false; treat as failure
+    so callers don't quietly accept a body that's missing the expected fields."""
+    rec = _Recorder(FakeProc(stdout='{"ok":false,"msg":"need_user_authorization","code":99991663}'))
+    assert lark.call(["x"], run=rec) is None
+
+
+def test_run_returns_data_when_ok_true():
+    """Belt-and-suspenders: ok=true with data should still unwrap data."""
+    rec = _Recorder(FakeProc(stdout='{"ok":true,"data":{"message_id":"om_2"}}'))
+    assert lark.call(["x"], run=rec) == {"message_id": "om_2"}
+
+
 def test_run_returns_none_on_invalid_json():
     rec = _Recorder(FakeProc(stdout="not-json"))
     assert lark.call(["x"], run=rec) is None

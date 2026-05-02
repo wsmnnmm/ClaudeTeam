@@ -80,5 +80,10 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
         full = json.loads(r.stdout)
     except json.JSONDecodeError:
         return None
-    # lark-cli wraps results in {"ok": ..., "data": ...} or returns data directly
+    # lark-cli wraps results in {"ok": ..., "data": ...} or returns data directly.
+    # `ok: false` means the API returned an error even though lark-cli exited 0.
+    if isinstance(full, dict) and full.get("ok") is False:
+        reason = full.get("msg") or full.get("error") or full.get("code") or "?"
+        print(f"  ⚠️ lark-cli API error: {reason}"[:200])
+        return None
     return full.get("data", full)
