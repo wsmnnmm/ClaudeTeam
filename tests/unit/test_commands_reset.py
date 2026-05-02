@@ -1,21 +1,13 @@
 """Tests for `claudeteam reset` — wipe runtime state."""
 from __future__ import annotations
 
-import contextlib
-
-from helpers import isolated_env, run_cli
-from claudeteam.runtime import paths, tmux
+from helpers import isolated_env, run_cli, tmux_patch
+from claudeteam.runtime import paths
 from claudeteam.store import local_facts
 
 
-@contextlib.contextmanager
 def _fake_tmux_no_session():
-    saved = tmux.has_session
-    tmux.has_session = lambda s: False
-    try:
-        yield
-    finally:
-        tmux.has_session = saved
+    return tmux_patch(has_session=lambda s: False)
 
 
 # ── happy path ──────────────────────────────────────────────────

@@ -4,18 +4,14 @@ from __future__ import annotations
 import contextlib
 import subprocess
 
-from helpers import isolated_env, run_cli
+from helpers import isolated_env, run_cli, tmux_patch
 from claudeteam.commands import up as _up, down as _down
-from claudeteam.runtime import paths, tmux
+from claudeteam.runtime import paths
 
 
 @contextlib.contextmanager
 def _fake_tmux(session_alive=False):
-    state = {
-        "session_alive": session_alive,
-        "session_killed": False,
-        "calls": [],
-    }
+    state = {"session_alive": session_alive, "session_killed": False, "calls": []}
 
     def has_session(s):
         state["calls"].append(("has_session", s))
@@ -27,13 +23,8 @@ def _fake_tmux(session_alive=False):
         state["session_killed"] = True
         return True
 
-    saved = (tmux.has_session, tmux.kill_session)
-    tmux.has_session = has_session
-    tmux.kill_session = kill_session
-    try:
+    with tmux_patch(has_session=has_session, kill_session=kill_session):
         yield state
-    finally:
-        tmux.has_session, tmux.kill_session = saved
 
 
 @contextlib.contextmanager
@@ -93,18 +84,14 @@ def _fake_alive(answers):
 def test_up_starts_session_and_spawns_two_daemons():
     team = {"session": "S",
             "agents": {"manager": {"cli": "claude-code"}}}
+    extras = tmux_patch(
+        new_session=lambda *a, **kw: True,
+        new_window=lambda *a, **kw: True,
+        spawn_agent=lambda *a, **kw: True,
+    )
     with isolated_env(team=team), _fake_tmux(session_alive=False), \
-            _fake_popen() as popen_calls, _fake_alive([False, False]):
-        # the start path also calls tmux.new_session/new_window/spawn_agent —
-        # patch those on tmux:
-        saved = (tmux.new_session, tmux.new_window, tmux.spawn_agent)
-        tmux.new_session = lambda *a, **kw: True
-        tmux.new_window = lambda *a, **kw: True
-        tmux.spawn_agent = lambda *a, **kw: True
-        try:
-            rc, out, _ = run_cli(["up"])
-        finally:
-            tmux.new_session, tmux.new_window, tmux.spawn_agent = saved
+            _fake_popen() as popen_calls, _fake_alive([False, False]), extras:
+        rc, out, _ = run_cli(["up"])
         assert rc == 0
         assert "team up" in out
         assert ["claudeteam", "router"] in popen_calls

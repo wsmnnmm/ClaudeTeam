@@ -1,25 +1,13 @@
 """Tests for `claudeteam health`."""
 from __future__ import annotations
 
-import contextlib
-
-from helpers import isolated_env, run_cli
-from claudeteam.runtime import tmux
+from helpers import isolated_env, run_cli, tmux_patch
 
 
-@contextlib.contextmanager
 def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
                panes_without_cli: list[str] = ()):
     """Replace tmux.has_session/has_window/capture_pane for health probing."""
-    panes_with_cli = list(panes_with_cli)
-    panes_without_cli = list(panes_without_cli)
-    all_panes = panes_with_cli + panes_without_cli
-
-    def has_session(s):
-        return session_alive
-
-    def has_window(target):
-        return str(target).split(":")[1] in all_panes
+    all_panes = list(panes_with_cli) + list(panes_without_cli)
 
     def capture_pane(target, lines=80):
         agent = str(target).split(":")[1]
@@ -27,12 +15,11 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
             return "bypass permissions on\n? for shortcuts\n>"
         return "$ "
 
-    saved = (tmux.has_session, tmux.has_window, tmux.capture_pane)
-    tmux.has_session, tmux.has_window, tmux.capture_pane = has_session, has_window, capture_pane
-    try:
-        yield
-    finally:
-        tmux.has_session, tmux.has_window, tmux.capture_pane = saved
+    return tmux_patch(
+        has_session=lambda s: session_alive,
+        has_window=lambda target: str(target).split(":")[1] in all_panes,
+        capture_pane=capture_pane,
+    )
 
 
 # ── happy path ──────────────────────────────────────────────────

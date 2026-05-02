@@ -66,3 +66,27 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = cli.main(argv)
     return rc, out.getvalue(), err.getvalue()
+
+
+@contextlib.contextmanager
+def tmux_patch(**stubs):
+    """Temporarily replace one or more functions on `claudeteam.runtime.tmux`.
+
+    Pass keyword args mapping function name → callable. All originals are
+    saved and restored on exit, even if the test raises.
+
+        with tmux_patch(has_session=lambda s: False, kill_session=lambda s: True):
+            ...
+
+    Use this instead of hand-rolling save/restore boilerplate in every
+    test file.
+    """
+    from claudeteam.runtime import tmux as _tmux
+    saved = {name: getattr(_tmux, name) for name in stubs}
+    for name, fn in stubs.items():
+        setattr(_tmux, name, fn)
+    try:
+        yield
+    finally:
+        for name, fn in saved.items():
+            setattr(_tmux, name, fn)

@@ -114,6 +114,32 @@ def test_pop_flag_handles_repeated_flag_takes_first():
     assert rest == ["--by", "bob"]
 
 
+# ── tmux_patch (helpers) ────────────────────────────────────────
+
+
+def test_tmux_patch_replaces_and_restores():
+    from helpers import tmux_patch
+    from claudeteam.runtime import tmux
+
+    real = tmux.has_session
+    with tmux_patch(has_session=lambda s: True):
+        assert tmux.has_session("anything") is True
+    assert tmux.has_session is real
+
+
+def test_tmux_patch_restores_even_on_exception():
+    from helpers import tmux_patch
+    from claudeteam.runtime import tmux
+
+    real = tmux.has_session
+    try:
+        with tmux_patch(has_session=lambda s: True):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert tmux.has_session is real
+
+
 def test_atomic_write_respects_encoding_arg():
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "out.txt"
