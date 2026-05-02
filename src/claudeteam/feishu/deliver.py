@@ -34,16 +34,19 @@ class _Deps:
     session: str
 
 
-def _resolve_deps(adapter_for_agent, tmux_inject, append_message, session) -> _Deps:
-    if adapter_for_agent is None:
-        from claudeteam.agents import adapter_for_agent as adapter_for_agent
-    if tmux_inject is None:
-        tmux_inject = tmux.inject
-    if append_message is None:
-        append_message = local_facts.append_message
-    if session is None:
-        session = config.session_name()
-    return _Deps(adapter_for_agent, tmux_inject, append_message, session)
+def _resolve_deps(adapter_lookup, tmux_inject, append_message, session) -> _Deps:
+    """Late-bind production defaults so test fakes installed after import
+    still take effect."""
+    if adapter_lookup is None:
+        from claudeteam.agents import adapter_for_agent
+        adapter_lookup = adapter_for_agent
+    return _Deps(
+        adapter_for_agent=adapter_lookup,
+        tmux_inject=tmux_inject if tmux_inject is not None else tmux.inject,
+        append_message=(append_message if append_message is not None
+                        else local_facts.append_message),
+        session=session if session is not None else config.session_name(),
+    )
 
 
 def _write_inbox(agent: str, sender: str, decision: Decision,
