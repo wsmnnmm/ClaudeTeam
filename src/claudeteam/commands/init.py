@@ -54,9 +54,7 @@ def main(argv: list[str]) -> int:
             if path.exists():
                 return error_exit(f"❌ {path} already exists; pass --force to overwrite")
 
-    team = dict(_DEFAULT_TEAM)
-    team["session"] = session
-    write_json(team_path, team)
+    write_json(team_path, {**_DEFAULT_TEAM, "session": session})
     write_json(rt_path, _DEFAULT_RUNTIME)
 
     print(f"✅ wrote {team_path}")
