@@ -77,6 +77,41 @@ def test_usage_skips_ccusage_when_npx_missing():
         assert "npx not on PATH" in out
 
 
+def test_usage_handles_ccusage_timeout():
+    """Regression: previously a TimeoutExpired propagated and crashed
+    `claudeteam usage` with a stack trace."""
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    saved = subprocess.run
+
+    def fake(argv, *args, **kwargs):
+        if argv[:1] == ["npx"]:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=60)
+        return saved(argv, *args, **kwargs)
+
+    with isolated_env(team=team), _stub_npx_present(True), \
+            attr_patch(subprocess, run=fake):
+        rc, out, _ = run_cli(["usage"])
+        assert rc == 0  # outer command still 0 even if ccusage failed
+        assert "ccusage timed out" in out
+
+
+def test_usage_handles_ccusage_oserror():
+    """Regression: subprocess OSError (e.g. fork failure) shouldn't crash."""
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    saved = subprocess.run
+
+    def fake(argv, *args, **kwargs):
+        if argv[:1] == ["npx"]:
+            raise OSError("fork failed")
+        return saved(argv, *args, **kwargs)
+
+    with isolated_env(team=team), _stub_npx_present(True), \
+            attr_patch(subprocess, run=fake):
+        rc, out, _ = run_cli(["usage"])
+        assert rc == 0
+        assert "ccusage exec failed" in out
+
+
 # ── flags / parsing ─────────────────────────────────────────────
 
 

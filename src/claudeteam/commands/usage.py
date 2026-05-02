@@ -37,7 +37,12 @@ def _run_ccusage(view: str, days: str = "",
     argv = ["npx", "-y", "ccusage", view]
     if days:
         argv += ["--days", days]
-    r = runner(argv)
+    try:
+        r = runner(argv)
+    except subprocess.TimeoutExpired:
+        return 1, "(ccusage timed out after 60s)"
+    except OSError as e:
+        return 1, f"(ccusage exec failed: {e})"
     out = (r.stdout or "") + (r.stderr or "")
     return r.returncode, out
 
