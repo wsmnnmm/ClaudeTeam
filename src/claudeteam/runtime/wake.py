@@ -29,8 +29,7 @@ def _has_marker(target: tmux.Target, markers: list[str],
     capture call when the adapter declines to publish that marker class)."""
     if not markers:
         return False
-    if capture is None:
-        capture = tmux.capture_pane
+    capture = capture or tmux.capture_pane
     text = capture(target, lines=80)
     return any(m in text for m in markers)
 
