@@ -1,35 +1,17 @@
 """Tests for runtime/config.py — team.json + runtime_config.json loading."""
 from __future__ import annotations
 
-import contextlib
-import json
 import os
-import tempfile
-from pathlib import Path
+
+from helpers import isolated_env
 
 from claudeteam.runtime import config
 
 
-@contextlib.contextmanager
 def _team_env(team_data, runtime_data=None):
-    with tempfile.TemporaryDirectory() as tmp:
-        team_path = Path(tmp) / "team.json"
-        team_path.write_text(json.dumps(team_data, ensure_ascii=False), encoding="utf-8")
-        rt_path = Path(tmp) / "runtime_config.json"
-        if runtime_data is not None:
-            rt_path.write_text(json.dumps(runtime_data, ensure_ascii=False), encoding="utf-8")
-        old_team = os.environ.get("CLAUDETEAM_TEAM_FILE")
-        old_rt = os.environ.get("CLAUDETEAM_RUNTIME_CONFIG")
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(team_path)
-        os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(rt_path)
-        try:
-            yield Path(tmp)
-        finally:
-            for key, val in [("CLAUDETEAM_TEAM_FILE", old_team), ("CLAUDETEAM_RUNTIME_CONFIG", old_rt)]:
-                if val is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = val
+    """Sugar over isolated_env(team=..., runtime_config=...) — keeps the
+    older positional API the tests in this file have always used."""
+    return isolated_env(team=team_data, runtime_config=runtime_data)
 
 
 # ── team.json basics ────────────────────────────────────────────
@@ -44,14 +26,13 @@ def test_load_team_returns_full_dict():
 
 
 def test_load_team_returns_default_when_missing():
-    with tempfile.TemporaryDirectory() as tmp:
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(Path(tmp) / "nope.json")
-        try:
-            t = config.load_team()
-            assert t["agents"] == {}
-            assert "session" in t
-        finally:
-            os.environ.pop("CLAUDETEAM_TEAM_FILE", None)
+    # isolated_env points CLAUDETEAM_TEAM_FILE at a tempdir that has no
+    # team.json (since team= isn't passed), so config.load_team() takes
+    # the missing-file → default-dict path.
+    with isolated_env():
+        t = config.load_team()
+        assert t["agents"] == {}
+        assert "session" in t
 
 
 def test_session_name_falls_back_to_claudeteam():
