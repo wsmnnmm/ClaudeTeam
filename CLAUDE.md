@@ -118,8 +118,11 @@ fixture instead of a real subprocess.
 6. (done) Lazy wake (placeholder pane → CLI on first message)
 7. (done) Router catchup-on-restart (`feishu/catchup.py` + cursor)
 8. (done) `claudeteam health`, `up`, `down`, agent heartbeats
-9. (next) Slash command hooks for Claude Code (`.claude/hooks/`)
-10. (next) `claudeteam usage` — token / quota visibility
-11. (next) Rate-limit detection + boss notification
-12. (later) Docker deployment + multi-team isolation
-13. (later) Image / file Feishu messages
+9. (done) Slash command hooks (`claudeteam install-hooks` → .claude/commands/)
+10. (done) `claudeteam usage` — ccusage wrapper for claude-code agents
+11. (done) Rate-limit detection (adapter `rate_limit_markers`, deliver skips)
+12. (done) `claudeteam reset` + 13-helper `util.py` shared stdlib
+13. (next) Image / file Feishu messages
+14. (next) Post-compact identity reread
+15. (later) Dockerfile + compose
+16. (later) Multi-team isolation polish (`claudeteam switch <team>`)
