@@ -8,10 +8,10 @@
 """
 from __future__ import annotations
 
-import sys
-
 from claudeteam.store import tasks
-from claudeteam.util import error_exit, fmt_time_ms, pop_flag, usage_error
+from claudeteam.util import (
+    error_exit, fmt_time_ms, help_requested, pop_flag, usage_error,
+)
 
 
 USAGE = (
@@ -112,9 +112,14 @@ SUBCOMMANDS = {
 
 
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print(USAGE)
-        return 0 if argv else 1
+        return 0
+    if not argv:
+        # No subcommand: print usage to stdout (it IS the requested output)
+        # but return 1 so scripts know the call was incomplete.
+        print(USAGE)
+        return 1
     sub = argv[0]
     if sub not in SUBCOMMANDS:
         return error_exit(f"unknown task subcommand: {sub}\n{USAGE}")

@@ -58,11 +58,11 @@ def _read_pid(pid_file: Path) -> int | None:
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
     except OSError:
+        # Covers ProcessLookupError (no such pid), PermissionError (not ours),
+        # and other OSError variants. Either way the process isn't usable.
         return False
+    return True
 
 
 def _read_cmdline(pid: int) -> str:
