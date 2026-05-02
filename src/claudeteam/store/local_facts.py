@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
-from claudeteam.util import atomic_write_text, flock, read_json
+from claudeteam.util import flock, read_json, write_json
 
 
 def _inbox_file() -> Path:
@@ -51,10 +51,6 @@ def _locked():
     return flock(_facts_dir() / ".facts.lock")
 
 
-def _write_json(path: Path, data) -> None:
-    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-
-
 # ── inbox ─────────────────────────────────────────────────────────────
 
 
@@ -76,7 +72,7 @@ def append_message(to: str, frm: str, content: str, *,
             "read": False,
             "read_at": None,
         })
-        _write_json(path, data)
+        write_json(path, data)
         return local_id
 
 
@@ -96,7 +92,7 @@ def mark_read(local_id: str) -> bool:
             if msg.get("local_id") == local_id:
                 msg["read"] = True
                 msg["read_at"] = _now_ms()
-                _write_json(path, data)
+                write_json(path, data)
                 return True
     return False
 
@@ -115,7 +111,7 @@ def upsert_status(agent: str, status: str, task: str, *, blocker: str = "") -> N
             "blocker": blocker,
             "updated_at": _now_ms(),
         }
-        _write_json(path, data)
+        write_json(path, data)
 
 
 def get_status(agent: str) -> dict | None:
@@ -143,7 +139,7 @@ def touch_heartbeat(agent: str) -> None:
         path = _heartbeat_file()
         data = read_json(path, {})
         data[agent] = _now_ms()
-        _write_json(path, data)
+        write_json(path, data)
 
 
 def get_heartbeat(agent: str) -> int | None:

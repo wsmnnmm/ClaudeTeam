@@ -24,11 +24,10 @@ without restart.  Writes are explicit via save_runtime_config().
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
-from claudeteam.util import atomic_write_text, read_json
+from claudeteam.util import read_json, write_json
 
 
 # ── path resolution ───────────────────────────────────────────────
@@ -98,8 +97,7 @@ def load_runtime_config() -> dict:
 
 
 def save_runtime_config(cfg: dict) -> None:
-    atomic_write_text(runtime_config_file(),
-                      json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+    write_json(runtime_config_file(), cfg)
 
 
 def chat_id() -> str:

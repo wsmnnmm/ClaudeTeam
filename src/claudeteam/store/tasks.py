@@ -14,12 +14,11 @@ Status vocabulary: 待处理 / 进行中 / 已完成 / 已取消
 """
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 from claudeteam.runtime import paths
-from claudeteam.util import atomic_write_text, flock, read_json
+from claudeteam.util import flock, read_json, write_json
 
 
 VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
@@ -44,7 +43,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    atomic_write_text(_file(), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    write_json(_file(), data)
 
 
 # ── public API ────────────────────────────────────────────────────

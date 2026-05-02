@@ -71,6 +71,17 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> N
     tmp.replace(path)
 
 
+def write_json(path: Path, data) -> None:
+    """Atomically write `data` as pretty-printed UTF-8 JSON.
+
+    Convention used everywhere in the rebuild: `ensure_ascii=False` so
+    Chinese strings stay readable in checked-in/audited files,
+    `indent=2` for diff-friendliness, trailing newline so `cat` doesn't
+    leave the prompt on the same line.
+    """
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
 def ago_ms(ms: int, *, now: float | None = None) -> str:
     """Format a millisecond epoch timestamp as `Ns ago / Nm ago / Nh ago / Nd ago`.
 

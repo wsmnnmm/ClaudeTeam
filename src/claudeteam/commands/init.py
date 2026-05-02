@@ -8,11 +8,10 @@ Refuses to overwrite existing files unless --force is passed.
 """
 from __future__ import annotations
 
-import json
 import sys
 
 from claudeteam.runtime import config
-from claudeteam.util import atomic_write_text, pop_flag
+from claudeteam.util import pop_flag, write_json
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -34,10 +33,6 @@ _DEFAULT_RUNTIME = {
     "chat_id": "",
     "lark_profile": "",
 }
-
-
-def _write_json(path, data: dict) -> None:
-    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def main(argv: list[str]) -> int:
@@ -65,8 +60,8 @@ def main(argv: list[str]) -> int:
 
     team = dict(_DEFAULT_TEAM)
     team["session"] = session
-    _write_json(team_path, team)
-    _write_json(rt_path, _DEFAULT_RUNTIME)
+    write_json(team_path, team)
+    write_json(rt_path, _DEFAULT_RUNTIME)
 
     print(f"✅ wrote {team_path}")
     print(f"✅ wrote {rt_path}")
