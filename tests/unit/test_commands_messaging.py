@@ -13,7 +13,7 @@ def test_send_writes_inbox_and_prints_local_id():
     with isolated_env():
         rc, out, err = run_cli(["send", "worker", "manager", "do task X"])
         assert rc == 0, err
-        assert "sent → worker" in out
+        assert "inbox: worker ← manager" in out
         assert "local_id=msg_" in out
 
         rows = local_facts.list_messages("worker")

@@ -1,6 +1,9 @@
 """`claudeteam send <to> <from> <message> [priority]`
 
 Append a message to the local inbox.  Pure local — no Feishu, no tmux.
+
+This does NOT inject into the recipient's tmux pane; only the Feishu
+router can do that.  See README "Two transports" section.
 """
 from __future__ import annotations
 
@@ -19,5 +22,5 @@ def main(argv: list[str]) -> int:
     priority = argv[3] if len(argv) > 3 else "中"
     local_facts.touch_heartbeat(frm)
     local_id = local_facts.append_message(to, frm, message, priority=priority)
-    print(f"sent → {to}  [local_id={local_id}]")
+    print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]")
     return 0
