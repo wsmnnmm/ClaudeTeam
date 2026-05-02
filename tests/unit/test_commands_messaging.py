@@ -1,14 +1,11 @@
 """Tests for `claudeteam send / inbox / read` commands.
 
-Goes through cli.main([...]) so we exercise the dispatch + handler
+Goes through run_cli([...]) so we exercise the dispatch + handler
 contract end-to-end (without spawning a subprocess).
 """
 from __future__ import annotations
 
-import io
-
 from helpers import isolated_env, run_cli
-from claudeteam import cli
 from claudeteam.store import local_facts
 
 

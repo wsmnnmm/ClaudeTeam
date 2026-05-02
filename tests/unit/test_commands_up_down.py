@@ -5,7 +5,6 @@ import contextlib
 import subprocess
 
 from helpers import attr_patch, isolated_env, run_cli, tmux_patch
-from claudeteam.commands import up as _up, down as _down
 from claudeteam.runtime import paths
 
 
