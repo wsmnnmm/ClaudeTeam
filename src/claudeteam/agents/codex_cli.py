@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import shlex
 
-from .base import CliAdapter
+from .base import CliAdapter, SPINNER_CHARS
 
 
 _OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4", "codex")
@@ -28,11 +28,7 @@ class CodexCliAdapter(CliAdapter):
         return ["OpenAI Codex", "permissions: YOLO"]
 
     def busy_markers(self) -> list[str]:
-        return [
-            "esc to interrupt",
-            "Booting MCP server",
-            "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
-        ]
+        return ["esc to interrupt", "Booting MCP server", *SPINNER_CHARS]
 
     def process_name(self) -> str:
         return "codex"

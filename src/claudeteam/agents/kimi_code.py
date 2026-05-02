@@ -1,7 +1,7 @@
 """Moonshot Kimi Code adapter."""
 from __future__ import annotations
 
-from .base import CliAdapter
+from .base import CliAdapter, SPINNER_CHARS
 
 
 class KimiCodeAdapter(CliAdapter):
@@ -18,10 +18,7 @@ class KimiCodeAdapter(CliAdapter):
         ]
 
     def busy_markers(self) -> list[str]:
-        return [
-            "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
-            "Thinking", "Using Shell", "Booting",
-        ]
+        return [*SPINNER_CHARS, "Thinking", "Using Shell", "Booting"]
 
     def process_name(self) -> str:
         return "kimi"

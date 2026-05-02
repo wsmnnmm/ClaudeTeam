@@ -1,7 +1,7 @@
 """Anthropic Claude Code adapter."""
 from __future__ import annotations
 
-from .base import CliAdapter
+from .base import CliAdapter, SPINNER_CHARS
 
 
 class ClaudeCodeAdapter(CliAdapter):
@@ -16,7 +16,7 @@ class ClaudeCodeAdapter(CliAdapter):
 
     def busy_markers(self) -> list[str]:
         return [
-            "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
+            *SPINNER_CHARS,
             "◐", "◑", "◒", "◓",
             "Thinking", "Running tool",
         ]

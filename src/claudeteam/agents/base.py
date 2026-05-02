@@ -15,6 +15,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
+# Braille-pattern spinner glyphs that every Ink/Rich/Bubbletea-style CLI
+# uses for "I'm busy" indication. Concrete adapters splice this into their
+# own busy_markers() return.
+SPINNER_CHARS = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
+
+
 class CliAdapter(ABC):
     @abstractmethod
     def spawn_cmd(self, agent: str, model: str) -> str:
