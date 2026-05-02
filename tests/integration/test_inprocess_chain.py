@@ -1,12 +1,11 @@
-"""End-to-end in-process smoke for the rebuild — no network, no real tmux.
+"""End-to-end in-process integration test for the rebuild.
 
 Wires `feishu.subscribe.process_lines` (real) → `feishu.deliver.apply`
 (real) → `local_facts` (real, isolated tempdir) and a fake tmux.inject so
 the assertion is "inbox got the row + tmux pane received the right keys".
 
-This is as close to live smoke as the gate can run.  Real live smoke
-(actual lark-cli + tmux + Feishu) lives in tests/smoke/scenarios/*.md
-and runs under operator supervision.
+True host-live smoke (real lark-cli + tmux + Feishu) is the README-driven
+bootstrap test, plus the operator playbooks in tests/scenarios/*.md.
 """
 from __future__ import annotations
 

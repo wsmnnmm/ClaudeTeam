@@ -27,7 +27,7 @@ for _p in (SRC, TESTS):
 def _discover() -> list[tuple[str, str]]:
     return [
         (path.stem, path.parent.name)
-        for sub in ("unit", "smoke")
+        for sub in ("unit", "integration")
         for path in sorted((ROOT / "tests" / sub).glob("test_*.py"))
     ]
 

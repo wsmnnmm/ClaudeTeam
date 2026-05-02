@@ -20,17 +20,18 @@ src/claudeteam/feishu/          ← lark-cli wrapper + router pipeline
 src/claudeteam/agents/          ← CliAdapter base + per-CLI adapters
 ```
 
-Tests are in `tests/unit/test_*.py` (per-module) and `tests/smoke/` (end-
-to-end in-process plus natural-language scenarios in `scenarios/*.md`).
+Tests are in `tests/unit/test_*.py` (per-module),
+`tests/integration/test_*.py` (end-to-end in-process; auto gate),
+and `tests/scenarios/*.md` (operator-run regression playbooks).
 
 ## Building rules (READ BEFORE WRITING CODE)
 
 1. **Every new module ships its own unit test in the same commit.**
    Touching `commands/X.py`?  Write `tests/unit/test_commands_X.py`.
 
-2. **Every new public command ships a smoke scenario (markdown) in
-   the same commit.**  See `tests/smoke/scenarios/README.md` for the
-   Given/When/Then template.
+2. **Every new public command ships an operator playbook (markdown) in
+   `tests/scenarios/` in the same commit.**  Given/When/Then template,
+   for human regression checks against a real deployment.
 
 3. **Simplify before pulling from the old tree.**  The old branch
    accumulated 33 K LOC; the rebuild is currently ~8 K (src + tests).
@@ -106,7 +107,7 @@ fixture instead of a real subprocess.
 - Don't reach into other modules' module-level globals from tests.
   Use the injectable kwargs (`run=`, `popen=`, `tmux_inject=`).
 - Don't add docs/ subfolders for every concern.  This file + README.md
-  + `tests/smoke/scenarios/*.md` is the documentation surface.
+  + `tests/scenarios/*.md` is the documentation surface.
 
 ## Active work order (rough)
 

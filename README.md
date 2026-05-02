@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~8 100 LOC (src + tests), 379 tests green.
+capability requires them.  Currently ~8 100 LOC (src + tests), 381 tests green.
 
 ## Quick start
 
@@ -136,11 +136,11 @@ python3 tests/run.py
 ```
 
 Stdlib-only runner.  No pytest dependency.  Discovers `tests/unit/test_*.py`
-and `tests/smoke/test_*.py`, runs every `test_*` function, prints a
+and `tests/integration/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 379 passed, 0 failed
+tests: 381 passed, 0 failed
 ```
 
 ## What's missing
@@ -163,5 +163,5 @@ slash-command interceptors (`claudeteam install-hooks`),
 (adapter `rate_limit_markers()` + deliver-skips-when-rate-limited).
 
 The rebuild is on `rebuild/minimal`; it does not share history with
-`main`.  See `tests/smoke/scenarios/*.md` for natural-language scenarios
-covering each feature.
+`main`.  See `tests/scenarios/*.md` for natural-language scenarios
+covering each feature (operator-run regression playbooks).
