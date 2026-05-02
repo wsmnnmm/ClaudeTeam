@@ -29,3 +29,6 @@ class KimiCodeAdapter(CliAdapter):
     def submit_keys(self) -> list[str]:
         # Same multi-line input contract as Codex: M-Enter to submit.
         return ["M-Enter", "Enter", "C-m", "C-j"]
+
+    def rate_limit_markers(self) -> list[str]:
+        return ["rate limit", "429", "quota exceeded"]

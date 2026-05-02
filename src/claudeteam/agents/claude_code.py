@@ -23,3 +23,11 @@ class ClaudeCodeAdapter(CliAdapter):
 
     def process_name(self) -> str:
         return "claude"
+
+    def rate_limit_markers(self) -> list[str]:
+        return [
+            "Approaching usage limit",
+            "5-hour limit reached",
+            "Try again at",
+            "rate limit",
+        ]

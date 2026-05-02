@@ -86,6 +86,39 @@ def test_wake_returns_false_when_spawn_fails():
     assert ok is False
 
 
+def test_is_rate_limited_returns_false_when_marker_list_empty():
+    target = tmux.Target("S", "agent")
+
+    class NoMarkers:
+        def rate_limit_markers(self):
+            return []
+
+    capture = lambda t, lines=80: "Approaching usage limit"
+    assert wake.is_rate_limited(target, NoMarkers(), capture=capture) is False
+
+
+def test_is_rate_limited_true_when_pane_shows_marker():
+    target = tmux.Target("S", "agent")
+
+    class WithMarkers:
+        def rate_limit_markers(self):
+            return ["Approaching usage limit"]
+
+    capture = lambda t, lines=80: "...Approaching usage limit\n"
+    assert wake.is_rate_limited(target, WithMarkers(), capture=capture) is True
+
+
+def test_is_rate_limited_false_when_pane_clean():
+    target = tmux.Target("S", "agent")
+
+    class WithMarkers:
+        def rate_limit_markers(self):
+            return ["rate limit"]
+
+    capture = lambda t, lines=80: "all good\n>"
+    assert wake.is_rate_limited(target, WithMarkers(), capture=capture) is False
+
+
 def test_wake_returns_false_on_timeout():
     target = tmux.Target("S", "worker")
     # always dormant

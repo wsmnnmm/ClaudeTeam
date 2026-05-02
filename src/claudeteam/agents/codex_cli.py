@@ -41,3 +41,6 @@ class CodexCliAdapter(CliAdapter):
         # Ink/prompt_toolkit multi-line input: Enter inserts newline, M-Enter
         # is the canonical submit.  Keep Enter as fallback for single-line.
         return ["M-Enter", "Enter", "C-m", "C-j"]
+
+    def rate_limit_markers(self) -> list[str]:
+        return ["rate limit", "429", "RateLimitError", "you exceeded your"]

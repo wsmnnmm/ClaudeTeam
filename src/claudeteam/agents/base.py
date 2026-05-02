@@ -39,3 +39,10 @@ class CliAdapter(ABC):
         override to lead with M-Enter.
         """
         return ["Enter", "C-m", "C-j"]
+
+    def rate_limit_markers(self) -> list[str]:
+        """Strings that, if present in the pane tail, mean the CLI is
+        currently rate-limited and won't process new input. Empty by
+        default; per-CLI adapters override with provider-specific text.
+        """
+        return []

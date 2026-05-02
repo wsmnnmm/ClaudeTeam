@@ -18,6 +18,9 @@ class _FakeAdapter:
     def ready_markers(self):
         return ["fake-ready"]
 
+    def rate_limit_markers(self):
+        return []
+
 
 def _adapter_factory(_agent):
     return _FakeAdapter()
@@ -214,6 +217,48 @@ def test_no_wake_fn_skips_wake_step():
     assert report.injected == ["worker_a"]
 
 
+# ── rate limit ──────────────────────────────────────────────────
+
+
+def test_rate_limited_pane_keeps_inbox_skips_inject():
+    """When wake.is_rate_limited returns True for an agent, inbox row is
+    written but inject is skipped — message preserved for replay."""
+    decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
+    inject_calls = []
+
+    class RateLimitedAdapter:
+        def submit_keys(self):
+            return ["Enter"]
+
+        def spawn_cmd(self, agent, model):
+            return "fake"
+
+        def ready_markers(self):
+            return ["fake-ready"]
+
+        def rate_limit_markers(self):
+            return ["Approaching usage limit"]
+
+    # patch tmux.capture_pane to feign a rate-limited pane
+    from claudeteam.runtime import tmux as _tmux
+    saved = _tmux.capture_pane
+    _tmux.capture_pane = lambda t, lines=80: "...Approaching usage limit\n"
+    try:
+        with isolated_env(team=_WAKE_TEAM):
+            report = apply(
+                decision,
+                adapter_for_agent=lambda _: RateLimitedAdapter(),
+                tmux_inject=lambda *a, **kw: inject_calls.append(a) or True,
+                session="S",
+            )
+    finally:
+        _tmux.capture_pane = saved
+    assert report.written == ["worker_a"]
+    assert report.injected == []
+    assert report.rate_limited == ["worker_a"]
+    assert inject_calls == []
+
+
 def test_each_agent_uses_its_own_submit_keys():
     """Codex/Kimi vs Claude submit-key sequences differ; verify each."""
     keys_seen = {}
@@ -224,6 +269,9 @@ def test_each_agent_uses_its_own_submit_keys():
 
         def submit_keys(self):
             return self._k
+
+        def rate_limit_markers(self):
+            return []
 
     def factory(agent):
         return _A(["M-Enter"]) if agent == "codex_w" else _A(["Enter"])

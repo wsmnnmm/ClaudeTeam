@@ -31,6 +31,21 @@ def is_ready(target: tmux.Target, adapter: CliAdapter, *,
     return any(m in text for m in adapter.ready_markers())
 
 
+def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
+                    capture: Callable | None = None) -> bool:
+    """True if the pane shows any rate-limit marker for this adapter.
+
+    Empty marker list (default for codex/kimi historically) → always False.
+    """
+    markers = adapter.rate_limit_markers()
+    if not markers:
+        return False
+    if capture is None:
+        capture = tmux.capture_pane
+    text = capture(target, lines=80)
+    return any(m in text for m in markers)
+
+
 def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
                     spawn_cmd: str,
                     timeout_s: float = 30.0,

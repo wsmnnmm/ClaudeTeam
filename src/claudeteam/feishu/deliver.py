@@ -22,6 +22,7 @@ class DeliveryReport:
     written: list[str] = field(default_factory=list)   # agents whose inbox got the row
     injected: list[str] = field(default_factory=list)  # agents whose pane received the text
     failed_inject: list[str] = field(default_factory=list)
+    rate_limited: list[str] = field(default_factory=list)  # inbox written, inject skipped
     skipped: bool = False                               # True iff decision was DROP
 
 
@@ -64,6 +65,10 @@ def apply(decision: Decision, *,
         target = tmux.Target(session, agent)
         try:
             adapter = adapter_for_agent(agent)
+            if wake.is_rate_limited(target, adapter):
+                print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
+                report.rate_limited.append(agent)
+                continue
             if wake_fn is not None:
                 spawn_cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
                 ready = wake_fn(target, adapter, spawn_cmd=spawn_cmd)
