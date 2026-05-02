@@ -13,10 +13,10 @@ Hoisting unifies behavior and removes ~30 lines of dup.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 from claudeteam.runtime import paths
+from claudeteam.util import warn
 
 
 def acquire(pid_file: Path, *, name: str = "") -> bool:
@@ -31,8 +31,7 @@ def acquire(pid_file: Path, *, name: str = "") -> bool:
         try:
             old = int(pid_file.read_text(encoding="utf-8").strip())
             os.kill(old, 0)
-            print(f"❌ another {name or 'instance'} already running (pid {old})",
-                  file=sys.stderr)
+            warn(f"❌ another {name or 'instance'} already running (pid {old})")
             return False
         except (OSError, ValueError):
             pass  # stale: overwrite
