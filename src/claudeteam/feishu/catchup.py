@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Iterable
 
+from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import paths
 from claudeteam.util import atomic_write_text
@@ -111,7 +112,6 @@ def pending_lines(chat_id: str, *,
     cursor = read_cursor()
     cursor_ct = str(cursor.get("create_time") or "")
     if list_fn is None:
-        from claudeteam.feishu import chat as _chat
         def list_fn():
             return _chat.list_recent(chat_id, profile=profile, page_size=page_size)
     msgs = list_fn() or []

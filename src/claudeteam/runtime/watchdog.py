@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from claudeteam.runtime import paths
+
 
 # ── per-process spec & state ──────────────────────────────────────
 
@@ -172,7 +174,6 @@ def _claudeteam_spec(name: str, pid_file: Path) -> ProcessSpec:
 def default_specs() -> list[ProcessSpec]:
     """Specs the watchdog supervises. Just the router — the watchdog
     doesn't supervise itself."""
-    from claudeteam.runtime import paths
     return [_claudeteam_spec("router", paths.router_pid_file())]
 
 
@@ -180,7 +181,6 @@ def all_known_specs() -> list[ProcessSpec]:
     """Every daemon ClaudeTeam ships, for `health` and similar audits.
     Includes the watchdog itself so health can verify its lock file
     matches a live process."""
-    from claudeteam.runtime import paths
     return [
         _claudeteam_spec("router", paths.router_pid_file()),
         _claudeteam_spec("watchdog", paths.watchdog_pid_file()),

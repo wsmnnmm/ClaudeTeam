@@ -1,6 +1,8 @@
 """CLI adapter registry — maps a `cli` identifier to its CliAdapter."""
 from __future__ import annotations
 
+from claudeteam.runtime.config import agent_cli
+
 from .base import CliAdapter
 from .claude_code import ClaudeCodeAdapter
 from .codex_cli import CodexCliAdapter
@@ -36,5 +38,4 @@ def adapter_for_agent(agent: str) -> CliAdapter:
     Convenience over `get_adapter(config.agent_cli(agent))`; the routing
     layer reaches for this whenever it needs to spawn or inspect a pane.
     """
-    from claudeteam.runtime.config import agent_cli
     return get_adapter(agent_cli(agent))
