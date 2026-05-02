@@ -37,6 +37,7 @@ from claudeteam.commands import (
     down as _down,
     usage as _usage_cmd,
     reset as _reset,
+    install_hooks as _install_hooks,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -67,6 +68,7 @@ COMMANDS: dict[str, CommandHandler] = {
     # operational
     "health": _health.main,
     "usage": _usage_cmd.main,
+    "install-hooks": _install_hooks.main,
 }
 
 
