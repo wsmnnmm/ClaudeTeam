@@ -1,6 +1,6 @@
 """Thin wrapper around `npx @larksuite/cli`.
 
-Single function: `run(args, *, profile, timeout) -> dict | None`.
+Single function: `call(args, *, profile, timeout) -> dict | None`.
 
 Returns the `data` field of lark-cli's JSON response on success, `{}` if
 stdout is empty, `None` on any failure.  Proxy bypass is automatic when
@@ -48,8 +48,8 @@ def _resolve_timeout(explicit: int | None) -> int:
         return 90
 
 
-def run(args: list[str], *, profile: str = "", timeout: int | None = None,
-        run: Callable = subprocess.run) -> dict | None:
+def call(args: list[str], *, profile: str = "", timeout: int | None = None,
+         run: Callable = subprocess.run) -> dict | None:
     """Execute lark-cli; return parsed `data` JSON, `{}` on empty stdout, None on failure.
 
     `profile` selects the lark-cli profile (`--profile X`).  Pass empty

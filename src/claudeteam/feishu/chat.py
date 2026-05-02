@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from claudeteam.feishu.lark import run as _real_run
+from claudeteam.feishu.lark import call as _real_run
 
 
 def _as(as_user: bool) -> list[str]:
