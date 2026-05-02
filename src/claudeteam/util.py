@@ -61,6 +61,16 @@ def pop_flag(rest: list[str], flag: str) -> str | None:
     return val
 
 
+def pop_bool_flag(rest: list[str], flag: str) -> bool:
+    """Pop a boolean `flag` (no value) out of `rest`; return True iff present.
+    Mutates `rest`. Pair with `pop_flag` for value-bearing flags.
+    """
+    if flag in rest:
+        rest.remove(flag)
+        return True
+    return False
+
+
 @contextlib.contextmanager
 def flock(lock_path: Path):
     """Hold an exclusive fcntl lock on `lock_path` for the body's lifetime.

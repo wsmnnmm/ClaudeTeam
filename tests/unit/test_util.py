@@ -12,8 +12,8 @@ from helpers import env_patch, tmux_patch
 from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
-    fmt_time_ms, help_requested, now_ms, pop_flag, read_json, usage_error,
-    warn,
+    fmt_time_ms, help_requested, now_ms, pop_bool_flag, pop_flag, read_json,
+    usage_error, warn,
 )
 
 
@@ -244,6 +244,27 @@ def test_pop_flag_handles_repeated_flag_takes_first():
     rest = ["--by", "alice", "--by", "bob"]
     assert pop_flag(rest, "--by") == "alice"
     assert rest == ["--by", "bob"]
+
+
+# ── pop_bool_flag ───────────────────────────────────────────────
+
+
+def test_pop_bool_flag_present_returns_true_and_removes():
+    rest = ["foo", "--force", "bar"]
+    assert pop_bool_flag(rest, "--force") is True
+    assert rest == ["foo", "bar"]
+
+
+def test_pop_bool_flag_absent_returns_false_and_no_change():
+    rest = ["foo", "bar"]
+    assert pop_bool_flag(rest, "--force") is False
+    assert rest == ["foo", "bar"]
+
+
+def test_pop_bool_flag_first_occurrence_only():
+    rest = ["--yes", "x", "--yes"]
+    assert pop_bool_flag(rest, "--yes") is True
+    assert rest == ["x", "--yes"]
 
 
 # ── read_json ───────────────────────────────────────────────────

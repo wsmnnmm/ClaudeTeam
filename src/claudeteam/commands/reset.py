@@ -20,7 +20,7 @@ import sys
 
 from claudeteam.commands import down as _down
 from claudeteam.runtime import paths
-from claudeteam.util import error_exit, help_requested
+from claudeteam.util import error_exit, help_requested, pop_bool_flag
 
 
 USAGE = "usage: claudeteam reset [--yes]"
@@ -41,9 +41,7 @@ def main(argv: list[str]) -> int:
     if help_requested(rest):
         print(USAGE)
         return 0
-    yes = "--yes" in rest
-    if yes:
-        rest.remove("--yes")
+    yes = pop_bool_flag(rest, "--yes")
     if rest:
         return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
 

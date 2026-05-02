@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config
 from claudeteam.store import local_facts
-from claudeteam.util import error_exit, pop_flag, usage_error
+from claudeteam.util import error_exit, pop_bool_flag, pop_flag, usage_error
 
 
 USAGE = (
@@ -42,9 +42,7 @@ def _parse(argv: list[str]) -> _Args | None:
     as_value = pop_flag(rest, "--as") or ""
     if "--reply" in rest or "--as" in rest:
         return None  # flag present but value missing
-    local = "--no-local" not in rest
-    if not local:
-        rest.remove("--no-local")
+    no_local = pop_bool_flag(rest, "--no-local")
     if not rest:
         return None
     return _Args(
@@ -52,7 +50,7 @@ def _parse(argv: list[str]) -> _Args | None:
         message=" ".join(rest),
         reply_to=reply_to,
         as_user=(as_value == "user"),
-        local=local,
+        local=not no_local,
     )
 
 
