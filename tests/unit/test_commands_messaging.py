@@ -25,6 +25,18 @@ def test_send_writes_inbox_and_prints_local_id():
         assert rows[0]["from"] == "manager"
 
 
+def test_send_touches_sender_heartbeat():
+    with isolated_env():
+        run_cli(["send", "worker", "manager", "do X"])
+        assert local_facts.get_heartbeat("manager") is not None
+
+
+def test_inbox_touches_agent_heartbeat():
+    with isolated_env():
+        run_cli(["inbox", "worker"])
+        assert local_facts.get_heartbeat("worker") is not None
+
+
 def test_send_priority_param_threads_through():
     with isolated_env():
         run_cli(["send", "a", "b", "msg", "高"])

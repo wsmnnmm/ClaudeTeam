@@ -28,6 +28,7 @@ def main(argv: list[str]) -> int:
     if not rows:
         print("👥 no agents have reported status yet")
         return 0
+    heartbeats = local_facts.all_heartbeats()
     name_w = max(len(r["agent"]) for r in rows)
     for r in rows:
         line = (
@@ -37,5 +38,8 @@ def main(argv: list[str]) -> int:
         if r.get("blocker"):
             line += f"  ⛔ {r['blocker']}"
         line += f"  ({_ago(r.get('updated_at', 0))})"
+        hb = heartbeats.get(r["agent"])
+        if hb:
+            line += f"  ♥ {_ago(hb)}"
         print(line)
     return 0

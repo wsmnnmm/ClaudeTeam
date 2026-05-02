@@ -19,6 +19,7 @@ def main(argv: list[str]) -> int:
         return 1
     agent, kind, content = argv[0], argv[1], argv[2]
     ref = argv[3] if len(argv) > 3 else ""
+    local_facts.touch_heartbeat(agent)
     local_id = local_facts.append_log(agent, kind, content, ref=ref)
     print(f"📝 logged: {agent}/{kind}  [{local_id}]")
     return 0

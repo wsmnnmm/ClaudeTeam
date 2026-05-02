@@ -86,3 +86,43 @@ def test_facts_dir_uses_state_dir_env():
         local_facts.append_message("a", "b", "x")
         assert facts_dir.exists()
         assert (facts_dir / "inbox.json").exists()
+
+
+# ── heartbeat ────────────────────────────────────────────────────
+
+
+def test_touch_heartbeat_records_now_for_agent():
+    with isolated_env():
+        local_facts.touch_heartbeat("worker")
+        ts = local_facts.get_heartbeat("worker")
+        assert ts is not None and ts > 0
+
+
+def test_touch_heartbeat_overwrites_previous_timestamp():
+    import time as _t
+    with isolated_env():
+        local_facts.touch_heartbeat("w")
+        first = local_facts.get_heartbeat("w")
+        _t.sleep(0.01)
+        local_facts.touch_heartbeat("w")
+        second = local_facts.get_heartbeat("w")
+        assert second >= first
+
+
+def test_touch_heartbeat_skips_blank_agent():
+    with isolated_env():
+        local_facts.touch_heartbeat("")
+        assert local_facts.all_heartbeats() == {}
+
+
+def test_all_heartbeats_returns_each_recorded_agent():
+    with isolated_env():
+        local_facts.touch_heartbeat("alice")
+        local_facts.touch_heartbeat("bob")
+        beats = local_facts.all_heartbeats()
+        assert set(beats) == {"alice", "bob"}
+
+
+def test_get_heartbeat_returns_none_for_unknown_agent():
+    with isolated_env():
+        assert local_facts.get_heartbeat("ghost") is None

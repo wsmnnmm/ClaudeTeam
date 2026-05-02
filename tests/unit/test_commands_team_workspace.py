@@ -35,6 +35,15 @@ def test_team_lists_all_agents_sorted_by_name():
         assert "⛔ no api key" in lines[2]
 
 
+def test_team_appends_heartbeat_marker_when_recorded():
+    with isolated_env():
+        run_cli(["status", "agent", "进行中", "task"])
+        # status command auto-touches heartbeat
+        rc, out, _ = run_cli(["team"])
+        assert rc == 0
+        assert "♥" in out
+
+
 def test_team_shows_relative_age():
     with isolated_env():
         run_cli(["status", "agent", "进行中", "task"])

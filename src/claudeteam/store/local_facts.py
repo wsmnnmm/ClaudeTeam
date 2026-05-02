@@ -147,6 +147,32 @@ def list_all_statuses() -> list[dict]:
     return [data["agents"][a] for a in sorted(data.get("agents", {}))]
 
 
+# ── heartbeats ────────────────────────────────────────────────────────
+
+
+def _heartbeat_file() -> Path:
+    return _facts_dir() / "heartbeats.json"
+
+
+def touch_heartbeat(agent: str) -> None:
+    """Record `agent` as alive right now. Cheap; safe to call from any command."""
+    if not agent:
+        return
+    with _locked():
+        path = _heartbeat_file()
+        data = _read_json(path, {})
+        data[agent] = _now_ms()
+        _write_json(path, data)
+
+
+def get_heartbeat(agent: str) -> int | None:
+    return _read_json(_heartbeat_file(), {}).get(agent)
+
+
+def all_heartbeats() -> dict[str, int]:
+    return dict(_read_json(_heartbeat_file(), {}))
+
+
 # ── log ───────────────────────────────────────────────────────────────
 
 

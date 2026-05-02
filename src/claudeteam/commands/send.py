@@ -18,6 +18,7 @@ def main(argv: list[str]) -> int:
         return 1
     to, frm, message = argv[0], argv[1], argv[2]
     priority = argv[3] if len(argv) > 3 else "中"
+    local_facts.touch_heartbeat(frm)
     local_id = local_facts.append_message(to, frm, message, priority=priority)
     print(f"sent → {to}  [local_id={local_id}]")
     return 0

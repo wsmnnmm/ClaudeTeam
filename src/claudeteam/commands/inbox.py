@@ -24,6 +24,7 @@ def main(argv: list[str]) -> int:
         print(USAGE, file=sys.stderr)
         return 1
     agent = argv[0]
+    local_facts.touch_heartbeat(agent)
     msgs = local_facts.list_messages(agent, unread_only=True)
     if not msgs:
         print(f"📭 {agent}: no unread messages")

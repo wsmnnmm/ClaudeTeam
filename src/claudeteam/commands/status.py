@@ -24,6 +24,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     agent = argv[0]
+    local_facts.touch_heartbeat(agent)
 
     # show mode
     if len(argv) == 1:

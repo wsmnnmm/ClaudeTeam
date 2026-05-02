@@ -62,6 +62,7 @@ def main(argv: list[str]) -> int:
 
     profile = config.lark_profile()
 
+    local_facts.touch_heartbeat(agent)
     if opts["local"]:
         local_facts.append_log(agent, "say", message)
 
