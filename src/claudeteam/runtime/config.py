@@ -24,10 +24,9 @@ without restart.  Writes are explicit via save_runtime_config().
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from claudeteam.util import env_path, read_json, write_json
+from claudeteam.util import env_path, env_str, read_json, write_json
 
 
 # ── path resolution ───────────────────────────────────────────────
@@ -75,12 +74,9 @@ def agent_cli(agent: str) -> str:
 def agent_model(agent: str) -> str:
     """Resolve model: agent-specific → CLAUDETEAM_DEFAULT_MODEL → team default → 'opus'."""
     cfg = agent_config(agent)
-    if cfg.get("model"):
-        return cfg["model"]
-    env_default = os.environ.get("CLAUDETEAM_DEFAULT_MODEL", "").strip()
-    if env_default:
-        return env_default
-    return load_team().get("default_model", "opus")
+    return (cfg.get("model")
+            or env_str("CLAUDETEAM_DEFAULT_MODEL")
+            or load_team().get("default_model", "opus"))
 
 
 # ── runtime_config.json ──────────────────────────────────────────
@@ -100,7 +96,4 @@ def chat_id() -> str:
 
 def lark_profile() -> str:
     """Resolve the lark-cli profile name; env beats file."""
-    env = os.environ.get("LARK_CLI_PROFILE", "").strip()
-    if env:
-        return env
-    return load_runtime_config().get("lark_profile", "")
+    return env_str("LARK_CLI_PROFILE") or load_runtime_config().get("lark_profile", "")

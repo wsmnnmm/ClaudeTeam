@@ -116,15 +116,21 @@ def write_json(path: Path, data) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def env_str(name: str) -> str:
+    """Return `os.environ[name].strip()` (empty str when unset). The strip
+    handles \`FOO=  bar  \` style sloppy quoting. Use \`env_str(...) or
+    \"<default>\"\` for the canonical env-or-default str chain."""
+    return os.environ.get(name, "").strip()
+
+
 def env_path(name: str) -> Path | None:
-    """Return `Path(os.environ[name].strip())` if the variable is set to a
-    non-empty value, else None. Designed for the env-or-default-path
-    pattern used by `paths.state_dir`, `config.team_file`, and
-    `config.runtime_config_file`:
+    """Return `Path(env_str(name))` if non-empty, else None. Designed for
+    the env-or-default-path pattern used by `paths.state_dir`,
+    `config.team_file`, and `config.runtime_config_file`:
 
         return env_path(\"FOO_DIR\") or Path.cwd() / \"foo\"
     """
-    val = os.environ.get(name, "").strip()
+    val = env_str(name)
     return Path(val) if val else None
 
 

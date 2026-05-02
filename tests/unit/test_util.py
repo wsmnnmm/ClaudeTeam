@@ -5,9 +5,37 @@ import tempfile
 from pathlib import Path
 
 from claudeteam.util import (
-    ago_ms, atomic_write_text, env_path, error_exit, flock, fmt_time_ms,
-    help_requested, now_ms, pop_flag, read_json, usage_error, warn,
+    ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
+    fmt_time_ms, help_requested, now_ms, pop_flag, read_json, usage_error,
+    warn,
 )
+
+
+# ── env_str ─────────────────────────────────────────────────────
+
+
+def test_env_str_returns_stripped_value():
+    import os as _os
+    _os.environ["X_TEST_ENV_STR"] = "  hello  "
+    try:
+        assert env_str("X_TEST_ENV_STR") == "hello"
+    finally:
+        _os.environ.pop("X_TEST_ENV_STR", None)
+
+
+def test_env_str_returns_empty_when_unset():
+    import os as _os
+    _os.environ.pop("X_TEST_ENV_STR_UNSET", None)
+    assert env_str("X_TEST_ENV_STR_UNSET") == ""
+
+
+def test_env_str_returns_empty_when_only_whitespace():
+    import os as _os
+    _os.environ["X_TEST_ENV_STR_WS"] = "   "
+    try:
+        assert env_str("X_TEST_ENV_STR_WS") == ""
+    finally:
+        _os.environ.pop("X_TEST_ENV_STR_WS", None)
 
 
 # ── env_path ────────────────────────────────────────────────────
