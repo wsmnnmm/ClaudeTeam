@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import tasks
-from claudeteam.util import fmt_time_ms, pop_flag, usage_error
+from claudeteam.util import error_exit, fmt_time_ms, pop_flag, usage_error
 
 
 USAGE = (
@@ -46,8 +46,7 @@ def _cmd_create(rest: list[str]) -> int:
     try:
         tid = tasks.create(assignee, title, description=desc, creator=by)
     except ValueError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ {e}")
     print(f"✅ created {tid}: {title} → {assignee}")
     return 0
 
@@ -64,11 +63,9 @@ def _cmd_update(rest: list[str]) -> int:
         ok = tasks.update(tid, status=status, assignee=assignee,
                           title=title, description=desc)
     except ValueError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ {e}")
     if not ok:
-        print(f"❌ no such task: {tid}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ no such task: {tid}")
     print(f"✅ updated {tid}")
     return 0
 
@@ -99,8 +96,7 @@ def _cmd_get(rest: list[str]) -> int:
         return usage_error(USAGE)
     t = tasks.get(rest[0])
     if t is None:
-        print(f"❌ no such task: {rest[0]}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ no such task: {rest[0]}")
     for line in _fmt_task(t):
         print(line)
     return 0
@@ -121,6 +117,5 @@ def main(argv: list[str]) -> int:
         return 0 if argv else 1
     sub = argv[0]
     if sub not in SUBCOMMANDS:
-        print(f"unknown task subcommand: {sub}\n{USAGE}", file=sys.stderr)
-        return 1
+        return error_exit(f"unknown task subcommand: {sub}\n{USAGE}")
     return SUBCOMMANDS[sub](list(argv[1:]))

@@ -24,7 +24,7 @@ from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, help_requested
+from claudeteam.util import ago_ms, error_exit, help_requested
 
 
 _OK = "✅"
@@ -186,7 +186,6 @@ def main(argv: list[str]) -> int:
 
     print("\n".join(out))
     if bad:
-        print(f"\n{_BAD} {bad} red check(s) — see above", file=sys.stderr)
-        return 1
+        return error_exit(f"\n{_BAD} {bad} red check(s) — see above")
     print(f"\n{_OK} all green")
     return 0

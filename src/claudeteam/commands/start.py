@@ -10,7 +10,7 @@ import sys
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
-from claudeteam.util import help_requested
+from claudeteam.util import error_exit, help_requested
 
 
 def main(argv: list[str]) -> int:
@@ -21,8 +21,7 @@ def main(argv: list[str]) -> int:
     team = config.load_team()
     agents = team.get("agents", {})
     if not agents:
-        print("❌ team.json has no agents", file=sys.stderr)
-        return 1
+        return error_exit("❌ team.json has no agents")
 
     session = team.get("session", "ClaudeTeam")
     agent_list = sorted(agents)
@@ -33,8 +32,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     if not tmux.new_session(session, window=first):
-        print(f"❌ failed to create tmux session {session}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ failed to create tmux session {session}")
     print(f"🚀 created tmux session {session} (initial window: {first})")
 
     for agent in agent_list:

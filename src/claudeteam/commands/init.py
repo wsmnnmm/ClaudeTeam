@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.runtime import config
-from claudeteam.util import help_requested, pop_flag, write_json
+from claudeteam.util import error_exit, help_requested, pop_flag, write_json
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -45,18 +45,15 @@ def main(argv: list[str]) -> int:
         rest.remove("--force")
     session = pop_flag(rest, "--session") or _DEFAULT_TEAM["session"]
     if rest:
-        print(f"❌ unexpected args: {rest}\n{USAGE}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
 
     team_path = config.team_file()
     rt_path = config.runtime_config_file()
 
     if team_path.exists() and not force:
-        print(f"❌ {team_path} already exists; pass --force to overwrite", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ {team_path} already exists; pass --force to overwrite")
     if rt_path.exists() and not force:
-        print(f"❌ {rt_path} already exists; pass --force to overwrite", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ {rt_path} already exists; pass --force to overwrite")
 
     team = dict(_DEFAULT_TEAM)
     team["session"] = session

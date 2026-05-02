@@ -21,6 +21,16 @@ def usage_error(usage: str) -> int:
     return 1
 
 
+def error_exit(msg: str, *, rc: int = 1) -> int:
+    """Print `msg` to stderr and return `rc` (default 1).
+
+    For \"something went wrong, exit non-zero\" sites that aren't a USAGE
+    print — e.g. \`return error_exit(f\"❌ unknown agent: {agent}\")\`.
+    """
+    print(msg, file=sys.stderr)
+    return rc
+
+
 def help_requested(argv: list[str]) -> bool:
     """True if argv contains \`-h\` or \`--help\`. Used by every subcommand
     so they share one form (some used \`argv[0] in (...)\`, others

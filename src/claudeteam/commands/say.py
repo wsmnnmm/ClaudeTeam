@@ -15,7 +15,7 @@ import sys
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config
 from claudeteam.store import local_facts
-from claudeteam.util import usage_error
+from claudeteam.util import error_exit, usage_error
 
 
 USAGE = (
@@ -57,8 +57,7 @@ def main(argv: list[str]) -> int:
 
     chat = config.chat_id()
     if not chat:
-        print("❌ chat_id not set in runtime_config.json", file=sys.stderr)
-        return 1
+        return error_exit("❌ chat_id not set in runtime_config.json")
 
     profile = config.lark_profile()
 
@@ -73,8 +72,7 @@ def main(argv: list[str]) -> int:
         reply_to=opts["reply_to"],
     )
     if result is None:
-        print(f"❌ Feishu send failed for {agent}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ Feishu send failed for {agent}")
 
     msg_id = result.get("message_id", "")
     print(f"✅ {agent} → chat ({msg_id})")

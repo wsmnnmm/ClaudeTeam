@@ -19,7 +19,7 @@ import sys
 from typing import Callable
 
 from claudeteam.runtime import config
-from claudeteam.util import help_requested, pop_flag
+from claudeteam.util import error_exit, help_requested, pop_flag
 
 
 USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N]"
@@ -57,11 +57,9 @@ def main(argv: list[str]) -> int:
     view = pop_flag(rest, "--view") or "daily"
     days = pop_flag(rest, "--days") or ""
     if rest:
-        print(f"❌ unexpected args: {rest}\n{USAGE}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
     if view not in {"daily", "monthly", "session", "blocks"}:
-        print(f"❌ unknown view: {view}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ unknown view: {view}")
 
     try:
         clis = {config.agent_cli(a) for a in config.agent_names()}

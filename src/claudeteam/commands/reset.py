@@ -20,7 +20,7 @@ import sys
 
 from claudeteam.commands import down as _down
 from claudeteam.runtime import paths
-from claudeteam.util import help_requested
+from claudeteam.util import error_exit, help_requested
 
 
 USAGE = "usage: claudeteam reset [--yes]"
@@ -45,13 +45,11 @@ def main(argv: list[str]) -> int:
     if yes:
         rest.remove("--yes")
     if rest:
-        print(f"❌ unexpected args: {rest}\n{USAGE}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
 
     sd = paths.state_dir()
     if not yes and not _confirm():
-        print("aborted", file=sys.stderr)
-        return 1
+        return error_exit("aborted")
 
     print("→ stopping daemons + tmux session")
     _down.main([])

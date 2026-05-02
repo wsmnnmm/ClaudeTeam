@@ -16,7 +16,7 @@ import sys
 import time
 
 from claudeteam.runtime import config, paths, tmux
-from claudeteam.util import help_requested
+from claudeteam.util import error_exit, help_requested
 
 
 def _kill_pid_file(name: str, pid_file) -> int:
@@ -36,8 +36,7 @@ def _kill_pid_file(name: str, pid_file) -> int:
         pid_file.unlink(missing_ok=True)
         return 0
     except PermissionError as e:
-        print(f"❌ {name}: not allowed to kill pid {pid}: {e}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ {name}: not allowed to kill pid {pid}: {e}")
 
     # Wait a few seconds for graceful shutdown
     for _ in range(30):

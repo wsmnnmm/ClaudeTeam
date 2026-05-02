@@ -5,8 +5,8 @@ import tempfile
 from pathlib import Path
 
 from claudeteam.util import (
-    ago_ms, atomic_write_text, flock, fmt_time_ms, help_requested,
-    now_ms, pop_flag, read_json, usage_error,
+    ago_ms, atomic_write_text, error_exit, flock, fmt_time_ms,
+    help_requested, now_ms, pop_flag, read_json, usage_error,
 )
 
 
@@ -121,6 +121,26 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
         (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
         atomic_write_text(target, "fresh")
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+# ── error_exit ──────────────────────────────────────────────────
+
+
+def test_error_exit_default_rc_is_one():
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = error_exit("❌ something broke")
+    assert rc == 1
+    assert "something broke" in err.getvalue()
+
+
+def test_error_exit_respects_custom_rc():
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = error_exit("oops", rc=2)
+    assert rc == 2
 
 
 # ── usage_error ─────────────────────────────────────────────────

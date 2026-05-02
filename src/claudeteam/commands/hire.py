@@ -11,7 +11,7 @@ import sys
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
-from claudeteam.util import usage_error
+from claudeteam.util import error_exit, usage_error
 
 
 USAGE = "usage: claudeteam hire <agent>"
@@ -25,8 +25,7 @@ def main(argv: list[str]) -> int:
     try:
         config.agent_config(agent)
     except KeyError:
-        print(f"❌ unknown agent: {agent} (not in team.json)", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
 
     session = config.session_name()
     if not tmux.has_session(session):
@@ -40,8 +39,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     if not tmux.new_window(target):
-        print(f"❌ failed to create window for {agent}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ failed to create window for {agent}")
 
     identity.write(agent)
     cfg = config.agent_config(agent)
@@ -53,8 +51,7 @@ def main(argv: list[str]) -> int:
     adapter = adapter_for_agent(agent)
     cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
     if not tmux.spawn_agent(target, cmd):
-        print(f"❌ failed to spawn CLI in {agent} pane", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ failed to spawn CLI in {agent} pane")
 
     local_facts.upsert_status(agent, "进行中", "initializing")
     print(f"✅ hired: {agent} ({config.agent_cli(agent)}) → {target}")

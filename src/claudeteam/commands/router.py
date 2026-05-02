@@ -16,7 +16,7 @@ from claudeteam.feishu import catchup
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, wake
-from claudeteam.util import help_requested
+from claudeteam.util import error_exit, help_requested
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -51,13 +51,11 @@ def main(argv: list[str]) -> int:
 
     chat = config.chat_id()
     if not chat:
-        print("❌ chat_id not set in runtime_config.json", file=sys.stderr)
-        return 1
+        return error_exit("❌ chat_id not set in runtime_config.json")
 
     agents = config.agent_names()
     if not agents:
-        print("❌ team.json has no agents", file=sys.stderr)
-        return 1
+        return error_exit("❌ team.json has no agents")
 
     pid_file = paths.router_pid_file()
     if not pidlock.acquire(pid_file, name="router"):
@@ -83,8 +81,7 @@ def main(argv: list[str]) -> int:
 
     try:
         if proc.stdout is None:
-            print("❌ lark-cli started without stdout pipe", file=sys.stderr)
-            return 1
+            return error_exit("❌ lark-cli started without stdout pipe")
 
         loop_kwargs = dict(
             team_agents=agents,

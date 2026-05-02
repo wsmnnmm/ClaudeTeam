@@ -18,7 +18,7 @@ import time
 from claudeteam.commands import start as _start
 from claudeteam.runtime import config, paths, tmux
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
-from claudeteam.util import help_requested
+from claudeteam.util import error_exit, help_requested
 
 
 def _ensure_started() -> int:
@@ -40,8 +40,7 @@ def _ensure_daemon(name: str, pid_file_path, spawn_argv: list[str]) -> int:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          env=os.environ.copy())
     except OSError as e:
-        print(f"❌ failed to spawn {name}: {e}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ failed to spawn {name}: {e}")
     # Give the daemon a beat to write its pid file
     for _ in range(20):
         if pid_file_path.exists():

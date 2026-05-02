@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
-from claudeteam.util import usage_error
+from claudeteam.util import error_exit, usage_error
 
 
 USAGE = "usage: claudeteam read <local_id>"
@@ -18,7 +18,6 @@ def main(argv: list[str]) -> int:
         return usage_error(USAGE)
     local_id = argv[0]
     if not local_facts.mark_read(local_id):
-        print(f"❌ no such message: {local_id}", file=sys.stderr)
-        return 1
+        return error_exit(f"❌ no such message: {local_id}")
     print(f"✅ marked read: {local_id}")
     return 0
