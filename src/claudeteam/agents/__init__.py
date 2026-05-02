@@ -1,0 +1,40 @@
+"""CLI adapter registry — maps a `cli` identifier to its CliAdapter."""
+from __future__ import annotations
+
+from .base import CliAdapter
+from .claude_code import ClaudeCodeAdapter
+from .codex_cli import CodexCliAdapter
+from .kimi_code import KimiCodeAdapter
+
+
+_kimi = KimiCodeAdapter()
+_REGISTRY: dict[str, CliAdapter] = {
+    "claude-code": ClaudeCodeAdapter(),
+    "codex-cli": CodexCliAdapter(),
+    "kimi-code": _kimi,
+    "kimi-cli": _kimi,  # alias: upstream package name
+}
+
+
+def known_clis() -> tuple[str, ...]:
+    return tuple(_REGISTRY)
+
+
+def get_adapter(cli_name: str) -> CliAdapter:
+    """Return the adapter for `cli_name`. Raises KeyError if not registered."""
+    try:
+        return _REGISTRY[cli_name]
+    except KeyError:
+        raise KeyError(
+            f"unknown cli: {cli_name!r} (known: {', '.join(_REGISTRY)})"
+        ) from None
+
+
+def adapter_for_agent(agent: str) -> CliAdapter:
+    """Look up the agent's `cli` from team.json and return its adapter.
+
+    Convenience over `get_adapter(config.agent_cli(agent))`; the routing
+    layer reaches for this whenever it needs to spawn or inspect a pane.
+    """
+    from claudeteam.runtime.config import agent_cli
+    return get_adapter(agent_cli(agent))
