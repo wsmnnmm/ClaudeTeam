@@ -9,10 +9,9 @@
 from __future__ import annotations
 
 import sys
-import time
 
 from claudeteam.store import tasks
-from claudeteam.util import pop_flag
+from claudeteam.util import fmt_time_ms, pop_flag
 
 
 USAGE = (
@@ -26,7 +25,7 @@ USAGE = (
 
 
 def _fmt_task(t: dict) -> list[str]:
-    ts = time.strftime("%m-%d %H:%M", time.localtime(t["created_at"] / 1000))
+    ts = fmt_time_ms(t["created_at"])
     head = f"{t['id']}  [{t['status']}]  {t['title']}"
     body = [f"  assignee: {t.get('assignee') or '-'}"]
     if t.get("creator"):

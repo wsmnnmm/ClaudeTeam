@@ -4,7 +4,43 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from claudeteam.util import ago_ms, atomic_write_text, flock, pop_flag, read_json
+from claudeteam.util import (
+    ago_ms, atomic_write_text, flock, fmt_time_ms, now_ms, pop_flag, read_json,
+)
+
+
+# ── now_ms ──────────────────────────────────────────────────────
+
+
+def test_now_ms_returns_milliseconds():
+    import time as _t
+    before = int(_t.time() * 1000)
+    n = now_ms()
+    after = int(_t.time() * 1000)
+    assert before <= n <= after
+
+
+# ── fmt_time_ms ─────────────────────────────────────────────────
+
+
+def test_fmt_time_ms_returns_question_for_zero():
+    assert fmt_time_ms(0) == "?"
+
+
+def test_fmt_time_ms_default_format_is_minute_precision():
+    # 2026-01-15 14:30:00 local time → ms epoch
+    import time as _t
+    epoch = int(_t.mktime((2026, 1, 15, 14, 30, 0, 0, 0, -1))) * 1000
+    out = fmt_time_ms(epoch)
+    assert "01-15" in out and "14:30" in out
+    assert ":00" not in out  # no seconds in default fmt
+
+
+def test_fmt_time_ms_custom_format_includes_seconds():
+    import time as _t
+    epoch = int(_t.mktime((2026, 1, 15, 14, 30, 45, 0, 0, -1))) * 1000
+    out = fmt_time_ms(epoch, fmt="%m-%d %H:%M:%S")
+    assert "14:30:45" in out
 
 
 # ── ago_ms ──────────────────────────────────────────────────────

@@ -19,12 +19,11 @@ simplified to ~110 LOC for the rebuild branch:
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
-from claudeteam.util import flock, read_json, write_json
+from claudeteam.util import flock, now_ms, read_json, write_json
 
 
 def _inbox_file() -> Path:
@@ -39,12 +38,8 @@ def _log_file() -> Path:
     return _facts_dir() / "logs.jsonl"
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _new_id(prefix: str) -> str:
-    return f"{prefix}_{_now_ms()}_{uuid.uuid4().hex[:10]}"
+    return f"{prefix}_{now_ms()}_{uuid.uuid4().hex[:10]}"
 
 
 def _locked():
@@ -68,7 +63,7 @@ def append_message(to: str, frm: str, content: str, *,
             "content": str(content or ""),
             "priority": priority,
             "task_id": task_id,
-            "created_at": _now_ms(),
+            "created_at": now_ms(),
             "read": False,
             "read_at": None,
         })
@@ -91,7 +86,7 @@ def mark_read(local_id: str) -> bool:
         for msg in data.get("messages", []):
             if msg.get("local_id") == local_id:
                 msg["read"] = True
-                msg["read_at"] = _now_ms()
+                msg["read_at"] = now_ms()
                 write_json(path, data)
                 return True
     return False
@@ -109,7 +104,7 @@ def upsert_status(agent: str, status: str, task: str, *, blocker: str = "") -> N
             "status": status,
             "task": task,
             "blocker": blocker,
-            "updated_at": _now_ms(),
+            "updated_at": now_ms(),
         }
         write_json(path, data)
 
@@ -138,7 +133,7 @@ def touch_heartbeat(agent: str) -> None:
     with _locked():
         path = _heartbeat_file()
         data = read_json(path, {})
-        data[agent] = _now_ms()
+        data[agent] = now_ms()
         write_json(path, data)
 
 
@@ -161,7 +156,7 @@ def append_log(agent: str, kind: str, content: str, *, ref: str = "") -> str:
         "type": kind,
         "content": str(content or ""),
         "ref": ref,
-        "created_at": _now_ms(),
+        "created_at": now_ms(),
     }
     with _locked():
         path = _log_file()

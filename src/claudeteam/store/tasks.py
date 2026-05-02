@@ -14,11 +14,10 @@ Status vocabulary: 待处理 / 进行中 / 已完成 / 已取消
 """
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from claudeteam.runtime import paths
-from claudeteam.util import flock, read_json, write_json
+from claudeteam.util import flock, now_ms, read_json, write_json
 
 
 VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
@@ -28,10 +27,6 @@ TERMINAL_STATUSES = {"已完成", "已取消"}
 
 def _file() -> Path:
     return paths.state_dir() / "tasks.json"
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _locked():
@@ -58,7 +53,7 @@ def create(assignee: str, title: str, *,
         data = _load()
         data["_meta"]["last_id"] = data["_meta"].get("last_id", 0) + 1
         tid = f"T-{data['_meta']['last_id']}"
-        now = _now_ms()
+        now = now_ms()
         data.setdefault("tasks", []).append({
             "id": tid,
             "title": title.strip(),
@@ -88,7 +83,7 @@ def update(task_id: str, *, status: str | None = None,
             if status is not None:
                 task["status"] = status
                 if status in TERMINAL_STATUSES:
-                    task["completed_at"] = _now_ms()
+                    task["completed_at"] = now_ms()
                 else:
                     task["completed_at"] = None
             if assignee is not None:
@@ -97,7 +92,7 @@ def update(task_id: str, *, status: str | None = None,
                 task["title"] = title.strip()
             if description is not None:
                 task["description"] = description
-            task["updated_at"] = _now_ms()
+            task["updated_at"] = now_ms()
             _save(data)
             return True
     return False

@@ -6,19 +6,12 @@ audit log per agent.
 from __future__ import annotations
 
 import sys
-import time
 
 from claudeteam.store import local_facts
-from claudeteam.util import pop_flag
+from claudeteam.util import fmt_time_ms, pop_flag
 
 
 USAGE = "usage: claudeteam workspace <agent> [--limit N]"
-
-
-def _fmt_time(ms: int) -> str:
-    if not ms:
-        return "?"
-    return time.strftime("%m-%d %H:%M:%S", time.localtime(ms / 1000))
 
 
 def main(argv: list[str]) -> int:
@@ -44,6 +37,6 @@ def main(argv: list[str]) -> int:
     print(f"📂 {agent}: last {len(rows)} log entries")
     for r in rows:
         ref = f"  ({r['ref']})" if r.get("ref") else ""
-        print(f"── [{_fmt_time(r.get('created_at', 0))}] {r.get('type', '?')}{ref}")
+        print(f"── [{fmt_time_ms(r.get('created_at', 0), fmt="%m-%d %H:%M:%S")}] {r.get('type', '?')}{ref}")
         print(f"   {r.get('content', '')}")
     return 0

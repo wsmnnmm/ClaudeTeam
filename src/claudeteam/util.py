@@ -82,6 +82,22 @@ def write_json(path: Path, data) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def now_ms() -> int:
+    """Wall-clock time in epoch milliseconds (the rebuild's canonical
+    timestamp resolution). Local stores all serialize this directly."""
+    return int(time.time() * 1000)
+
+
+def fmt_time_ms(ms: int, *, fmt: str = "%m-%d %H:%M") -> str:
+    """Format an epoch-ms timestamp as local time. Returns `?` for falsy
+    inputs (uninitialized rows). Default `%m-%d %H:%M` matches inbox /
+    task listings; pass `fmt="%m-%d %H:%M:%S"` for log lines.
+    """
+    if not ms:
+        return "?"
+    return time.strftime(fmt, time.localtime(ms / 1000))
+
+
 def ago_ms(ms: int, *, now: float | None = None) -> str:
     """Format a millisecond epoch timestamp as `Ns ago / Nm ago / Nh ago / Nd ago`.
 

@@ -5,18 +5,12 @@ List unread messages for an agent. Read messages don't appear by default.
 from __future__ import annotations
 
 import sys
-import time
 
 from claudeteam.store import local_facts
+from claudeteam.util import fmt_time_ms
 
 
 USAGE = "usage: claudeteam inbox <agent>"
-
-
-def _fmt_time(ms: int) -> str:
-    if not ms:
-        return "?"
-    return time.strftime("%m-%d %H:%M", time.localtime(ms / 1000))
 
 
 def main(argv: list[str]) -> int:
@@ -31,7 +25,7 @@ def main(argv: list[str]) -> int:
         return 0
     print(f"📬 {agent}: {len(msgs)} unread")
     for m in msgs:
-        ts = _fmt_time(m.get("created_at", 0))
+        ts = fmt_time_ms(m.get("created_at", 0))
         local_id = m.get("local_id", "")
         frm = m.get("from", "?")
         priority = m.get("priority", "?")
