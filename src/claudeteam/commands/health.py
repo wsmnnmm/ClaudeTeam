@@ -36,7 +36,6 @@ def _check_state_dir(out: list[str]) -> None:
 
 
 def _check_team(out: list[str]) -> int:
-    bad = 0
     tf = config.team_file()
     if not tf.exists():
         out.append(f"  {_BAD} team.json missing at {tf}")
@@ -50,7 +49,7 @@ def _check_team(out: list[str]) -> int:
     out.append(f"  {_OK} team.json: {len(agents)} agent(s) ({tf})")
     if not agents:
         out.append(f"  {_WARN} team.json has no agents")
-    return bad
+    return 0
 
 
 def _check_runtime_config(out: list[str]) -> int:
