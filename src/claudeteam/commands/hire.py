@@ -24,6 +24,7 @@ def main(argv: list[str]) -> int:
         cfg = config.agent_config(agent)
     except KeyError:
         return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
+    cli = cfg.get("cli", "claude-code")
 
     session = config.session_name()
     if not tmux.has_session(session):
@@ -41,7 +42,7 @@ def main(argv: list[str]) -> int:
     identity.write(agent)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
-        print(f"✅ hired (lazy): {agent} ({config.agent_cli(agent)}) → {target}")
+        print(f"✅ hired (lazy): {agent} ({cli}) → {target}")
         return 0
 
     adapter = adapter_for_agent(agent)
@@ -50,5 +51,5 @@ def main(argv: list[str]) -> int:
         return error_exit(f"❌ failed to spawn CLI in {agent} pane")
 
     local_facts.upsert_status(agent, "进行中", "initializing")
-    print(f"✅ hired: {agent} ({config.agent_cli(agent)}) → {target}")
+    print(f"✅ hired: {agent} ({cli}) → {target}")
     return 0
