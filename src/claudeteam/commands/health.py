@@ -102,8 +102,10 @@ def _check_agents(out: list[str], session: str, agents: list[str], session_alive
             text = tmux.capture_pane(target, lines=80)
             if any(m in text for m in adapter.ready_markers()):
                 out.append(f"  {_OK} {line}: pane ready ({config.agent_cli(agent)}){hb_suffix}")
+            elif config.agent_config(agent).get("lazy"):
+                out.append(f"  {_OK} {line}: lazy pane (CLI starts on first message){hb_suffix}")
             else:
-                out.append(f"  {_WARN} {line}: pane up but no CLI ready marker (lazy or starting?){hb_suffix}")
+                out.append(f"  {_WARN} {line}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}")
         except Exception as e:
             out.append(f"  {_WARN} {line}: probe failed — {e}")
     return bad

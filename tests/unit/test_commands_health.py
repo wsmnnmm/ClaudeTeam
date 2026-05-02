@@ -89,7 +89,19 @@ def test_health_warns_when_pane_up_but_no_cli_marker():
             session_alive=True, panes_with_cli=[], panes_without_cli=["manager"]):
         rc, out, _ = run_cli(["health"])
         assert rc == 0  # warning only
-        assert "no CLI ready marker" in out
+        assert "CLI not ready yet" in out
+
+
+def test_health_lazy_pane_without_marker_is_green():
+    """A pane marked lazy in team.json is expected to have no ready marker
+    until first message. Don't yellow-flag the operator over expected state."""
+    team = {"session": "S", "agents": {"sleeper": {"cli": "claude-code", "lazy": True}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=[], panes_without_cli=["sleeper"]):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "lazy pane" in out
+        assert "CLI not ready yet" not in out
 
 
 def test_health_warns_when_lark_profile_blank():
