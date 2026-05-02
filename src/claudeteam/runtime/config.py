@@ -28,6 +28,8 @@ import json
 import os
 from pathlib import Path
 
+from claudeteam.util import atomic_write_text
+
 
 # ── path resolution ───────────────────────────────────────────────
 
@@ -102,9 +104,8 @@ def load_runtime_config() -> dict:
 
 
 def save_runtime_config(cfg: dict) -> None:
-    path = runtime_config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(runtime_config_file(),
+                      json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
 
 
 def chat_id() -> str:

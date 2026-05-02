@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from claudeteam.runtime import paths
+from claudeteam.util import atomic_write_text
 
 
 VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
@@ -57,11 +58,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    p = _file()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(p)
+    atomic_write_text(_file(), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 # ── public API ────────────────────────────────────────────────────
