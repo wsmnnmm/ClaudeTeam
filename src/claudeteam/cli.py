@@ -62,11 +62,8 @@ def _usage() -> str:
         "usage: claudeteam <command> [args...]",
         "",
         "commands:",
+        *[f"  {name}" for name in sorted(COMMANDS)],
     ]
-    for name in sorted(COMMANDS):
-        lines.append(f"  {name}")
-    if not COMMANDS:
-        lines.append("  (none registered yet)")
     return "\n".join(lines)
 
 
