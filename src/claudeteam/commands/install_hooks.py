@@ -27,8 +27,14 @@ USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
 
 _HEAD = """\
 You are a ClaudeTeam agent. Read $CLAUDETEAM_STATE_DIR/agents/<your-name>/identity.md
-to confirm your name (or check `tmux display-message -p '#W'` if env is unset);
-your name comes from the tmux window you're running in.
+to confirm your name. If env is unset, look up YOUR pane's window name
+explicitly — never the global active one — with:
+
+    tmux display-message -t "$TMUX_PANE" -p '#W'
+
+(Bare `tmux display-message -p '#W'` returns whatever window the operator
+is focused on, NOT yours; that path made the manager pane self-identify
+as `worker_kimi` in round 7 smoke and call `claudeteam say worker_kimi`.)
 
 """
 

@@ -111,6 +111,27 @@ def test_up_help():
     assert "usage: claudeteam up" in out
 
 
+def test_up_warns_when_daemon_spawn_fails():
+    """REGRESSION (round 7 D4): up was printing '✅ team up' even when
+    router/watchdog Popen raised OSError (e.g. 'claudeteam' not on PATH).
+    Now must say 'team up with errors' and return non-zero."""
+    team = {"session": "S", "agents": {"manager": {}}}
+
+    def boom_popen(argv, *args, **kwargs):
+        raise OSError(2, "No such file or directory: 'claudeteam'")
+
+    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+            attr_patch(subprocess, Popen=boom_popen), \
+            _fake_alive([False, False]):
+        rc, out, err = run_cli(["up"])
+        assert rc != 0
+        # Specific failure shown
+        assert "failed to spawn" in (out + err)
+        # Footer reflects the failure, NOT "✅ team up"
+        assert "✅ team up" not in out
+        assert "team up with errors" in out
+
+
 # ── down ────────────────────────────────────────────────────────
 
 

@@ -24,19 +24,30 @@ def send_text(chat_id: str, text: str, *, profile: str = "", as_user: bool = Fal
               reply_to: str = "", lark_run: Callable = _real_run) -> dict | None:
     """Send a plain-text message to a Feishu chat.
 
+    When `reply_to` is set we route through `im +messages-reply` (which
+    takes `--message-id <om_xxx>` to attach as a reply). Otherwise we use
+    `+messages-send`. Both subcommands accept the same identity / text
+    flags; only the attachment-to-parent-message differs.
+
     Returns the lark-cli `data` dict (typically `{"chat_id": ..., "message_id": ...}`)
     on success, None on failure.
     """
     if not chat_id:
         return None
-    args = [
-        "im", "+messages-send",
-        "--chat-id", chat_id,
-        "--text", text,
-        *_as(as_user),
-    ]
     if reply_to:
-        args += ["--reply-to", reply_to]
+        args = [
+            "im", "+messages-reply",
+            "--message-id", reply_to,
+            "--text", text,
+            *_as(as_user),
+        ]
+    else:
+        args = [
+            "im", "+messages-send",
+            "--chat-id", chat_id,
+            "--text", text,
+            *_as(as_user),
+        ]
     return lark_run(args, profile=profile)
 
 

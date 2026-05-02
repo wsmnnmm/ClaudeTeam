@@ -24,17 +24,27 @@ def test_send_text_as_user_when_flag_set():
     assert args[i + 1] == "user"
 
 
-def test_send_text_passes_reply_to_when_provided():
+def test_send_text_routes_to_messages_reply_when_reply_to_set():
+    """REGRESSION (round 7 D1): lark-cli +messages-send has no --reply-to;
+    replies must go through +messages-reply with --message-id."""
     spy = _Spy({})
     chat.send_text("oc_x", "x", reply_to="om_parent", lark_run=spy)
     args = spy.calls[0]["args"]
-    assert "--reply-to" in args and "om_parent" in args
+    assert "+messages-reply" in args
+    assert "+messages-send" not in args
+    assert "--message-id" in args
+    assert "om_parent" in args
+    # No --reply-to flag (lark-cli rejects it)
+    assert "--reply-to" not in args
 
 
-def test_send_text_omits_reply_to_by_default():
+def test_send_text_uses_messages_send_when_no_reply_to():
     spy = _Spy({})
     chat.send_text("oc_x", "x", lark_run=spy)
-    assert "--reply-to" not in spy.calls[0]["args"]
+    args = spy.calls[0]["args"]
+    assert "+messages-send" in args
+    assert "+messages-reply" not in args
+    assert "--chat-id" in args and "oc_x" in args
 
 
 def test_send_text_returns_none_when_chat_id_empty():

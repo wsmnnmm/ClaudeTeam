@@ -59,5 +59,9 @@ def main(argv: list[str]) -> int:
     for spec in watchdog.all_known_specs():
         rc |= _ensure_daemon(spec)
 
-    print("✅ team up — run `claudeteam health` to verify")
+    if rc == 0:
+        print("✅ team up — run `claudeteam health` to verify")
+    else:
+        print("⚠️  team up with errors — see above; "
+              "`claudeteam health` will list which daemons died")
     return rc
