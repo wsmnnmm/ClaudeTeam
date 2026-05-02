@@ -14,6 +14,12 @@ from typing import Callable
 from claudeteam.feishu.lark import run as _real_run
 
 
+def _as(as_user: bool) -> list[str]:
+    """lark-cli identity flag fragment: `--as user` (with OAuth) or
+    `--as bot` (with the app's im:message scope)."""
+    return ["--as", "user" if as_user else "bot"]
+
+
 def send_text(chat_id: str, text: str, *, profile: str = "", as_user: bool = False,
               reply_to: str = "", lark_run: Callable = _real_run) -> dict | None:
     """Send a plain-text message to a Feishu chat.
@@ -27,7 +33,7 @@ def send_text(chat_id: str, text: str, *, profile: str = "", as_user: bool = Fal
         "im", "+messages-send",
         "--chat-id", chat_id,
         "--text", text,
-        "--as", "user" if as_user else "bot",
+        *_as(as_user),
     ]
     if reply_to:
         args += ["--reply-to", reply_to]
@@ -44,7 +50,7 @@ def send_card(chat_id: str, card: dict, *, profile: str = "", as_user: bool = Fa
         "--chat-id", chat_id,
         "--msg-type", "interactive",
         "--content", json.dumps(card, ensure_ascii=False),
-        "--as", "user" if as_user else "bot",
+        *_as(as_user),
     ]
     return lark_run(args, profile=profile)
 
@@ -62,7 +68,7 @@ def list_recent(chat_id: str, *, page_size: int = 20, profile: str = "",
         "im", "+chat-messages-list",
         "--chat-id", chat_id,
         "--page-size", str(page_size),
-        "--as", "user" if as_user else "bot",
+        *_as(as_user),
         "--format", "json",
     ]
     data = lark_run(args, profile=profile)
