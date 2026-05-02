@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from typing import Callable
 
+from claudeteam.util import error_exit
+
 
 CommandHandler = Callable[[list[str]], int | None]
 
@@ -76,9 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = args[0], args[1:]
     handler = COMMANDS.get(cmd)
     if handler is None:
-        print(f"unknown command: {cmd}\n", file=sys.stderr)
-        print(_usage(), file=sys.stderr)
-        return 1
+        return error_exit(f"unknown command: {cmd}\n\n{_usage()}")
     return int(handler(rest) or 0)
 
 
