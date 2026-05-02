@@ -66,18 +66,29 @@ def _ndjson_event(message_id: str, sender_id: str, text: str,
     })
 
 
+_DEFAULT_AGENTS = ["manager", "worker_codex", "worker_kimi"]
+
+
+def _run_lines(lines, *, team_agents=None, **extra):
+    """Drive subscribe.process_lines with the smoke deployment defaults
+    (chat_id=oc_smoke, real apply, the 3-agent team). Override anything
+    via kwargs."""
+    return subscribe.process_lines(
+        lines,
+        team_agents=team_agents or _DEFAULT_AGENTS,
+        chat_id="oc_smoke",
+        apply_fn=apply,
+        **extra,
+    )
+
+
 # ── Scenario A: human → manager ──────────────────────────────────
 
 
 def test_human_message_lands_in_manager_inbox_and_pane():
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_human_1", "ou_user", "please help")
-        stats = subscribe.process_lines(
-            [line],
-            team_agents=["manager", "worker_codex", "worker_kimi"],
-            chat_id="oc_smoke",
-            apply_fn=apply,
-        )
+        stats = _run_lines([line])
         assert stats.handled == 1
         assert stats.dropped == 0
 
@@ -101,12 +112,7 @@ def test_human_message_lands_in_manager_inbox_and_pane():
 def test_mention_routes_to_codex_with_m_enter_first():
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_mention_1", "ou_user", "@worker_codex review")
-        subscribe.process_lines(
-            [line],
-            team_agents=["manager", "worker_codex", "worker_kimi"],
-            chat_id="oc_smoke",
-            apply_fn=apply,
-        )
+        _run_lines([line])
         # codex got it, manager did not
         codex_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:worker_codex"]
         assert len(codex_inj) == 1
@@ -123,12 +129,7 @@ def test_mention_routes_to_codex_with_m_enter_first():
 def test_repeated_message_id_only_delivered_once():
     with _isolated(), _fake_inject() as inj:
         same_line = _ndjson_event("om_dup", "ou_user", "ping")
-        stats = subscribe.process_lines(
-            [same_line, same_line, same_line],
-            team_agents=["manager"],
-            chat_id="oc_smoke",
-            apply_fn=apply,
-        )
+        stats = _run_lines([same_line, same_line, same_line], team_agents=["manager"])
         assert stats.handled == 1
         assert stats.dropped == 2
         assert stats.drops_by_reason.get("dedup") == 2
@@ -144,12 +145,7 @@ def test_repeated_message_id_only_delivered_once():
 def test_message_from_other_chat_is_ignored():
     with _isolated(), _fake_inject() as inj:
         wrong = _ndjson_event("om_other_1", "ou_user", "hi", chat_id="oc_other_team")
-        stats = subscribe.process_lines(
-            [wrong],
-            team_agents=["manager"],
-            chat_id="oc_smoke",
-            apply_fn=apply,
-        )
+        stats = _run_lines([wrong], team_agents=["manager"])
         assert stats.handled == 0
         assert stats.drops_by_reason.get("cross_team") == 1
         assert local_facts.list_messages("manager") == []
@@ -170,13 +166,7 @@ def test_mixed_traffic_classifies_each_event_correctly():
             "not-json",                                                  # bad_json
             _ndjson_event("om_5", "ou_user", "@worker_kimi @worker_codex"),  # → both
         ]
-        stats = subscribe.process_lines(
-            events,
-            team_agents=["manager", "worker_codex", "worker_kimi"],
-            chat_id="oc_smoke",
-            bot_id="ou_bot",
-            apply_fn=apply,
-        )
+        stats = _run_lines(events, bot_id="ou_bot")
         assert stats.handled == 3  # om_1, om_2, om_5
         assert stats.dropped == 4  # empty, bot_self, dedup, bad_json
 
