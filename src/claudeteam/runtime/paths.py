@@ -6,13 +6,11 @@ not set, falls back to `~/.claudeteam`.
 
 Layout:
     $CLAUDETEAM_STATE_DIR/
-        facts/                   ← inbox.json, status.json, logs.jsonl
-        router.pid               ← long-running daemon pid files
+        facts/             ← inbox.json, status.json, logs.jsonl, heartbeats.json
+        agents/<name>/     ← per-agent identity.md
+        router.pid         ← daemon pid files
         watchdog.pid
-        kanban_sync.pid
-        router.cursor            ← replay state
-        router_messages/         ← per-agent injected message bodies
-        inject_locks/            ← per-pane mutex files
+        router.cursor      ← catchup replay state
 """
 from __future__ import annotations
 
@@ -29,7 +27,7 @@ def state_dir() -> Path:
 
 
 def facts_dir() -> Path:
-    """Where local_facts stores inbox / status / log."""
+    """Where local_facts stores inbox / status / log / heartbeats."""
     return state_dir() / "facts"
 
 
@@ -50,19 +48,3 @@ def router_cursor_file() -> Path:
 
 def watchdog_pid_file() -> Path:
     return state_file("watchdog.pid")
-
-
-def kanban_pid_file() -> Path:
-    return state_file("kanban_sync.pid")
-
-
-def router_messages_dir() -> Path:
-    p = state_dir() / "router_messages"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def inject_locks_dir() -> Path:
-    p = state_dir() / "inject_locks"
-    p.mkdir(parents=True, exist_ok=True)
-    return p

@@ -55,24 +55,7 @@ def test_named_pid_files_land_in_state_dir():
         with _state_env(tmp):
             assert paths.router_pid_file() == Path(tmp) / "router.pid"
             assert paths.watchdog_pid_file() == Path(tmp) / "watchdog.pid"
-            assert paths.kanban_pid_file() == Path(tmp) / "kanban_sync.pid"
             assert paths.router_cursor_file() == Path(tmp) / "router.cursor"
-
-
-def test_router_messages_dir_is_created():
-    with tempfile.TemporaryDirectory() as tmp:
-        with _state_env(tmp):
-            d = paths.router_messages_dir()
-            assert d == Path(tmp) / "router_messages"
-            assert d.exists() and d.is_dir()
-
-
-def test_inject_locks_dir_is_created():
-    with tempfile.TemporaryDirectory() as tmp:
-        with _state_env(tmp):
-            d = paths.inject_locks_dir()
-            assert d == Path(tmp) / "inject_locks"
-            assert d.exists() and d.is_dir()
 
 
 def test_state_dir_re_reads_env_each_call():

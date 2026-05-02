@@ -33,6 +33,8 @@ from claudeteam.commands import (
     watchdog as _watchdog,
     task as _task,
     health as _health,
+    up as _up,
+    down as _down,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -50,6 +52,8 @@ COMMANDS: dict[str, CommandHandler] = {
     "start": _start.main,
     "hire": _hire.main,
     "fire": _fire.main,
+    "up": _up.main,
+    "down": _down.main,
     # feishu transport
     "say": _say.main,
     "router": _router.main,
