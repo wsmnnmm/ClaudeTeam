@@ -105,3 +105,26 @@ def test_run_keeps_proxy_env_when_no_proxy_unset():
     with env_patch(HTTPS_PROXY="http://x"):
         lark.call(["x"], run=rec)
         assert rec.calls[0]["kwargs"]["env"].get("HTTPS_PROXY") == "http://x"
+
+
+# ── subprocess_env (public, used by router daemon Popen) ──────────
+
+
+def test_subprocess_env_strips_proxy_when_no_proxy_set():
+    """REGRESSION: round 6 smoke proved the router daemon's Popen
+    inherits HTTPS_PROXY untouched and lark-cli +subscribe then fails
+    to deliver events. router now calls lark.subprocess_env() to get
+    the same proxy-stripped env that lark.call uses."""
+    with env_patch(LARK_CLI_NO_PROXY="1",
+                   HTTPS_PROXY="http://proxy.example:7890",
+                   HTTP_PROXY="http://proxy.example:7890"):
+        env = lark.subprocess_env()
+    assert "HTTPS_PROXY" not in env
+    assert "HTTP_PROXY" not in env
+    assert env.get("LARK_CLI_NO_PROXY") == "1"
+
+
+def test_subprocess_env_keeps_proxy_when_no_proxy_unset():
+    with env_patch(HTTPS_PROXY="http://x", LARK_CLI_NO_PROXY=None):
+        env = lark.subprocess_env()
+    assert env.get("HTTPS_PROXY") == "http://x"

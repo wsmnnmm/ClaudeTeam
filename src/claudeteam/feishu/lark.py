@@ -26,7 +26,12 @@ from claudeteam.util import env_str
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 
 
-def _build_env() -> dict[str, str]:
+def subprocess_env() -> dict[str, str]:
+    """Build the env to hand to any lark-cli subprocess (one-shot `call` or
+    long-running `event +subscribe`). Strips HTTP/HTTPS proxy vars when
+    LARK_CLI_NO_PROXY is truthy, since lark-cli doesn't honor that variable
+    itself — it's a wrapper-side flag.
+    """
     env = os.environ.copy()
     if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
         for key in _PROXY_KEYS:
@@ -65,7 +70,7 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
     timeout_s = _resolve_timeout(timeout)
     t0 = time.monotonic()
     try:
-        r = run(cmd, capture_output=True, text=True, timeout=timeout_s, env=_build_env())
+        r = run(cmd, capture_output=True, text=True, timeout=timeout_s, env=subprocess_env())
     except subprocess.TimeoutExpired:
         elapsed = (time.monotonic() - t0)
         print(f"  ⚠️ lark-cli timeout ({timeout_s}s after {elapsed:.1f}s): {' '.join(args[:3])}")

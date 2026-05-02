@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 
-from claudeteam.feishu import catchup
+from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, wake
@@ -63,12 +63,17 @@ def main(argv: list[str]) -> int:
     print(f"🚀 router subscribing on chat {chat} (profile={profile or '<default>'})")
 
     try:
+        # Use lark.subprocess_env() so HTTPS_PROXY gets stripped when
+        # LARK_CLI_NO_PROXY=1. Round 6 smoke proved the daemon Popen
+        # otherwise inherits the proxy verbatim, blocking event delivery
+        # from lark-cli's long-poll endpoint.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,  # line-buffered
+            env=lark.subprocess_env(),
         )
     except FileNotFoundError:
         pidlock.release(pid_file)
