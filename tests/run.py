@@ -25,11 +25,11 @@ for _p in (SRC, TESTS):
 
 
 def _discover() -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    for sub in ("unit", "smoke"):
-        for path in sorted((ROOT / "tests" / sub).glob("test_*.py")):
-            out.append((path.stem, path.parent.name))
-    return out
+    return [
+        (path.stem, path.parent.name)
+        for sub in ("unit", "smoke")
+        for path in sorted((ROOT / "tests" / sub).glob("test_*.py"))
+    ]
 
 
 def _run_module(name: str, sub: str) -> tuple[int, int, list[str]]:
