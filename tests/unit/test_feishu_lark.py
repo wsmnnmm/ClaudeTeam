@@ -1,7 +1,6 @@
 """Tests for feishu/lark.py — subprocess wrapper around lark-cli."""
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import dataclass
 
@@ -102,9 +101,6 @@ def test_run_strips_https_proxy_when_no_proxy_env_set():
 
 def test_run_keeps_proxy_env_when_no_proxy_unset():
     rec = _Recorder(_R(stdout="{}"))
-    os.environ["HTTPS_PROXY"] = "http://x"
-    try:
+    with env_patch(HTTPS_PROXY="http://x"):
         lark.call(["x"], run=rec)
         assert rec.calls[0]["kwargs"]["env"].get("HTTPS_PROXY") == "http://x"
-    finally:
-        os.environ.pop("HTTPS_PROXY", None)
