@@ -69,6 +69,35 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
 
 
 @contextlib.contextmanager
+def env_patch(**kvs):
+    """Temporarily set os.environ vars; pass `val=None` to delete the var
+    for the duration. Originals are saved and restored on exit, even if
+    the test raises.
+
+        with env_patch(FOO_DIR=tmp, BAR=None):
+            ...
+
+    Sister to `attr_patch` — same save/swap/restore pattern, applied to
+    process env vars instead of module attributes.
+    """
+    import os as _os
+    old = {k: _os.environ.get(k) for k in kvs}
+    for k, v in kvs.items():
+        if v is None:
+            _os.environ.pop(k, None)
+        else:
+            _os.environ[k] = str(v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+
+
+@contextlib.contextmanager
 def attr_patch(module, **stubs):
     """Temporarily replace named attributes on `module` with the given
     callables (or any value). Restored on exit, even if the test raises.

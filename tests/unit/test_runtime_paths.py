@@ -1,28 +1,17 @@
 """Tests for runtime/paths.py — env-driven state directory layout."""
 from __future__ import annotations
 
-import contextlib
-import os
 import tempfile
 from pathlib import Path
 
+from helpers import env_patch
 from claudeteam.runtime import paths
 
 
-@contextlib.contextmanager
 def _state_env(value):
-    old = os.environ.get("CLAUDETEAM_STATE_DIR")
-    if value is None:
-        os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-    else:
-        os.environ["CLAUDETEAM_STATE_DIR"] = str(value)
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-        else:
-            os.environ["CLAUDETEAM_STATE_DIR"] = old
+    """Sugar over env_patch; legacy callers in this file still pass a
+    single positional value."""
+    return env_patch(CLAUDETEAM_STATE_DIR=value)
 
 
 def test_state_dir_falls_back_to_home_when_env_unset():

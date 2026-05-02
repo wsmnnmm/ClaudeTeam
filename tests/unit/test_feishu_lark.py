@@ -1,11 +1,11 @@
 """Tests for feishu/lark.py — subprocess wrapper around lark-cli."""
 from __future__ import annotations
 
-import contextlib
 import os
 import subprocess
 from dataclasses import dataclass
 
+from helpers import env_patch
 from claudeteam.feishu import lark
 
 
@@ -26,19 +26,9 @@ class _Recorder:
         return self.result
 
 
-@contextlib.contextmanager
 def _no_proxy_env():
-    old = os.environ.get("LARK_CLI_NO_PROXY")
-    os.environ["LARK_CLI_NO_PROXY"] = "1"
-    os.environ["HTTPS_PROXY"] = "http://proxy.example:7890"
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop("LARK_CLI_NO_PROXY", None)
-        else:
-            os.environ["LARK_CLI_NO_PROXY"] = old
-        os.environ.pop("HTTPS_PROXY", None)
+    """Stage the env so lark-cli will strip HTTPS_PROXY before invoking npx."""
+    return env_patch(LARK_CLI_NO_PROXY="1", HTTPS_PROXY="http://proxy.example:7890")
 
 
 def test_run_builds_npx_lark_cli_argv_with_profile():
