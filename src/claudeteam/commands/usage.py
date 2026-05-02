@@ -27,13 +27,17 @@ USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N
 _VIEWS = ("daily", "monthly", "session", "blocks")
 
 
-def _run_ccusage(view: str, *, runner: Callable | None = None) -> tuple[int, str]:
+def _run_ccusage(view: str, days: str = "",
+                 *, runner: Callable | None = None) -> tuple[int, str]:
     """Invoke ccusage via npx and return (rc, combined_output)."""
     if runner is None:
         runner = lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=60)
     if shutil.which("npx") is None:
         return 1, "(npx not on PATH; install Node.js to use ccusage)"
-    r = runner(["npx", "-y", "ccusage", view])
+    argv = ["npx", "-y", "ccusage", view]
+    if days:
+        argv += ["--days", days]
+    r = runner(argv)
     out = (r.stdout or "") + (r.stderr or "")
     return r.returncode, out
 
@@ -73,8 +77,7 @@ def main(argv: list[str]) -> int:
 
     if "claude-code" in clis:
         print("\nclaude-code (via ccusage):")
-        view_arg = view if not days else f"{view} --days {days}"
-        rc, out = _run_ccusage(view_arg)
+        rc, out = _run_ccusage(view, days)
         if rc != 0:
             print("  ⚠️  ccusage failed:")
             for line in (out or "").splitlines():

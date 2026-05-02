@@ -84,8 +84,9 @@ def test_usage_view_flag_threads_through():
     team = {"agents": {"manager": {"cli": "claude-code"}}}
     captured = {}
 
-    def fake_run(view, *, runner=None):
+    def fake_run(view, days="", *, runner=None):
         captured["view"] = view
+        captured["days"] = days
         return 0, "ok"
 
     with attr_patch(_usage_mod, _run_ccusage=fake_run), \
@@ -93,6 +94,33 @@ def test_usage_view_flag_threads_through():
         rc, _, _ = run_cli(["usage", "--view", "monthly"])
         assert rc == 0
         assert captured["view"] == "monthly"
+
+
+def test_usage_days_flag_passed_as_separate_argv_element():
+    """Regression: previously `--days N` was concatenated into the view
+    string and arrived as a single argv element like `"daily --days 7"`."""
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    captured = {}
+
+    def fake_runner(argv):
+        captured["argv"] = list(argv)
+
+        class R:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+        return R()
+
+    saved_run = _usage_mod._run_ccusage
+
+    def patched_run(view, days="", *, runner=None):
+        return saved_run(view, days, runner=fake_runner)
+
+    with attr_patch(_usage_mod, _run_ccusage=patched_run), \
+            isolated_env(team=team), _stub_npx_present(True):
+        rc, _, _ = run_cli(["usage", "--days", "7"])
+        assert rc == 0
+        assert captured["argv"] == ["npx", "-y", "ccusage", "daily", "--days", "7"]
 
 
 def test_usage_rejects_unknown_view():
