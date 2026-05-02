@@ -46,12 +46,9 @@ def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
     """If the message starts with `[agent]` and `agent` is on the team,
     strip it and return (agent, remaining_text); else ("", text)."""
     m = _SENDER_RE.match(text)
-    if not m:
+    if not m or m.group(1) not in agents:
         return "", text
-    name = m.group(1)
-    if name not in agents:
-        return "", text
-    return name, text[m.end():].lstrip()
+    return m.group(1), text[m.end():].lstrip()
 
 
 def _parse_mentions(text: str, agents: set[str]) -> list[str]:
