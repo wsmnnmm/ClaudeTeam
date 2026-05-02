@@ -20,13 +20,15 @@ import subprocess
 import time
 from typing import Callable
 
+from claudeteam.util import env_str
+
 
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 
 
 def _build_env() -> dict[str, str]:
     env = os.environ.copy()
-    if env.get("LARK_CLI_NO_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
         for key in _PROXY_KEYS:
             env.pop(key, None)
     return env
@@ -43,7 +45,7 @@ def _resolve_timeout(explicit: int | None) -> int:
     if explicit is not None:
         return explicit
     try:
-        return int(os.environ.get("CLAUDETEAM_LARK_TIMEOUT", "90"))
+        return int(env_str("CLAUDETEAM_LARK_TIMEOUT") or "90")
     except ValueError:
         return 90
 
