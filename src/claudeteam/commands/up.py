@@ -60,4 +60,4 @@ def main(argv: list[str]) -> int:
         rc |= _ensure_daemon(spec)
 
     print("✅ team up — run `claudeteam health` to verify")
-    return 0 if rc == 0 else 1
+    return rc

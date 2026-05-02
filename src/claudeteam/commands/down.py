@@ -73,4 +73,4 @@ def main(argv: list[str]) -> int:
         print(f"⏭  tmux session {session} not running")
 
     print("✅ team down" if rc == 0 else "⚠️  team down with warnings")
-    return 0 if rc == 0 else 1
+    return rc
