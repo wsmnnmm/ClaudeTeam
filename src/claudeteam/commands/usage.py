@@ -64,7 +64,8 @@ def main(argv: list[str]) -> int:
         return error_exit(f"❌ unknown view: {view} (valid: {' / '.join(_VIEWS)})")
 
     try:
-        clis = {config.agent_cli(a) for a in config.agent_names()}
+        agents = config.load_team().get("agents", {})
+        clis = {a.get("cli", "claude-code") for a in agents.values()}
     except Exception:
         clis = set()
 
