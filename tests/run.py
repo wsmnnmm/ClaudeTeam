@@ -24,8 +24,9 @@ if str(SRC) not in sys.path:
 
 def _discover() -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
-    for path in sorted((ROOT / "tests" / "unit").glob("test_*.py")):
-        out.append((path.stem, path.parent.name))
+    for sub in ("unit", "smoke"):
+        for path in sorted((ROOT / "tests" / sub).glob("test_*.py")):
+            out.append((path.stem, path.parent.name))
     return out
 
 
