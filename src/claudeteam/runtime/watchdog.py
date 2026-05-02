@@ -157,16 +157,31 @@ def supervise(specs: list[ProcessSpec],
 # ── default specs for ClaudeTeam ──────────────────────────────────
 
 
+def _claudeteam_spec(name: str, pid_file: Path) -> ProcessSpec:
+    """Build a ProcessSpec for a `claudeteam <name>` daemon. The cmdline-match
+    string is just `\"claudeteam\"` so any process whose argv contains the
+    word counts — defends against PID reuse, doesn't lock to argv shape."""
+    return ProcessSpec(
+        name=name,
+        pid_file=pid_file,
+        expected_cmdline="claudeteam",
+        spawn_cmd=["claudeteam", name],
+    )
+
+
 def default_specs() -> list[ProcessSpec]:
-    """Built-in spec set: just the router for now. Pid path comes from
-    `paths.router_pid_file()` which already honours `$CLAUDETEAM_STATE_DIR`,
-    so callers don't need to pass a root."""
+    """Specs the watchdog supervises. Just the router — the watchdog
+    doesn't supervise itself."""
+    from claudeteam.runtime import paths
+    return [_claudeteam_spec("router", paths.router_pid_file())]
+
+
+def all_known_specs() -> list[ProcessSpec]:
+    """Every daemon ClaudeTeam ships, for `health` and similar audits.
+    Includes the watchdog itself so health can verify its lock file
+    matches a live process."""
     from claudeteam.runtime import paths
     return [
-        ProcessSpec(
-            name="router",
-            pid_file=paths.router_pid_file(),
-            expected_cmdline="claudeteam",
-            spawn_cmd=["claudeteam", "router"],
-        ),
+        _claudeteam_spec("router", paths.router_pid_file()),
+        _claudeteam_spec("watchdog", paths.watchdog_pid_file()),
     ]

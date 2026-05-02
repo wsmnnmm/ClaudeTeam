@@ -20,7 +20,7 @@ import os
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
-from claudeteam.runtime import config, paths, tmux
+from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.store import local_facts
 from claudeteam.util import ago_ms, error_exit, help_requested
@@ -164,20 +164,8 @@ def main(argv: list[str]) -> int:
     out.append("")
 
     out.append("daemons:")
-    router_spec = ProcessSpec(
-        name="router",
-        pid_file=paths.router_pid_file(),
-        expected_cmdline="claudeteam",
-        spawn_cmd=["claudeteam", "router"],
-    )
-    watchdog_spec = ProcessSpec(
-        name="watchdog",
-        pid_file=paths.watchdog_pid_file(),
-        expected_cmdline="claudeteam",
-        spawn_cmd=["claudeteam", "watchdog"],
-    )
-    bad += _check_daemon(out, router_spec)
-    bad += _check_daemon(out, watchdog_spec)
+    for spec in watchdog.all_known_specs():
+        bad += _check_daemon(out, spec)
     out.append("")
 
     out.append("router state:")
