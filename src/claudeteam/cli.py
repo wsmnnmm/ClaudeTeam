@@ -22,6 +22,8 @@ from claudeteam.commands import (
     read as _read,
     status as _status,
     log as _log,
+    team as _team,
+    workspace as _workspace,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -30,6 +32,8 @@ COMMANDS: dict[str, CommandHandler] = {
     "read": _read.main,
     "status": _status.main,
     "log": _log.main,
+    "team": _team.main,
+    "workspace": _workspace.main,
 }
 
 

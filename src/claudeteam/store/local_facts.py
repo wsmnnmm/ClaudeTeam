@@ -147,6 +147,12 @@ def get_status(agent: str) -> dict | None:
     return _read_json(_status_file(), {"agents": {}}).get("agents", {}).get(agent)
 
 
+def list_all_statuses() -> list[dict]:
+    """Latest status row for every agent that ever upserted, sorted by name."""
+    data = _read_json(_status_file(), {"agents": {}})
+    return [data["agents"][a] for a in sorted(data.get("agents", {}))]
+
+
 # ── log ───────────────────────────────────────────────────────────────
 
 
