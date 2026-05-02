@@ -24,9 +24,13 @@ from claudeteam.commands import (
     log as _log,
     team as _team,
     workspace as _workspace,
+    start as _start,
+    hire as _hire,
+    fire as _fire,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
+    # local store I/O
     "send": _send.main,
     "inbox": _inbox.main,
     "read": _read.main,
@@ -34,6 +38,10 @@ COMMANDS: dict[str, CommandHandler] = {
     "log": _log.main,
     "team": _team.main,
     "workspace": _workspace.main,
+    # team lifecycle
+    "start": _start.main,
+    "hire": _hire.main,
+    "fire": _fire.main,
 }
 
 

@@ -57,6 +57,16 @@ def new_window(target: Target, *, run: Callable = _default_run) -> bool:
     return r.returncode == 0
 
 
+def kill_window(target: Target, *, run: Callable = _default_run) -> bool:
+    r = run(["tmux", "kill-window", "-t", str(target)])
+    return r.returncode == 0
+
+
+def kill_session(session: str, *, run: Callable = _default_run) -> bool:
+    r = run(["tmux", "kill-session", "-t", session])
+    return r.returncode == 0
+
+
 def send_text(target: Target, text: str, *, run: Callable = _default_run) -> bool:
     """Send literal text (no key interpretation) to a pane.
 
