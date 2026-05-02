@@ -6,7 +6,7 @@ from pathlib import Path
 
 from claudeteam.util import (
     ago_ms, atomic_write_text, error_exit, flock, fmt_time_ms,
-    help_requested, now_ms, pop_flag, read_json, usage_error,
+    help_requested, now_ms, pop_flag, read_json, usage_error, warn,
 )
 
 
@@ -121,6 +121,18 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
         (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
         atomic_write_text(target, "fresh")
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+# ── warn ────────────────────────────────────────────────────────
+
+
+def test_warn_writes_to_stderr_returns_none():
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rv = warn("just a warning")
+    assert rv is None
+    assert "just a warning" in err.getvalue()
 
 
 # ── error_exit ──────────────────────────────────────────────────

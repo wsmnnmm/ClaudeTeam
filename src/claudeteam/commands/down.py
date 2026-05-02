@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import os
 import signal
-import sys
 import time
 
 from claudeteam.runtime import config, paths, tmux
-from claudeteam.util import error_exit, help_requested
+from claudeteam.util import error_exit, help_requested, warn
 
 
 def _kill_pid_file(name: str, pid_file) -> int:
@@ -66,7 +65,7 @@ def main(argv: list[str]) -> int:
         if tmux.kill_session(session):
             print(f"🛑 tmux session {session} killed")
         else:
-            print(f"⚠️  failed to kill tmux session {session}", file=sys.stderr)
+            warn(f"⚠️  failed to kill tmux session {session}")
             rc |= 1
     else:
         print(f"⏭  tmux session {session} not running")

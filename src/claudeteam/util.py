@@ -31,6 +31,13 @@ def error_exit(msg: str, *, rc: int = 1) -> int:
     return rc
 
 
+def warn(msg: str) -> None:
+    """Print `msg` to stderr without exiting. For non-fatal issues where
+    the caller wants to continue (\`continue\` in a loop, \`rc |= 1\` to
+    flag, etc.). Pair with `error_exit` when the same site needs to bail."""
+    print(msg, file=sys.stderr)
+
+
 def help_requested(argv: list[str]) -> bool:
     """True if argv contains \`-h\` or \`--help\`. Used by every subcommand
     so they share one form (some used \`argv[0] in (...)\`, others

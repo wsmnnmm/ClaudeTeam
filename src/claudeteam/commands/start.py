@@ -5,12 +5,10 @@ window per agent, each running its configured CLI.
 """
 from __future__ import annotations
 
-import sys
-
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
-from claudeteam.util import error_exit, help_requested
+from claudeteam.util import error_exit, help_requested, warn
 
 
 def main(argv: list[str]) -> int:
@@ -39,8 +37,7 @@ def main(argv: list[str]) -> int:
         target = tmux.Target(session, agent)
         if agent != first:
             if not tmux.new_window(target):
-                print(f"⚠️  failed to create window for {agent}, skipping",
-                      file=sys.stderr)
+                warn(f"⚠️  failed to create window for {agent}, skipping")
                 continue
         cfg = config.agent_config(agent)
         identity.write(agent)
@@ -51,7 +48,7 @@ def main(argv: list[str]) -> int:
         adapter = adapter_for_agent(agent)
         cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
         if not tmux.spawn_agent(target, cmd):
-            print(f"⚠️  failed to spawn CLI in {agent} pane", file=sys.stderr)
+            warn(f"⚠️  failed to spawn CLI in {agent} pane")
             continue
         local_facts.upsert_status(agent, "进行中", "initializing")
         print(f"  → {agent} ({config.agent_cli(agent)}) spawned")
