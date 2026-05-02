@@ -40,10 +40,11 @@ def main(argv: list[str]) -> int:
                 warn(f"⚠️  failed to create window for {agent}, skipping")
                 continue
         cfg = config.agent_config(agent)
+        cli = cfg.get("cli", "claude-code")
         identity.write(agent)
         if cfg.get("lazy"):
             local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
-            print(f"  → {agent} ({config.agent_cli(agent)}) lazy-pane ready")
+            print(f"  → {agent} ({cli}) lazy-pane ready")
             continue
         adapter = adapter_for_agent(agent)
         cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
@@ -51,7 +52,7 @@ def main(argv: list[str]) -> int:
             warn(f"⚠️  failed to spawn CLI in {agent} pane")
             continue
         local_facts.upsert_status(agent, "进行中", "initializing")
-        print(f"  → {agent} ({config.agent_cli(agent)}) spawned")
+        print(f"  → {agent} ({cli}) spawned")
 
     print(f"✅ team {session} started ({len(agent_list)} agents)")
     return 0
