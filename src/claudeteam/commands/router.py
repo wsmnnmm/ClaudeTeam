@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 
+from claudeteam.feishu import catchup
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, wake
@@ -87,8 +88,29 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             print("❌ lark-cli started without stdout pipe", file=sys.stderr)
             return 1
+
         def _apply_with_wake(decision):
             return _deliver_apply(decision, wake_fn=wake.wake_if_dormant)
+
+        def _on_progress(decision, stats):
+            catchup.record_decision(decision)
+
+        # Catchup: replay anything newer than the cursor before going live
+        try:
+            pending = catchup.pending_lines(chat, profile=profile)
+        except Exception as e:
+            print(f"⚠️  catchup fetch failed: {e}", file=sys.stderr)
+            pending = []
+        if pending:
+            print(f"📥 catching up {len(pending)} missed message(s)")
+            process_lines(
+                iter(pending),
+                team_agents=agents,
+                chat_id=chat,
+                default_target="manager",
+                apply_fn=_apply_with_wake,
+                on_progress=_on_progress,
+            )
 
         stats = process_lines(
             proc.stdout,
@@ -96,6 +118,7 @@ def main(argv: list[str]) -> int:
             chat_id=chat,
             default_target="manager",
             apply_fn=_apply_with_wake,
+            on_progress=_on_progress,
         )
         print(f"router exited: handled={stats.handled} dropped={stats.dropped}")
         return 0 if proc.wait() == 0 else 1

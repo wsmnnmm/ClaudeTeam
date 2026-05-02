@@ -29,6 +29,7 @@ class Decision:
     text: str = ""                                      # cleaned message text
     msg_id: str = ""
     reason: str = ""                                    # drop reason or "" on route
+    create_time: str = ""                               # epoch ms (for catchup cursor)
 
     def is_drop(self) -> bool:
         return self.action is Action.DROP
@@ -91,31 +92,32 @@ def classify_event(event: dict, *,
     """
     agents = set(team_agents)
     msg_id = event.get("message_id", "")
+    create_time = str(event.get("create_time", ""))
     if not msg_id:
-        return Decision(Action.DROP, reason="no_msg_id")
+        return Decision(Action.DROP, reason="no_msg_id", create_time=create_time)
     if seen_msg_ids is not None and msg_id in seen_msg_ids:
-        return Decision(Action.DROP, msg_id=msg_id, reason="dedup")
+        return Decision(Action.DROP, msg_id=msg_id, reason="dedup", create_time=create_time)
     if chat_id and event.get("chat_id") and event["chat_id"] != chat_id:
-        return Decision(Action.DROP, msg_id=msg_id, reason="cross_team")
+        return Decision(Action.DROP, msg_id=msg_id, reason="cross_team", create_time=create_time)
     if bot_id and event.get("sender_id") == bot_id:
-        return Decision(Action.DROP, msg_id=msg_id, reason="bot_self")
+        return Decision(Action.DROP, msg_id=msg_id, reason="bot_self", create_time=create_time)
 
     raw_text = (event.get("text") or "").strip()
     if not raw_text:
-        return Decision(Action.DROP, msg_id=msg_id, reason="empty")
+        return Decision(Action.DROP, msg_id=msg_id, reason="empty", create_time=create_time)
 
     sender, text = _parse_sender(raw_text, agents)
     mentions = [a for a in _parse_mentions(text, agents) if a != sender]
 
     if mentions:
         return Decision(Action.ROUTE, targets=mentions, sender=sender,
-                        text=text, msg_id=msg_id)
+                        text=text, msg_id=msg_id, create_time=create_time)
 
     if not sender:
         # human / unknown sender → manager (or configured default)
         return Decision(Action.ROUTE, targets=[default_target],
-                        text=text, msg_id=msg_id)
+                        text=text, msg_id=msg_id, create_time=create_time)
 
     # agent-tagged message with no @-target → broadcast with nobody to hear it
     return Decision(Action.DROP, sender=sender, text=text,
-                    msg_id=msg_id, reason="agent_no_target")
+                    msg_id=msg_id, reason="agent_no_target", create_time=create_time)

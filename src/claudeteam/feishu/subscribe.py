@@ -47,6 +47,7 @@ def _normalise(raw: dict) -> dict:
         "sender_id": sender.get("sender_id", {}).get("open_id") or ev.get("sender_id", ""),
         "text": text or ev.get("text", ""),
         "msg_type": msg.get("message_type", ev.get("msg_type", "text")),
+        "create_time": msg.get("create_time", ev.get("create_time", "")),
     }
 
 
