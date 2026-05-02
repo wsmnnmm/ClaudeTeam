@@ -17,6 +17,7 @@ CommandHandler = Callable[[list[str]], int | None]
 # Subcommand registry. Adding a new command means: write a module under
 # claudeteam.commands, expose a `main(argv)` callable, register it here.
 from claudeteam.commands import (
+    init as _init,
     send as _send,
     inbox as _inbox,
     read as _read,
@@ -34,6 +35,8 @@ from claudeteam.commands import (
 )
 
 COMMANDS: dict[str, CommandHandler] = {
+    # bootstrap
+    "init": _init.main,
     # local store I/O
     "send": _send.main,
     "inbox": _inbox.main,
