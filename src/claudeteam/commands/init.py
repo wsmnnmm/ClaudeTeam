@@ -12,6 +12,7 @@ import json
 import sys
 
 from claudeteam.runtime import config
+from claudeteam.util import atomic_write_text
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -47,8 +48,7 @@ def _pull_flag(rest: list[str], flag: str) -> str | None:
 
 
 def _write_json(path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def main(argv: list[str]) -> int:

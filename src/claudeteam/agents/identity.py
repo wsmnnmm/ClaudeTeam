@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from claudeteam.runtime import config, paths
+from claudeteam.util import atomic_write_text
 
 
 _MANAGER_BODY = """\
@@ -118,7 +119,5 @@ def write(agent: str, *, role: str | None = None,
           cli: str | None = None, model: str | None = None) -> Path:
     """Render and persist the identity file; return its path."""
     target = identity_path(agent)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render(agent, role=role, cli=cli, model=model),
-                      encoding="utf-8")
+    atomic_write_text(target, render(agent, role=role, cli=cli, model=model))
     return target

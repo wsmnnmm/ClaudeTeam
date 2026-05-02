@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
+from claudeteam.util import atomic_write_text
 
 
 def _inbox_file() -> Path:
@@ -68,10 +69,7 @@ def _read_json(path: Path, default):
 
 
 def _write_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 # ── inbox ─────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ from typing import Callable, Iterable
 
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import paths
+from claudeteam.util import atomic_write_text
 
 
 # ── cursor persistence ─────────────────────────────────────────
@@ -46,12 +47,10 @@ def write_cursor(message_id: str, create_time: str) -> None:
     """Persist the last-seen message marker. No-op if either field is empty."""
     if not message_id or not create_time:
         return
-    p = paths.router_cursor_file()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
+    atomic_write_text(
+        paths.router_cursor_file(),
         json.dumps({"message_id": message_id, "create_time": str(create_time)},
                    ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
 

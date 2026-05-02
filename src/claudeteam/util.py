@@ -6,6 +6,20 @@ belongs in its own module under runtime/, store/, or feishu/.
 from __future__ import annotations
 
 import time
+from pathlib import Path
+
+
+def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Write `content` to `path` via tmp + rename so a crash mid-write
+    can't leave the destination half-written.
+
+    Creates parent directories if missing. Idempotent on retry: a leftover
+    tmp from a previous crash gets clobbered next time.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding=encoding)
+    tmp.replace(path)
 
 
 def ago_ms(ms: int, *, now: float | None = None) -> str:

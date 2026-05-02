@@ -1,7 +1,10 @@
 """Tests for src/claudeteam/util.py — small shared helpers."""
 from __future__ import annotations
 
-from claudeteam.util import ago_ms
+import tempfile
+from pathlib import Path
+
+from claudeteam.util import ago_ms, atomic_write_text
 
 
 # ── ago_ms ──────────────────────────────────────────────────────
@@ -37,3 +40,54 @@ def test_ago_ms_days_above_86400():
 def test_ago_ms_clamps_to_zero_when_now_is_earlier_than_ms():
     # negative durations clamp to 0s
     assert ago_ms(10000, now=5.0) == "0s ago"
+
+
+# ── atomic_write_text ───────────────────────────────────────────
+
+
+def test_atomic_write_creates_file_and_writes_content():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.txt"
+        atomic_write_text(target, "hello")
+        assert target.read_text(encoding="utf-8") == "hello"
+
+
+def test_atomic_write_creates_parent_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "deep" / "nested" / "dir" / "out.txt"
+        atomic_write_text(target, "x")
+        assert target.exists()
+        assert target.parent.exists()
+
+
+def test_atomic_write_overwrites_via_rename():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.txt"
+        target.write_text("old", encoding="utf-8")
+        atomic_write_text(target, "new")
+        assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_atomic_write_leaves_no_tmp_after_success():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.txt"
+        atomic_write_text(target, "x")
+        sibling = list(Path(tmp).iterdir())
+        assert len(sibling) == 1 and sibling[0].name == "out.txt"
+
+
+def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
+    """Simulate a crash that left a .tmp behind; next call must succeed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.txt"
+        # leftover from "previous crash"
+        (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
+        atomic_write_text(target, "fresh")
+        assert target.read_text(encoding="utf-8") == "fresh"
+
+
+def test_atomic_write_respects_encoding_arg():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.txt"
+        atomic_write_text(target, "中文", encoding="utf-8")
+        assert target.read_bytes().decode("utf-8") == "中文"
