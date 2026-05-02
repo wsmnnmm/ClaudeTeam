@@ -92,32 +92,31 @@ def classify_event(event: dict, *,
     """
     agents = set(team_agents)
     msg_id = event.get("message_id", "")
-    create_time = str(event.get("create_time", ""))
+    common = {"msg_id": msg_id, "create_time": str(event.get("create_time", ""))}
     if not msg_id:
-        return Decision(Action.DROP, reason="no_msg_id", create_time=create_time)
+        return Decision(Action.DROP, reason="no_msg_id", **common)
     if seen_msg_ids is not None and msg_id in seen_msg_ids:
-        return Decision(Action.DROP, msg_id=msg_id, reason="dedup", create_time=create_time)
+        return Decision(Action.DROP, reason="dedup", **common)
     if chat_id and event.get("chat_id") and event["chat_id"] != chat_id:
-        return Decision(Action.DROP, msg_id=msg_id, reason="cross_team", create_time=create_time)
+        return Decision(Action.DROP, reason="cross_team", **common)
     if bot_id and event.get("sender_id") == bot_id:
-        return Decision(Action.DROP, msg_id=msg_id, reason="bot_self", create_time=create_time)
+        return Decision(Action.DROP, reason="bot_self", **common)
 
     raw_text = (event.get("text") or "").strip()
     if not raw_text:
-        return Decision(Action.DROP, msg_id=msg_id, reason="empty", create_time=create_time)
+        return Decision(Action.DROP, reason="empty", **common)
 
     sender, text = _parse_sender(raw_text, agents)
     mentions = [a for a in _parse_mentions(text, agents) if a != sender]
 
     if mentions:
         return Decision(Action.ROUTE, targets=mentions, sender=sender,
-                        text=text, msg_id=msg_id, create_time=create_time)
+                        text=text, **common)
 
     if not sender:
         # human / unknown sender → manager (or configured default)
-        return Decision(Action.ROUTE, targets=[default_target],
-                        text=text, msg_id=msg_id, create_time=create_time)
+        return Decision(Action.ROUTE, targets=[default_target], text=text, **common)
 
     # agent-tagged message with no @-target → broadcast with nobody to hear it
     return Decision(Action.DROP, sender=sender, text=text,
-                    msg_id=msg_id, reason="agent_no_target", create_time=create_time)
+                    reason="agent_no_target", **common)
