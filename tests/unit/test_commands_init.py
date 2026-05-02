@@ -1,35 +1,18 @@
 """Tests for `claudeteam init` — first-time bootstrap."""
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import tempfile
 from pathlib import Path
 
-from helpers import run_cli
+from helpers import env_patch, isolated_env, run_cli
 
 
-@contextlib.contextmanager
 def _tmp_env():
-    """Set CLAUDETEAM_TEAM_FILE / RUNTIME_CONFIG to fresh tmp paths.
-
-    init writes config files at-rest, not into a state dir, so we
-    isolate the *file* paths rather than re-using helpers.isolated_env().
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        old = {k: os.environ.get(k) for k in
-               ("CLAUDETEAM_TEAM_FILE", "CLAUDETEAM_RUNTIME_CONFIG")}
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(Path(tmp) / "team.json")
-        os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(Path(tmp) / "runtime_config.json")
-        try:
-            yield Path(tmp)
-        finally:
-            for k, v in old.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+    """init only cares about team.json + runtime_config.json paths;
+    isolated_env (no team= / runtime_config= args) already gives a fresh
+    tempdir with those env vars pointing at non-existent files."""
+    return isolated_env()
 
 
 def test_init_writes_both_files_and_returns_zero():
@@ -122,13 +105,11 @@ def test_init_session_flag_combines_with_force():
 def test_init_writes_files_in_subdirs_when_envs_point_there():
     with tempfile.TemporaryDirectory() as tmp:
         nested = Path(tmp) / "configs" / "team-alpha"
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(nested / "team.json")
-        os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(nested / "rc.json")
-        try:
+        with env_patch(
+            CLAUDETEAM_TEAM_FILE=str(nested / "team.json"),
+            CLAUDETEAM_RUNTIME_CONFIG=str(nested / "rc.json"),
+        ):
             rc, _, _ = run_cli(["init"])
             assert rc == 0
             assert (nested / "team.json").exists()
             assert (nested / "rc.json").exists()
-        finally:
-            os.environ.pop("CLAUDETEAM_TEAM_FILE", None)
-            os.environ.pop("CLAUDETEAM_RUNTIME_CONFIG", None)
