@@ -27,28 +27,54 @@ class LoopStats:
 
 
 def _normalise(raw: dict) -> dict:
-    """lark-cli --compact emits Feishu event payloads under .event; flatten."""
+    """Normalize a lark-cli event payload to the flat shape classify_event wants.
+
+    Two shapes seen in the wild:
+
+    * Modern (lark-cli 1.0.21+ with --compact): top-level flat dict —
+      `{chat_id, content, sender_id, message_id, message_type, type, ...}`
+      where `content` is either a plain string or a JSON-encoded
+      `{"text": "..."}`.
+    * Legacy / non-compact: Feishu webhook shape wrapped in `{event: {...}}`
+      with nested `message: {chat_id, content, ...}` and
+      `sender: {sender_id: {open_id: ...}}`. The original rebuild only
+      handled this; round 3 smoke proved live lark-cli has switched to
+      the flat shape.
+
+    Handle both. For each field, prefer the legacy nested location
+    if present (so old fixtures keep working) then fall back to the
+    flat top-level field.
+    """
+    # Unwrap if the payload is webhook-style with .event
     if "event" in raw and isinstance(raw["event"], dict):
         ev = dict(raw["event"])
     else:
         ev = dict(raw)
-    # Flatten common nested fields lark-cli wraps in their own dicts
     msg = ev.get("message") or {}
     sender = ev.get("sender") or {}
-    content = msg.get("content")
+
+    # Content: legacy puts it under msg.content, modern at ev.content.
+    # In either form it might be JSON-encoded {"text": "..."} or plain text.
+    content = msg.get("content") if msg else ev.get("content")
     text = ""
     if isinstance(content, str):
         try:
             text = (json.loads(content) or {}).get("text", "")
         except json.JSONDecodeError:
             text = content
+
     return {
-        "message_id": msg.get("message_id", ev.get("message_id", "")),
-        "chat_id": msg.get("chat_id", ev.get("chat_id", "")),
-        "sender_id": sender.get("sender_id", {}).get("open_id") or ev.get("sender_id", ""),
+        "message_id": msg.get("message_id") or ev.get("message_id", ""),
+        "chat_id": msg.get("chat_id") or ev.get("chat_id", ""),
+        "sender_id": (sender.get("sender_id", {}).get("open_id")
+                      or ev.get("sender_id", "")),
         "text": text or ev.get("text", ""),
-        "msg_type": msg.get("message_type", ev.get("msg_type", "text")),
-        "create_time": msg.get("create_time", ev.get("create_time", "")),
+        # Modern emits "message_type", legacy varied between "msg_type" and
+        # message.message_type; check all three.
+        "msg_type": (msg.get("message_type")
+                     or ev.get("message_type")
+                     or ev.get("msg_type", "text")),
+        "create_time": msg.get("create_time") or ev.get("create_time", ""),
     }
 
 

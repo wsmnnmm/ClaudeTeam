@@ -188,6 +188,59 @@ def test_normalises_flat_event_with_top_level_fields():
     assert applied[0].text == "hi"
 
 
+def test_normalises_real_lark_cli_compact_wire_format():
+    """REGRESSION: round 3 smoke captured this exact shape from
+    \`npx @larksuite/cli event +subscribe --compact\` (lark-cli 1.0.21).
+    Top-level fields, content as a plain string (NOT JSON-encoded), and
+    message_type rather than msg_type. The pre-fix _normalise dropped
+    these as text="" → reason="empty"."""
+    real = json.dumps({
+        "chat_id": "oc_989e33567a4be168c7e7a286287a3965",
+        "chat_type": "group",
+        "content": "[boss] @worker_codex hello round-trip",
+        "create_time": "1777758788527",
+        "id": "om_x100b50536a8a94a0c457f151f14c25b",
+        "message_id": "om_x100b50536a8a94a0c457f151f14c25b",
+        "message_type": "text",
+        "sender_id": "ou_72716731212dbea7a5614cf21719bc75",
+        "timestamp": "1777758788697",
+        "type": "im.message.receive_v1",
+    })
+    applied = []
+    stats = process_lines(
+        [real],
+        team_agents=_AGENTS,
+        chat_id="oc_989e33567a4be168c7e7a286287a3965",
+        apply_fn=applied.append,
+    )
+    assert stats.handled == 1, f"expected 1 handled, got drops {dict(stats.drops_by_reason)}"
+    assert applied[0].text == "[boss] @worker_codex hello round-trip"
+    assert applied[0].targets == ["worker_codex"]
+    assert applied[0].msg_id == "om_x100b50536a8a94a0c457f151f14c25b"
+
+
+def test_normalises_real_lark_cli_compact_with_json_encoded_content():
+    """Same wire format but content is JSON-encoded {"text": "..."} —
+    the older Feishu-webhook style some lark-cli versions still emit."""
+    real = json.dumps({
+        "chat_id": "oc_team",
+        "content": '{"text": "@worker_codex hi"}',
+        "message_id": "om_1",
+        "message_type": "text",
+        "sender_id": "ou_user",
+        "type": "im.message.receive_v1",
+    })
+    applied = []
+    stats = process_lines(
+        [real],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+    )
+    assert stats.handled == 1
+    assert applied[0].text == "@worker_codex hi"
+
+
 def test_default_target_param_routes_human_messages_elsewhere():
     applied = []
     process_lines(
