@@ -33,6 +33,7 @@ def main(argv: list[str]) -> int:
     print(f"📂 {agent}: last {len(rows)} log entries")
     for r in rows:
         ref = f"  ({r['ref']})" if r.get("ref") else ""
-        print(f"── [{fmt_time_ms(r.get('created_at', 0), fmt="%m-%d %H:%M:%S")}] {r.get('type', '?')}{ref}")
+        ts = fmt_time_ms(r.get("created_at", 0), fmt="%m-%d %H:%M:%S")
+        print(f"── [{ts}] {r.get('type', '?')}{ref}")
         print(f"   {r.get('content', '')}")
     return 0
