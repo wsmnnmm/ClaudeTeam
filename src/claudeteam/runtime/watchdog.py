@@ -157,13 +157,11 @@ def supervise(specs: list[ProcessSpec],
 # ── default specs for ClaudeTeam ──────────────────────────────────
 
 
-def default_specs(*, project_root: Path | None = None) -> list[ProcessSpec]:
-    """Built-in spec set: just the router for now.
-
-    project_root defaults to cwd; pass an explicit one for tests / containers.
-    """
+def default_specs() -> list[ProcessSpec]:
+    """Built-in spec set: just the router for now. Pid path comes from
+    `paths.router_pid_file()` which already honours `$CLAUDETEAM_STATE_DIR`,
+    so callers don't need to pass a root."""
     from claudeteam.runtime import paths
-    root = project_root or Path.cwd()
     return [
         ProcessSpec(
             name="router",
