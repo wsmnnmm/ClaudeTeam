@@ -30,6 +30,7 @@ from claudeteam.commands import (
     say as _say,
     router as _router,
     watchdog as _watchdog,
+    task as _task,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -50,6 +51,8 @@ COMMANDS: dict[str, CommandHandler] = {
     "router": _router.main,
     # supervision
     "watchdog": _watchdog.main,
+    # task tracking
+    "task": _task.main,
 }
 
 
