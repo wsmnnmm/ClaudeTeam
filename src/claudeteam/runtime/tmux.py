@@ -28,14 +28,18 @@ def _default_run(args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, timeout=10, **kwargs)
 
 
+def _ok(args: list[str], run: Callable) -> bool:
+    """Invoke `run(args)` and return True iff returncode == 0. Wraps the
+    one-liner pattern every fire-and-forget tmux call needs."""
+    return run(args).returncode == 0
+
+
 def has_session(session: str, *, run: Callable = _default_run) -> bool:
-    r = run(["tmux", "has-session", "-t", session])
-    return r.returncode == 0
+    return _ok(["tmux", "has-session", "-t", session], run)
 
 
 def has_window(target: Target, *, run: Callable = _default_run) -> bool:
-    r = run(["tmux", "has-session", "-t", str(target)])
-    return r.returncode == 0
+    return _ok(["tmux", "has-session", "-t", str(target)], run)
 
 
 def capture_pane(target: Target, *, lines: int = 80, run: Callable = _default_run) -> str:
@@ -45,26 +49,22 @@ def capture_pane(target: Target, *, lines: int = 80, run: Callable = _default_ru
 
 def new_session(session: str, *, window: str = "manager",
                 detached: bool = True, run: Callable = _default_run) -> bool:
-    args = ["tmux", "new-session"]
-    if detached:
-        args += ["-d"]
-    args += ["-s", session, "-n", window]
-    return run(args).returncode == 0
+    args = ["tmux", "new-session"] + (["-d"] if detached else []) + [
+        "-s", session, "-n", window,
+    ]
+    return _ok(args, run)
 
 
 def new_window(target: Target, *, run: Callable = _default_run) -> bool:
-    r = run(["tmux", "new-window", "-t", target.session, "-n", target.window])
-    return r.returncode == 0
+    return _ok(["tmux", "new-window", "-t", target.session, "-n", target.window], run)
 
 
 def kill_window(target: Target, *, run: Callable = _default_run) -> bool:
-    r = run(["tmux", "kill-window", "-t", str(target)])
-    return r.returncode == 0
+    return _ok(["tmux", "kill-window", "-t", str(target)], run)
 
 
 def kill_session(session: str, *, run: Callable = _default_run) -> bool:
-    r = run(["tmux", "kill-session", "-t", session])
-    return r.returncode == 0
+    return _ok(["tmux", "kill-session", "-t", session], run)
 
 
 def send_text(target: Target, text: str, *, run: Callable = _default_run) -> bool:
@@ -72,14 +72,12 @@ def send_text(target: Target, text: str, *, run: Callable = _default_run) -> boo
 
     Uses `send-keys -l` so $/`/# don't get expanded by tmux.
     """
-    r = run(["tmux", "send-keys", "-l", "-t", str(target), text])
-    return r.returncode == 0
+    return _ok(["tmux", "send-keys", "-l", "-t", str(target), text], run)
 
 
 def send_keys(target: Target, *keys: str, run: Callable = _default_run) -> bool:
     """Send named keys (Enter, M-Enter, C-c, ...) to a pane."""
-    r = run(["tmux", "send-keys", "-t", str(target), *keys])
-    return r.returncode == 0
+    return _ok(["tmux", "send-keys", "-t", str(target), *keys], run)
 
 
 def inject(target: Target, text: str, *, submit_keys: list[str] | None = None,
