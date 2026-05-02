@@ -24,7 +24,18 @@ import io
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass
+class FakeProc:
+    """Stand-in for `subprocess.CompletedProcess` in test_*. Use as the
+    return value from a fake `run` callable to drive
+    `runtime.tmux` / `feishu.lark` test paths."""
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
 
 
 @contextlib.contextmanager

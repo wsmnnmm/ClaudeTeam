@@ -1,8 +1,7 @@
 """Tests for runtime/tmux.py — fake subprocess.run, verify call sequences."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+from helpers import FakeProc as _FakeResult  # local alias preserves call-site naming
 from claudeteam.runtime.tmux import (
     Target,
     capture_pane,
@@ -16,13 +15,6 @@ from claudeteam.runtime.tmux import (
     send_text,
     spawn_agent,
 )
-
-
-@dataclass
-class _FakeResult:
-    returncode: int = 0
-    stdout: str = ""
-    stderr: str = ""
 
 
 class _Recorder:

@@ -2,23 +2,15 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
 
-from helpers import env_patch
+from helpers import FakeProc, env_patch
 from claudeteam.feishu import lark
 
 
-@dataclass
-class _R:
-    returncode: int = 0
-    stdout: str = ""
-    stderr: str = ""
-
-
 class _Recorder:
-    def __init__(self, result=_R()):
+    def __init__(self, result=None):
         self.calls: list[dict] = []
-        self.result = result
+        self.result = result if result is not None else FakeProc()
 
     def __call__(self, args, **kwargs):
         self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
@@ -31,7 +23,7 @@ def _no_proxy_env():
 
 
 def test_run_builds_npx_lark_cli_argv_with_profile():
-    rec = _Recorder(_R(stdout='{"ok": true, "data": {"x": 1}}'))
+    rec = _Recorder(FakeProc(stdout='{"ok": true, "data": {"x": 1}}'))
     out = lark.call(["im", "+messages-send"], profile="my-team", run=rec)
     assert out == {"x": 1}
     sent = rec.calls[0]["args"]
@@ -41,34 +33,34 @@ def test_run_builds_npx_lark_cli_argv_with_profile():
 
 
 def test_run_omits_profile_when_empty():
-    rec = _Recorder(_R(stdout='{"data":{}}'))
+    rec = _Recorder(FakeProc(stdout='{"data":{}}'))
     lark.call(["foo"], profile="", run=rec)
     sent = rec.calls[0]["args"]
     assert "--profile" not in sent
 
 
 def test_run_returns_data_field_unwrapped():
-    rec = _Recorder(_R(stdout='{"ok":true,"data":{"message_id":"om_1"}}'))
+    rec = _Recorder(FakeProc(stdout='{"ok":true,"data":{"message_id":"om_1"}}'))
     assert lark.call(["x"], run=rec) == {"message_id": "om_1"}
 
 
 def test_run_returns_full_object_when_no_data_field():
-    rec = _Recorder(_R(stdout='{"raw":"value"}'))
+    rec = _Recorder(FakeProc(stdout='{"raw":"value"}'))
     assert lark.call(["x"], run=rec) == {"raw": "value"}
 
 
 def test_run_returns_empty_dict_for_blank_stdout():
-    rec = _Recorder(_R(stdout=""))
+    rec = _Recorder(FakeProc(stdout=""))
     assert lark.call(["x"], run=rec) == {}
 
 
 def test_run_returns_none_on_nonzero_exit():
-    rec = _Recorder(_R(returncode=1, stderr="oops"))
+    rec = _Recorder(FakeProc(returncode=1, stderr="oops"))
     assert lark.call(["x"], run=rec) is None
 
 
 def test_run_returns_none_on_invalid_json():
-    rec = _Recorder(_R(stdout="not-json"))
+    rec = _Recorder(FakeProc(stdout="not-json"))
     assert lark.call(["x"], run=rec) is None
 
 
@@ -79,19 +71,19 @@ def test_run_returns_none_on_timeout():
 
 
 def test_run_default_timeout_is_90_seconds():
-    rec = _Recorder(_R(stdout="{}"))
+    rec = _Recorder(FakeProc(stdout="{}"))
     lark.call(["x"], run=rec)
     assert rec.calls[0]["kwargs"]["timeout"] == 90
 
 
 def test_run_uses_explicit_timeout_when_passed():
-    rec = _Recorder(_R(stdout="{}"))
+    rec = _Recorder(FakeProc(stdout="{}"))
     lark.call(["x"], timeout=5, run=rec)
     assert rec.calls[0]["kwargs"]["timeout"] == 5
 
 
 def test_run_strips_https_proxy_when_no_proxy_env_set():
-    rec = _Recorder(_R(stdout="{}"))
+    rec = _Recorder(FakeProc(stdout="{}"))
     with _no_proxy_env():
         lark.call(["x"], run=rec)
     env = rec.calls[0]["kwargs"]["env"]
@@ -100,7 +92,7 @@ def test_run_strips_https_proxy_when_no_proxy_env_set():
 
 
 def test_run_keeps_proxy_env_when_no_proxy_unset():
-    rec = _Recorder(_R(stdout="{}"))
+    rec = _Recorder(FakeProc(stdout="{}"))
     with env_patch(HTTPS_PROXY="http://x"):
         lark.call(["x"], run=rec)
         assert rec.calls[0]["kwargs"]["env"].get("HTTPS_PROXY") == "http://x"
