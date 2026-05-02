@@ -64,14 +64,10 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
     woken in time).  Returns False on timeout — caller decides whether
     to inject anyway, queue, or surface to boss.
     """
-    if capture is None:
-        capture = tmux.capture_pane
-    if spawn is None:
-        spawn = tmux.spawn_agent
-    if sleep is None:
-        sleep = time.sleep
-    if now is None:
-        now = time.monotonic
+    capture = capture or tmux.capture_pane
+    spawn = spawn or tmux.spawn_agent
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
 
     if is_ready(target, adapter, capture=capture):
         return True
