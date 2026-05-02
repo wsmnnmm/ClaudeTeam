@@ -20,18 +20,14 @@ from claudeteam.util import error_exit, help_requested, warn
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
-    cmd = ["npx", "@larksuite/cli"]
-    if profile:
-        cmd += ["--profile", profile]
-    cmd += [
+    return [
+        "npx", "@larksuite/cli",
+        *(["--profile", profile] if profile else []),
         "event", "+subscribe",
         "--event-types", "im.message.receive_v1",
-        "--compact",
-        "--quiet",
-        "--force",
+        "--compact", "--quiet", "--force",
         "--as", "bot",
     ]
-    return cmd
 
 
 def _apply_with_wake(decision):
