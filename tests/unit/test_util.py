@@ -15,59 +15,42 @@ from claudeteam.util import (
 
 
 def test_env_str_returns_stripped_value():
-    import os as _os
-    _os.environ["X_TEST_ENV_STR"] = "  hello  "
-    try:
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_STR="  hello  "):
         assert env_str("X_TEST_ENV_STR") == "hello"
-    finally:
-        _os.environ.pop("X_TEST_ENV_STR", None)
 
 
 def test_env_str_returns_empty_when_unset():
-    import os as _os
-    _os.environ.pop("X_TEST_ENV_STR_UNSET", None)
-    assert env_str("X_TEST_ENV_STR_UNSET") == ""
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_STR_UNSET=None):
+        assert env_str("X_TEST_ENV_STR_UNSET") == ""
 
 
 def test_env_str_returns_empty_when_only_whitespace():
-    import os as _os
-    _os.environ["X_TEST_ENV_STR_WS"] = "   "
-    try:
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_STR_WS="   "):
         assert env_str("X_TEST_ENV_STR_WS") == ""
-    finally:
-        _os.environ.pop("X_TEST_ENV_STR_WS", None)
 
 
 # ── env_path ────────────────────────────────────────────────────
 
 
 def test_env_path_returns_path_when_env_set():
-    import os as _os
-    saved = _os.environ.get("X_TEST_ENV_PATH")
-    _os.environ["X_TEST_ENV_PATH"] = "/tmp/foo"
-    try:
-        p = env_path("X_TEST_ENV_PATH")
-    finally:
-        if saved is None:
-            _os.environ.pop("X_TEST_ENV_PATH", None)
-        else:
-            _os.environ["X_TEST_ENV_PATH"] = saved
-    assert p == Path("/tmp/foo")
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_PATH="/tmp/foo"):
+        assert env_path("X_TEST_ENV_PATH") == Path("/tmp/foo")
 
 
 def test_env_path_returns_none_when_unset():
-    import os as _os
-    _os.environ.pop("X_TEST_ENV_PATH_UNSET", None)
-    assert env_path("X_TEST_ENV_PATH_UNSET") is None
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_PATH_UNSET=None):
+        assert env_path("X_TEST_ENV_PATH_UNSET") is None
 
 
 def test_env_path_returns_none_when_blank():
-    import os as _os
-    _os.environ["X_TEST_ENV_PATH_BLANK"] = "   "
-    try:
+    from helpers import env_patch
+    with env_patch(X_TEST_ENV_PATH_BLANK="   "):
         assert env_path("X_TEST_ENV_PATH_BLANK") is None
-    finally:
-        _os.environ.pop("X_TEST_ENV_PATH_BLANK", None)
 
 
 # ── now_ms ──────────────────────────────────────────────────────
