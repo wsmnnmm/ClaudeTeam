@@ -91,10 +91,6 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
 """
 
 
-def _is_manager(agent: str) -> bool:
-    return agent == "manager"
-
-
 def render(agent: str, *, role: str | None = None,
            cli: str | None = None, model: str | None = None) -> str:
     """Return the identity markdown text for `agent`.
@@ -106,7 +102,7 @@ def render(agent: str, *, role: str | None = None,
     role = role if role is not None else (cfg.get("role") or agent)
     cli = cli if cli is not None else (cfg.get("cli") or "claude-code")
     model = model if model is not None else (cfg.get("model") or "")
-    body = _MANAGER_BODY if _is_manager(agent) else _WORKER_BODY
+    body = _MANAGER_BODY if agent == "manager" else _WORKER_BODY
     return body.format(name=agent, role=role, cli=cli, model=model)
 
 
