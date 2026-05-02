@@ -20,17 +20,11 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import time
 import uuid
 from pathlib import Path
 
-
-def _facts_dir() -> Path:
-    state = os.environ.get("CLAUDETEAM_STATE_DIR", "").strip()
-    if state:
-        return Path(state) / "facts"
-    return Path.home() / ".claudeteam" / "facts"
+from claudeteam.runtime.paths import facts_dir as _facts_dir
 
 
 def _inbox_file() -> Path:
