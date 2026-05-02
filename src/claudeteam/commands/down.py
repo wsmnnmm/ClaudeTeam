@@ -16,6 +16,7 @@ import sys
 import time
 
 from claudeteam.runtime import config, paths, tmux
+from claudeteam.util import help_requested
 
 
 def _kill_pid_file(name: str, pid_file) -> int:
@@ -53,7 +54,7 @@ def _kill_pid_file(name: str, pid_file) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print("usage: claudeteam down")
         return 0
 

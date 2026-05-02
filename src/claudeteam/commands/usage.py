@@ -19,7 +19,7 @@ import sys
 from typing import Callable
 
 from claudeteam.runtime import config
-from claudeteam.util import pop_flag
+from claudeteam.util import help_requested, pop_flag
 
 
 USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N]"
@@ -50,7 +50,7 @@ def _summary_for_clis(clis: set[str]) -> list[str]:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if "-h" in rest or "--help" in rest:
+    if help_requested(rest):
         print(USAGE)
         return 0
 

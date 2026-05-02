@@ -18,6 +18,7 @@ import time
 from claudeteam.commands import start as _start
 from claudeteam.runtime import config, paths, tmux
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
+from claudeteam.util import help_requested
 
 
 def _ensure_started() -> int:
@@ -52,7 +53,7 @@ def _ensure_daemon(name: str, pid_file_path, spawn_argv: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print("usage: claudeteam up")
         return 0
 

@@ -12,6 +12,13 @@ import time
 from pathlib import Path
 
 
+def help_requested(argv: list[str]) -> bool:
+    """True if argv contains \`-h\` or \`--help\`. Used by every subcommand
+    so they share one form (some used \`argv[0] in (...)\`, others
+    \`\"-h\" in argv or \"--help\" in argv\` — same intent)."""
+    return any(a in ("-h", "--help") for a in argv)
+
+
 def pop_flag(rest: list[str], flag: str) -> str | None:
     """Pop `flag <value>` out of `rest` and return value; or None if absent
     or value is missing. Mutates `rest`. Used by every command that does its

@@ -16,6 +16,7 @@ from claudeteam.feishu import catchup
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, wake
+from claudeteam.util import help_requested
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -44,7 +45,7 @@ def _on_progress(decision, stats):
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print("usage: claudeteam router")
         return 0
 

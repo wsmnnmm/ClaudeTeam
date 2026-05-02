@@ -19,6 +19,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from claudeteam.util import help_requested
+
 
 USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
 
@@ -78,7 +80,7 @@ def _write_command_files(target_dir: Path) -> tuple[int, int]:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if "-h" in rest or "--help" in rest:
+    if help_requested(rest):
         print(USAGE)
         return 0
     if len(rest) > 1:

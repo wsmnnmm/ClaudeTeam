@@ -20,6 +20,7 @@ import sys
 
 from claudeteam.commands import down as _down
 from claudeteam.runtime import paths
+from claudeteam.util import help_requested
 
 
 USAGE = "usage: claudeteam reset [--yes]"
@@ -37,7 +38,7 @@ def _confirm() -> bool:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if "-h" in rest or "--help" in rest:
+    if help_requested(rest):
         print(USAGE)
         return 0
     yes = "--yes" in rest

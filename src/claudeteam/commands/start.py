@@ -10,10 +10,11 @@ import sys
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
+from claudeteam.util import help_requested
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print("usage: claudeteam start")
         return 0
 

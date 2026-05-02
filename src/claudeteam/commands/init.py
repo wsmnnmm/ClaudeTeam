@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.runtime import config
-from claudeteam.util import pop_flag, write_json
+from claudeteam.util import help_requested, pop_flag, write_json
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -37,7 +37,7 @@ _DEFAULT_RUNTIME = {
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if "-h" in rest or "--help" in rest:
+    if help_requested(rest):
         print(USAGE)
         return 0
     force = "--force" in rest

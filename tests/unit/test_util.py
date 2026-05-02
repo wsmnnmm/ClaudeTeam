@@ -5,7 +5,8 @@ import tempfile
 from pathlib import Path
 
 from claudeteam.util import (
-    ago_ms, atomic_write_text, flock, fmt_time_ms, now_ms, pop_flag, read_json,
+    ago_ms, atomic_write_text, flock, fmt_time_ms, help_requested,
+    now_ms, pop_flag, read_json,
 )
 
 
@@ -120,6 +121,21 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
         (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
         atomic_write_text(target, "fresh")
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+# ── help_requested ──────────────────────────────────────────────
+
+
+def test_help_requested_true_for_short_and_long():
+    assert help_requested(["-h"]) is True
+    assert help_requested(["--help"]) is True
+    assert help_requested(["foo", "-h", "bar"]) is True
+
+
+def test_help_requested_false_for_unrelated_args():
+    assert help_requested([]) is False
+    assert help_requested(["foo", "bar"]) is False
+    assert help_requested(["-help"]) is False  # not a recognised form
 
 
 # ── pop_flag ────────────────────────────────────────────────────

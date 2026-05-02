@@ -24,7 +24,7 @@ from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms
+from claudeteam.util import ago_ms, help_requested
 
 
 _OK = "✅"
@@ -134,7 +134,7 @@ def _check_cursor(out: list[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if help_requested(argv):
         print("usage: claudeteam health")
         return 0
 
