@@ -14,7 +14,7 @@ import os
 import signal
 import time
 
-from claudeteam.runtime import config, paths, tmux
+from claudeteam.runtime import config, tmux, watchdog
 from claudeteam.util import error_exit, help_requested, warn
 
 
@@ -56,9 +56,11 @@ def main(argv: list[str]) -> int:
         return 0
 
     rc = 0
-    # Kill watchdog FIRST so it doesn't respawn router behind our back
-    rc |= _kill_pid_file("watchdog", paths.watchdog_pid_file())
-    rc |= _kill_pid_file("router", paths.router_pid_file())
+    # Kill in reverse-of-startup order so the watchdog can't respawn
+    # the router we just killed. all_known_specs is router-then-watchdog;
+    # reversed → watchdog first.
+    for spec in reversed(watchdog.all_known_specs()):
+        rc |= _kill_pid_file(spec.name, spec.pid_file)
 
     session = config.session_name()
     if tmux.has_session(session):
