@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~8 100 LOC (src + tests), 378 tests green.
+capability requires them.  Currently ~8 100 LOC (src + tests), 376 tests green.
 
 ## Quick start
 
@@ -140,7 +140,7 @@ and `tests/smoke/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 378 passed, 0 failed
+tests: 376 passed, 0 failed
 ```
 
 ## What's missing

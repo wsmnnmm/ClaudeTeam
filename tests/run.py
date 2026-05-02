@@ -33,12 +33,7 @@ def _discover() -> list[tuple[str, str]]:
 
 
 def _run_module(name: str, sub: str) -> tuple[int, int, list[str]]:
-    sys.path.insert(0, str(ROOT / "tests"))
-    try:
-        mod = importlib.import_module(f"{sub}.{name}")
-    finally:
-        sys.path.pop(0)
-
+    mod = importlib.import_module(f"{sub}.{name}")
     passed = failed = 0
     failures: list[str] = []
     for attr in sorted(dir(mod)):
