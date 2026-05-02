@@ -75,9 +75,8 @@ def main(argv: list[str]) -> int:
             bufsize=1,  # line-buffered
         )
     except FileNotFoundError:
-        print("❌ npx / lark-cli not found in PATH", file=sys.stderr)
         pidlock.release(pid_file)
-        return 1
+        return error_exit("❌ npx / lark-cli not found in PATH")
 
     try:
         if proc.stdout is None:
