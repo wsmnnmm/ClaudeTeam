@@ -52,6 +52,11 @@ def _normalise(raw: dict) -> dict:
     }
 
 
+def _record_drop(stats: LoopStats, reason: str) -> None:
+    stats.dropped += 1
+    stats.drops_by_reason[reason] += 1
+
+
 def process_lines(lines: Iterable[str], *,
                   team_agents: list[str],
                   chat_id: str = "",
@@ -72,8 +77,7 @@ def process_lines(lines: Iterable[str], *,
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            stats.dropped += 1
-            stats.drops_by_reason["bad_json"] += 1
+            _record_drop(stats, "bad_json")
             continue
         event = _normalise(payload)
         decision = classify_event(
@@ -85,8 +89,7 @@ def process_lines(lines: Iterable[str], *,
             default_target=default_target,
         )
         if decision.is_drop():
-            stats.dropped += 1
-            stats.drops_by_reason[decision.reason or "drop"] += 1
+            _record_drop(stats, decision.reason or "drop")
             continue
         if decision.msg_id:
             stats.seen_msg_ids.add(decision.msg_id)
