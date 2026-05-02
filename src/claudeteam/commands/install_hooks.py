@@ -73,8 +73,8 @@ def _full_body(name: str) -> str:
 
 
 def _write_command_files(target_dir: Path) -> tuple[int, int]:
-    """Write each slash-command .md. Returns (created, overwritten)."""
-    target_dir.mkdir(parents=True, exist_ok=True)
+    """Write each slash-command .md. Returns (created, overwritten).
+    atomic_write_text handles parent mkdir, so no explicit setup needed."""
     created = 0
     overwritten = 0
     for name in _COMMANDS:
