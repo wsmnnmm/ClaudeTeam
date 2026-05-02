@@ -29,6 +29,7 @@ from claudeteam.commands import (
     fire as _fire,
     say as _say,
     router as _router,
+    watchdog as _watchdog,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -47,6 +48,8 @@ COMMANDS: dict[str, CommandHandler] = {
     # feishu transport
     "say": _say.main,
     "router": _router.main,
+    # supervision
+    "watchdog": _watchdog.main,
 }
 
 
