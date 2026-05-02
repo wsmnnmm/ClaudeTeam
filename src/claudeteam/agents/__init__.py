@@ -24,12 +24,10 @@ def known_clis() -> tuple[str, ...]:
 
 def get_adapter(cli_name: str) -> CliAdapter:
     """Return the adapter for `cli_name`. Raises KeyError if not registered."""
-    try:
-        return _REGISTRY[cli_name]
-    except KeyError:
+    if cli_name not in _REGISTRY:
         raise KeyError(
-            f"unknown cli: {cli_name!r} (known: {', '.join(_REGISTRY)})"
-        ) from None
+            f"unknown cli: {cli_name!r} (known: {', '.join(_REGISTRY)})")
+    return _REGISTRY[cli_name]
 
 
 def adapter_for_agent(agent: str) -> CliAdapter:
