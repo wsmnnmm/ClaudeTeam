@@ -8,7 +8,6 @@ Refuses to overwrite existing files unless --force is passed.
 """
 from __future__ import annotations
 
-import sys
 
 from claudeteam.runtime import config
 from claudeteam.util import error_exit, help_requested, pop_flag, write_json

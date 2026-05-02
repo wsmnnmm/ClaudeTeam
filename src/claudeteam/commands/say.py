@@ -10,7 +10,6 @@ Exits non-zero if `chat_id` is unset (run setup or set runtime_config.json).
 """
 from __future__ import annotations
 
-import sys
 
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config

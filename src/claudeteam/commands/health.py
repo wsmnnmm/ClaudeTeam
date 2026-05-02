@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
