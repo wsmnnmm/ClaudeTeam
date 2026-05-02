@@ -16,7 +16,7 @@ from claudeteam.feishu import catchup
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, wake
-from claudeteam.util import error_exit, help_requested
+from claudeteam.util import error_exit, help_requested, warn
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -95,7 +95,7 @@ def main(argv: list[str]) -> int:
         try:
             pending = catchup.pending_lines(chat, profile=profile)
         except Exception as e:
-            print(f"⚠️  catchup fetch failed: {e}", file=sys.stderr)
+            warn(f"⚠️  catchup fetch failed: {e}")
             pending = []
         if pending:
             print(f"📥 catching up {len(pending)} missed message(s)")
