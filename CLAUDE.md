@@ -121,7 +121,7 @@ fixture instead of a real subprocess.
 9. (done) Slash command hooks (`claudeteam install-hooks` → .claude/commands/)
 10. (done) `claudeteam usage` — ccusage wrapper for claude-code agents
 11. (done) Rate-limit detection (adapter `rate_limit_markers`, deliver skips)
-12. (done) `claudeteam reset` + 14-helper `util.py` shared stdlib
+12. (done) `claudeteam reset` + 15-helper `util.py` shared stdlib
 13. (next) Image / file Feishu messages
 14. (next) Post-compact identity reread
 15. (later) Dockerfile + compose

@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~8 100 LOC (src + tests), 376 tests green.
+capability requires them.  Currently ~8 100 LOC (src + tests), 379 tests green.
 
 ## Quick start
 
@@ -85,9 +85,9 @@ task tracking
 src/claudeteam/
 ├── cli.py             single console-scripts entry; dispatch only
 ├── util.py            shared helpers: now_ms, fmt_time_ms, ago_ms,
-│                      pop_flag, read_json, write_json, atomic_write_text,
-│                      flock, env_path, env_str, help_requested,
-│                      usage_error, error_exit, warn
+│                      pop_flag, pop_bool_flag, read_json, write_json,
+│                      atomic_write_text, flock, env_path, env_str,
+│                      help_requested, usage_error, error_exit, warn
 ├── commands/          one module per subcommand (~30-100 LOC each)
 ├── store/
 │   ├── local_facts.py inbox / status / log / heartbeats (JSON + JSONL, file-locked)
@@ -140,7 +140,7 @@ and `tests/smoke/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 376 passed, 0 failed
+tests: 379 passed, 0 failed
 ```
 
 ## What's missing
