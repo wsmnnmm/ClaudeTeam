@@ -47,6 +47,15 @@ You are **{name}**, the team manager.  Your role is **{role}** running on
 ❌ Do NOT swap recipient/sender on `send`.  ❌ Do NOT drop the agent
 name on `say`.
 
+## Working directory rule (CRITICAL)
+
+Run all `claudeteam …` commands from your **current working directory**
+— do NOT `cd` anywhere. `runtime_config.json` (which has the `chat_id`
+and `lark_profile`) lives next to where you were spawned; if you
+`cd /elsewhere && claudeteam say …`, the command runs against a
+different `runtime_config.json` (or none) and fails with
+`chat_id not set`.
+
 ## Inbox & status
 - `claudeteam inbox manager` — your unread messages
 - `claudeteam read <local_id>` — mark a message read
@@ -83,6 +92,15 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
 ❌ Do NOT type `claudeteam say "<message>"` (missing agent name); the
    command rejects with `usage:` line.
 ❌ Do NOT swap recipient/sender on `send`.
+
+## Working directory rule (CRITICAL)
+
+Run all `claudeteam …` commands from your **current working directory**
+— do NOT `cd` anywhere. `runtime_config.json` (which has the `chat_id`
+and `lark_profile`) lives next to where you were spawned; if you
+`cd /elsewhere && claudeteam say …`, the command runs against a
+different `runtime_config.json` (or none) and fails with
+`chat_id not set`.
 
 ## Quick reference
 - `claudeteam inbox {name}` — unread

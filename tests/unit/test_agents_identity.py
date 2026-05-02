@@ -49,6 +49,17 @@ def test_render_argument_order_contract_present_in_worker():
     assert "❌" in text and "✅" in text
 
 
+def test_render_warns_against_cd_in_both_templates():
+    """REGRESSION: round 5 smoke caught worker_cc prefixing \`cd /repo &&\`
+    on its first reply attempt, which broke chat_id resolution. Both
+    templates must include an explicit "do not cd" rule."""
+    for agent in ("manager", "w"):
+        text = identity.render(agent, role="r", cli="c", model="m")
+        assert "Working directory rule" in text
+        assert "do NOT" in text and "cd" in text
+        assert "runtime_config.json" in text
+
+
 # ── render() — defaults from team.json ────────────────────────────
 
 

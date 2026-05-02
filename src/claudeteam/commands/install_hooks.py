@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claudeteam.util import atomic_write_text, help_requested, usage_error
+from claudeteam.runtime import config, tmux
+from claudeteam.util import atomic_write_text, help_requested, usage_error, warn
 
 
 USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
@@ -105,4 +106,18 @@ def main(argv: list[str]) -> int:
     print("\nClaude Code panes spawned in this directory now respond to:")
     for name in sorted(_COMMANDS):
         print(f"  /{name}")
+
+    # Claude Code caches .claude/commands/*.md at process startup; existing
+    # panes won't pick up newly-written hooks until restarted. Warn loudly.
+    try:
+        session = config.session_name()
+    except Exception:
+        session = ""
+    if session and tmux.has_session(session):
+        warn(
+            f"\n⚠️  tmux session '{session}' is already running.\n"
+            f"   Existing claude-code panes cached their slash commands at startup\n"
+            f"   and WON'T see these new ones. Restart panes to pick up:\n"
+            f"     claudeteam down && claudeteam up"
+        )
     return 0

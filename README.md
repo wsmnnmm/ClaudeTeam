@@ -47,22 +47,28 @@ pip install -e .
 claudeteam init                  # writes team.json + runtime_config.json
 $EDITOR runtime_config.json      # set chat_id + lark_profile when ready
 
-# 3. Bring up the whole team in one shot (tmux + agents + router + watchdog)
+# 3. Install slash commands BEFORE up (claude-code caches them at pane startup)
+claudeteam install-hooks         # writes .claude/commands/{inbox,team,...}.md
+                                 # — running this AFTER `up` means existing
+                                 # panes won't pick them up; install-hooks
+                                 # warns when it detects an active session.
+
+# 4. Bring up the whole team in one shot (tmux + agents + router + watchdog)
 claudeteam up
 claudeteam health                # green/yellow/red snapshot — no surprises
 
-# 4. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
+# 5. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
 claudeteam send worker_codex manager "review the auth module"   # writes inbox.json
 claudeteam inbox worker_codex
 claudeteam status worker_codex 进行中 "auditing auth"
 claudeteam team                  # shows ♥ heartbeat per agent
 
-# 5. Talk in the Feishu chat (the only path that injects into a worker pane)
+# 6. Talk in the Feishu chat (the only path that injects into a worker pane)
 #    `say` returns the Feishu message_id — capture it for `--reply` or audit.
 claudeteam say manager "标题党：smoke test #$(date +%s)"
 # → ✅ manager → chat (message_id=om_xxxxxxxx)
 
-# 6. Tear it all down
+# 7. Tear it all down
 claudeteam down
 ```
 
@@ -105,6 +111,26 @@ LARK_CLI_NO_PROXY=1 npx -y @larksuite/cli --profile $LARK_CLI_PROFILE \
 Expected: a `[worker_cc] [reply] ok` row newer than the boss message.
 If the loop breaks anywhere, `claudeteam health` + `state/router.cursor`
 + `tmux capture-pane -t ClaudeTeam:worker_cc -p` localize the failure.
+
+## Operator notes
+
+- **venv must be active in the parent shell** before `claudeteam up`.
+  Spawned panes inherit `PATH` from the launching shell. If you start
+  a *fresh* terminal (or a fresh `claude` instance from outside the
+  project) and try `claudeteam …`, you'll get `command not found`
+  unless you `source .venv/bin/activate` first.
+- **lark-cli is invoked via npx**, not installed globally. For boss-side
+  debug commands, use `npx -y @larksuite/cli ...`. The first invocation
+  takes ~30 s while npm fetches the package.
+- **`tmux list-windows` markers** — names like `worker_codex-` or
+  `worker_kimi*` are tmux's last-active / active markers, not part of
+  the window name. `tmux display-message -p '#W'` returns the clean
+  name from inside a pane.
+- **Per-pane `claudeteam` calls stay in the pane's cwd.** Workers' agent
+  identities (`identity.md`) tell them not to `cd` anywhere because
+  `runtime_config.json` lives next to the spawn cwd. If a worker
+  responds with `chat_id not set`, it's almost always a stray `cd` in
+  its first attempt.
 
 ## Commands
 

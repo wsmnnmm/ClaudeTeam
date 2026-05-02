@@ -5,7 +5,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from helpers import run_cli
+from helpers import isolated_env, run_cli, tmux_patch
 
 
 # ── happy path ──────────────────────────────────────────────────
@@ -70,3 +70,30 @@ def test_install_hooks_help():
     rc, out, _ = run_cli(["install-hooks", "--help"])
     assert rc == 0
     assert "usage: claudeteam install-hooks" in out
+
+
+# ── pane-staleness warning (round 5 G15b) ─────────────────────────
+
+
+def test_install_hooks_warns_when_session_already_running():
+    """REGRESSION: round 5 smoke G15b — running install-hooks AFTER
+    \`claudeteam up\` is the wrong order; existing claude-code panes
+    have already cached their slash commands and won't pick up the
+    new files. install-hooks should warn loudly."""
+    team = {"session": "ClaudeTeam", "agents": {"manager": {}}}
+    with isolated_env(team=team) as tmp, \
+            tmux_patch(has_session=lambda s: s == "ClaudeTeam"):
+        rc, _, err = run_cli(["install-hooks", str(tmp)])
+        assert rc == 0
+        # warning lands on stderr (via util.warn)
+        assert "tmux session 'ClaudeTeam' is already running" in err
+        assert "claudeteam down && claudeteam up" in err
+
+
+def test_install_hooks_silent_when_no_session():
+    team = {"session": "ClaudeTeam", "agents": {"manager": {}}}
+    with isolated_env(team=team) as tmp, \
+            tmux_patch(has_session=lambda s: False):
+        rc, _, err = run_cli(["install-hooks", str(tmp)])
+        assert rc == 0
+        assert "already running" not in err

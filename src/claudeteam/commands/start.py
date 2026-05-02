@@ -31,8 +31,8 @@ _PROPAGATED_ENV = (
 def pane_env_prefix() -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
     spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
-    worker agents calling \`claudeteam say\` write to the project state
-    dir, not \`~/.claudeteam\`.
+    worker agents calling `claudeteam say` write to the project state
+    dir, not `~/.claudeteam`.
     """
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
     for var in _PROPAGATED_ENV:
