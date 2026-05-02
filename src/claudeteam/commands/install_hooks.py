@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claudeteam.util import help_requested, usage_error
+from claudeteam.util import atomic_write_text, help_requested, usage_error
 
 
 USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
@@ -83,7 +83,7 @@ def _write_command_files(target_dir: Path) -> tuple[int, int]:
             overwritten += 1
         else:
             created += 1
-        path.write_text(_full_body(name), encoding="utf-8")
+        atomic_write_text(path, _full_body(name))
     return created, overwritten
 
 
