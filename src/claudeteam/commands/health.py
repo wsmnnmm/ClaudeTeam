@@ -16,6 +16,7 @@ not fail the check.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from claudeteam.agents import adapter_for_agent
@@ -32,7 +33,6 @@ _WARN = "⚠️ "
 
 
 def _check_state_dir(out: list[str]) -> None:
-    import os
     sd = paths.state_dir()
     src = "env" if os.environ.get("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
     out.append(f"  state_dir: {sd}  ({src})")
