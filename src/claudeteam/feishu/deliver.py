@@ -70,7 +70,10 @@ def _inject_to_pane(agent: str, decision: Decision,
             print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
             return "rate_limited"
         if wake_fn is not None:
-            spawn_cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
+            # Wrap with the same env prefix start.py / hire.py use so a
+            # lazy-woken pane inherits CLAUDETEAM_STATE_DIR and friends.
+            from claudeteam.commands.start import pane_env_prefix
+            spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
             if not wake_fn(target, adapter, spawn_cmd=spawn_cmd):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
         ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())

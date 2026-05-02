@@ -29,11 +29,12 @@ and is silently ignored by adapters that don't honor it (Kimi).
 
 ```bash
 # 0. Shell setup — set ONCE per terminal, before any claudeteam command.
-#    If you want these persistent, add to your shell rc (~/.zshrc / ~/.bashrc).
+#    For persistence, add to your shell rc (~/.zshrc / ~/.bashrc).
 export CLAUDETEAM_STATE_DIR="$PWD/state"   # else state goes to ~/.claudeteam
 export LARK_CLI_NO_PROXY=1                 # required if you have HTTPS_PROXY set
-# Optional: lock the bot identity for `claudeteam say` so you never need --as
-export CLAUDETEAM_LARK_SEND_AS=bot
+export CLAUDETEAM_LARK_SEND_AS=bot         # required for headless / smoke runs;
+                                           # without it `say` defaults to user
+                                           # OAuth and fails when OAuth expires
 
 # 1. Install (editable from the repo, in a venv)
 #    Many hosts ship Python under uv / Homebrew / system manager that PEP 668
@@ -81,6 +82,29 @@ travel through Feishu (humans @-mention from the chat → router picks it
 up, OR `claudeteam say <peer>` posts a chat message that mentions the
 target). Pure `claudeteam send` writes to the inbox file but does not
 touch tmux — that's a deliberate split between persistence and delivery.
+
+### Closed-loop end-to-end test
+
+To verify the whole pipeline (Feishu → router → pane → worker reply):
+
+```bash
+# 1. From the Feishu group, post a message tagging a worker with a clear
+#    instruction. From the host, you can do this AS YOUR USER OAuth:
+claudeteam say boss "@worker_cc 收到这条立刻执行 claudeteam say worker_cc \"[reply] ok\"" --as user
+
+# 2. Wait ~90s (lark-cli +subscribe pulls the event, router classifies,
+#    deliver.apply injects into the worker_cc tmux pane, worker reads
+#    the prompt, runs the embedded say command, lark-cli posts back).
+
+# 3. Verify worker_cc replied:
+LARK_CLI_NO_PROXY=1 npx -y @larksuite/cli --profile $LARK_CLI_PROFILE \
+    im +chat-messages-list --chat-id $CHAT_ID --page-size 5 --as bot --format json \
+    | grep '\[worker_cc\]'
+```
+
+Expected: a `[worker_cc] [reply] ok` row newer than the boss message.
+If the loop breaks anywhere, `claudeteam health` + `state/router.cursor`
++ `tmux capture-pane -t ClaudeTeam:worker_cc -p` localize the failure.
 
 ## Commands
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
+from claudeteam.commands.start import pane_env_prefix
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
 from claudeteam.util import error_exit, usage_error
@@ -51,7 +52,7 @@ def main(argv: list[str]) -> int:
     if cli == "codex-cli":
         ensure_workdir_trusted(Path.cwd())
     adapter = adapter_for_agent(agent)
-    cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
+    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     if not tmux.spawn_agent(target, cmd):
         return error_exit(f"❌ failed to spawn CLI in {agent} pane")
 

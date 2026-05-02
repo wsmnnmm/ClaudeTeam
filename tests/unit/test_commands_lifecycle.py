@@ -142,6 +142,22 @@ def test_start_picks_correct_spawn_cmd_per_cli():
         assert "--model gpt-5.5" in spawn_cmds["T:w_codex"]
 
 
+def test_start_propagates_state_dir_into_pane_env():
+    """REGRESSION: round 4 smoke caught that worker_cc's \`claudeteam say\`
+    wrote to ~/.claudeteam/facts/logs.jsonl instead of the project state
+    dir, because tmux send-keys spawned the CLI in a fresh shell that
+    didn't inherit CLAUDETEAM_STATE_DIR. Spawn line must prepend it."""
+    team = {"session": "T", "agents": {"w_cc": {"cli": "claude-code"}}}
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
+        run_cli(["start"])
+        cmd = next(c[2] for c in fake["calls"] if c[0] == "spawn_agent")
+        # State dir from isolated_env points under tmp/state
+        assert "CLAUDETEAM_STATE_DIR=" in cmd
+        assert str(tmp / "state") in cmd
+        # IS_SANDBOX=1 still there (claude-code adapter prefix)
+        assert "IS_SANDBOX=1" in cmd
+
+
 # ── hire ──────────────────────────────────────────────────────────
 
 

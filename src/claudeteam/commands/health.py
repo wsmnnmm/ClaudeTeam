@@ -153,7 +153,8 @@ def _check_proxy_env(out: list[str]) -> None:
     if not proxy:
         return
     if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
-        out.append(f"  {_OK} HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
+        # Proxy still in env even if wrapper strips it; informational, not green.
+        out.append(f"  {_INFO} HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
     else:
         out.append(
             f"  {_WARN} HTTPS_PROXY={proxy} set without LARK_CLI_NO_PROXY=1; "
