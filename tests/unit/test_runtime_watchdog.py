@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from helpers import isolated_env
 from claudeteam.runtime.watchdog import (
     ProcessSpec,
     ProcessState,
@@ -203,7 +204,6 @@ def test_supervise_walks_every_spec_independently():
 
 
 def test_default_specs_includes_router_pointing_at_state_dir():
-    from helpers import isolated_env
     from claudeteam.runtime.watchdog import default_specs
     with isolated_env() as tmp:
         specs = default_specs()

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-from helpers import isolated_env
+from helpers import isolated_env, tmux_patch
 from claudeteam.feishu.deliver import apply
 from claudeteam.feishu.router import Action, Decision
 from claudeteam.store import local_facts
@@ -240,7 +240,6 @@ def test_rate_limited_pane_keeps_inbox_skips_inject():
             return ["Approaching usage limit"]
 
     # patch tmux.capture_pane to feign a rate-limited pane
-    from helpers import tmux_patch
     rate_text = "...Approaching usage limit\n"
     with tmux_patch(capture_pane=lambda t, lines=80: rate_text), \
             isolated_env(team=_WAKE_TEAM):

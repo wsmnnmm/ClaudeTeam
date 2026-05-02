@@ -4,6 +4,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from helpers import env_patch, tmux_patch
+from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
     fmt_time_ms, help_requested, now_ms, pop_flag, read_json, usage_error,
@@ -15,19 +17,16 @@ from claudeteam.util import (
 
 
 def test_env_str_returns_stripped_value():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_STR="  hello  "):
         assert env_str("X_TEST_ENV_STR") == "hello"
 
 
 def test_env_str_returns_empty_when_unset():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_STR_UNSET=None):
         assert env_str("X_TEST_ENV_STR_UNSET") == ""
 
 
 def test_env_str_returns_empty_when_only_whitespace():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_STR_WS="   "):
         assert env_str("X_TEST_ENV_STR_WS") == ""
 
@@ -36,19 +35,16 @@ def test_env_str_returns_empty_when_only_whitespace():
 
 
 def test_env_path_returns_path_when_env_set():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_PATH="/tmp/foo"):
         assert env_path("X_TEST_ENV_PATH") == Path("/tmp/foo")
 
 
 def test_env_path_returns_none_when_unset():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_PATH_UNSET=None):
         assert env_path("X_TEST_ENV_PATH_UNSET") is None
 
 
 def test_env_path_returns_none_when_blank():
-    from helpers import env_patch
     with env_patch(X_TEST_ENV_PATH_BLANK="   "):
         assert env_path("X_TEST_ENV_PATH_BLANK") is None
 
@@ -326,9 +322,6 @@ def test_flock_releases_on_exception():
 
 
 def test_tmux_patch_replaces_and_restores():
-    from helpers import tmux_patch
-    from claudeteam.runtime import tmux
-
     real = tmux.has_session
     with tmux_patch(has_session=lambda s: True):
         assert tmux.has_session("anything") is True
@@ -336,9 +329,6 @@ def test_tmux_patch_replaces_and_restores():
 
 
 def test_tmux_patch_restores_even_on_exception():
-    from helpers import tmux_patch
-    from claudeteam.runtime import tmux
-
     real = tmux.has_session
     try:
         with tmux_patch(has_session=lambda s: True):
