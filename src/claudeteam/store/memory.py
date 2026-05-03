@@ -8,15 +8,32 @@ Why not reuse `local_facts.append_log`? Logs are an audit trail
 (every action). Memory is a curated subset — what an agent should
 *re-read* on wake to keep continuity. Keeping them separate lets us:
   - inject memory (NOT logs) into identity init prompt without
-    flooding the worker with audit minutiae.
-  - rate-limit memory growth without forcing log truncation.
+    flooding the worker with audit minutiae (R84).
+  - rate-limit memory growth without forcing log truncation
+    (`_MAX_PER_AGENT = 200`).
 
 Each entry is a tiny dict:
   {kind, content, ref?, created_at}
 
-`kind` is a short tag: `task_assigned`, `task_completed`, `learning`,
-`blocker`, `note` — convention, not enforced. Future code can branch on
-known kinds; unknown ones still display verbatim.
+`kind` is a short tag (R106 KNOWN_KINDS):
+  `task_assigned` / `task_completed` / `learning` / `blocker` /
+  `decision` / `note`
+Convention, not enforced — `append` accepts any string but soft-warns
+to stderr when `kind` falls outside KNOWN_KINDS so the schema doesn't
+fragment into free-form labels (`fyi`, `important!!!`, `mood-of-day`)
+that hurt `recall` scannability.
+
+Helpers for callers:
+  `kinds_summary()` — `' / '`-joined for CLI USAGE strings (R119)
+  `kinds_sorted()`  — alphabetical list for slash-card display (R120)
+
+API surface:
+  `append(agent, kind, content, *, ref="")`  → write 1 entry
+  `list_recent(agent, *, limit=20)`          → list, oldest-first
+  `clear(agent)`                              → drop all entries
+  `clear_kind(agent, kind)`                   → drop one slice (R111)
+  `render_for_prompt(agent, *, limit=20)`     → markdown for init prompt
+  `all_agents_with_memory()`                  → iterator for health audit
 """
 from __future__ import annotations
 

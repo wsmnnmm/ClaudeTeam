@@ -4,12 +4,27 @@ Each agent gets a small markdown file at
     $CLAUDETEAM_STATE_DIR/agents/<name>/identity.md
 that the agent's CLI reads on demand to learn:
   - who it is and what role
-  - which command format to use for talking back
+  - which command format to use for talking back (claudeteam send / say
+    / status / log / remember / recall / peek + the argument-order rules
+    that LLMs habitually mis-order)
   - which CLI it's running under (so adapter quirks like Codex's
     M-Enter don't surprise it)
+  - cross-agent management discipline (manager body only, R85: ported
+    from old main's templates/manager.identity.md — 角色边界 / 秒回闭环
+    / 巡视核实 / 沟通格式 / 需求纪律 / 外部系统 / 集合指令必须 dispatch)
 
 The text is interpolated from the agent's team.json entry — there's no
-external template file to edit; the canonical copy lives in this module.
+external template file to edit; the canonical copy lives in this module
+in `_MANAGER_BODY` and `_WORKER_BODY`.
+
+`init_prompt(agent)` is the wake message injected into a fresh / cleared
+pane. R84/R88 added durable memory recall: it pulls
+`memory.render_for_prompt(agent)` and appends the recall block so the
+agent picks up prior context after `/clear`. Empty memory → no extra
+section (brand-new agents stay clean).
+
+Manager 巡视 cadence (R104) now points at `claudeteam peek <agent>`
+instead of raw `tmux capture-pane -t {session}:<agent>`.
 """
 from __future__ import annotations
 
