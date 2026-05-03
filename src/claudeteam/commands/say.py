@@ -15,6 +15,7 @@ import sys
 from dataclasses import dataclass
 
 from claudeteam.feishu import chat as feishu_chat
+from claudeteam.feishu.cards import simple_card
 from claudeteam.runtime import config
 from claudeteam.store import local_facts
 from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_error
@@ -22,8 +23,26 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 USAGE = (
     "usage: claudeteam say <agent> <message> "
-    "[--reply <message_id>] [--as user|bot] [--no-local]"
+    "[--reply <message_id>] [--as user|bot] [--no-local] [--card]"
 )
+
+
+# Card colors per agent role conventions. manager → blue (default visual
+# weight), worker_* → green (status updates), boss-tagged → grey (just
+# context). Unknown agents fall back to blue. Round-99: extracted so a
+# future deployment with custom roles can override without touching the
+# render code.
+_AGENT_CARD_COLORS = {
+    "manager": "blue",
+}
+
+
+def _color_for(agent: str) -> str:
+    if agent in _AGENT_CARD_COLORS:
+        return _AGENT_CARD_COLORS[agent]
+    if agent.startswith("worker"):
+        return "green"
+    return "blue"
 
 
 @dataclass(frozen=True)
@@ -33,21 +52,26 @@ class _Args:
     reply_to: str = ""
     as_user: bool = False
     local: bool = True
+    as_card: bool = False
 
 
 def _parse(argv: list[str]) -> _Args | None:
     if len(argv) < 2:
         return None
-    agent = argv[0]
-    rest = list(argv[1:])
+    rest = list(argv)
+    as_card = pop_bool_flag(rest, "--card")
+    no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
     as_explicit = pop_flag(rest, "--as")
     if "--reply" in rest or "--as" in rest:
         return None  # flag present but value missing
+    if len(rest) < 2:
+        return None
+    agent = rest[0]
+    rest = rest[1:]
     # If --as wasn't passed, fall back to CLAUDETEAM_LARK_SEND_AS env var,
     # then to the bot default. Lets operators "set once per shell".
     as_value = as_explicit if as_explicit is not None else env_str("CLAUDETEAM_LARK_SEND_AS")
-    no_local = pop_bool_flag(rest, "--no-local")
     if not rest:
         return None
     return _Args(
@@ -56,6 +80,7 @@ def _parse(argv: list[str]) -> _Args | None:
         reply_to=reply_to,
         as_user=(as_value == "user"),
         local=not no_local,
+        as_card=as_card,
     )
 
 
@@ -82,12 +107,31 @@ def main(argv: list[str]) -> int:
             print(f"  ⚠️ audit log write failed for {args.agent}: {e}",
                   file=sys.stderr)
 
-    result = feishu_chat.send_text(
-        chat, f"[{args.agent}] {args.message}",
-        profile=profile,
-        as_user=args.as_user,
-        reply_to=args.reply_to,
-    )
+    if args.as_card:
+        # Round-99: --card wraps the message in a Feishu interactive card.
+        # Title carries `[<agent>]` so attribution is still visible (the
+        # plain-text path's `[<agent>] <body>` prefix is the equivalent).
+        # reply_to does NOT thread for cards (Feishu interactive cards
+        # don't support thread-reply); print a one-line warning if the
+        # caller passed --reply with --card so the threading silently
+        # going away doesn't surprise them.
+        if args.reply_to:
+            print(f"  ⚠️ --card ignores --reply (Feishu cards don't thread)",
+                  file=sys.stderr)
+        card = simple_card(f"[{args.agent}]", args.message,
+                            color=_color_for(args.agent))
+        result = feishu_chat.send_card(
+            chat, card,
+            profile=profile,
+            as_user=args.as_user,
+        )
+    else:
+        result = feishu_chat.send_text(
+            chat, f"[{args.agent}] {args.message}",
+            profile=profile,
+            as_user=args.as_user,
+            reply_to=args.reply_to,
+        )
     if result is None:
         return error_exit(f"❌ Feishu send failed for {args.agent}")
 

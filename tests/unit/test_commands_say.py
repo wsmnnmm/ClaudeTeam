@@ -117,6 +117,78 @@ def test_say_zero_or_one_arg_returns_one():
     assert "usage:" in err
 
 
+# ── --card flag (round-99) ──────────────────────────────────────
+
+
+@contextlib.contextmanager
+def _fake_send_card():
+    """Replace feishu_chat.send_card alongside send_text."""
+    state = {"text_calls": [], "card_calls": [],
+             "result": {"message_id": "om_fake_card"}}
+
+    def fake_text(chat_id, text, **kw):
+        state["text_calls"].append({"chat_id": chat_id, "text": text, **kw})
+        return {"message_id": "om_fake_text"}
+
+    def fake_card(chat_id, card, **kw):
+        state["card_calls"].append({"chat_id": chat_id, "card": card, **kw})
+        return state["result"]
+
+    with attr_patch(feishu_chat, send_text=fake_text, send_card=fake_card):
+        yield state
+
+
+def test_say_card_flag_sends_card_not_text():
+    """`--card` routes through send_card; send_text isn't touched."""
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "manager", "重要决策已落地", "--card"])
+    assert rc == 0
+    assert len(st["card_calls"]) == 1
+    assert st["text_calls"] == []
+    card = st["card_calls"][0]["card"]
+    # Title carries the [agent] attribution that the text path did inline
+    assert card["header"]["title"]["content"] == "[manager]"
+    body = card["elements"][0]["text"]["content"]
+    assert "重要决策已落地" in body
+    # manager → blue template per _color_for
+    assert card["header"]["template"] == "blue"
+
+
+def test_say_card_for_worker_uses_green_template():
+    """Workers (worker_*) get green by convention (status updates),
+    manager gets blue."""
+    with _isolated(), _fake_send_card() as st:
+        run_cli(["say", "worker_cc", "step 1 done", "--card"])
+    card = st["card_calls"][0]["card"]
+    assert card["header"]["template"] == "green"
+
+
+def test_say_card_with_reply_warns_and_sends_card_anyway():
+    """Cards don't thread; --card + --reply prints a stderr warning
+    but still sends the card (rather than failing). Threading is a
+    text-only Feishu feature so silently dropping reply_to is the
+    least surprising behaviour."""
+    with _isolated(), _fake_send_card() as st:
+        rc, _, err = run_cli(["say", "manager", "msg", "--card",
+                              "--reply", "om_xx"])
+    assert rc == 0
+    assert "--card ignores --reply" in err
+    # Card sent, reply_to NOT in the kwargs passed to send_card
+    assert len(st["card_calls"]) == 1
+    assert "reply_to" not in st["card_calls"][0]
+
+
+def test_say_default_still_sends_text_when_no_card_flag():
+    """Backward-compat: without --card, behaviour is exactly the
+    pre-R99 text path."""
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "manager", "plain text msg"])
+    assert rc == 0
+    assert len(st["text_calls"]) == 1
+    assert st["card_calls"] == []
+    assert st["text_calls"][0]["text"] == "[manager] plain text msg"
+
+
 def test_say_audit_log_failure_does_not_block_chat_send():
     """REGRESSION: audit log write is best-effort. Disk full / permission
     denied / corrupt logs.jsonl should NOT prevent the chat send — the
