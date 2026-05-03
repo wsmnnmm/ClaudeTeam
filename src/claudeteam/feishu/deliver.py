@@ -18,6 +18,7 @@ from claudeteam.feishu import chat as _chat
 from claudeteam.feishu import slash as _slash
 from claudeteam.feishu.router import Action, Decision
 from claudeteam.runtime import config, tmux, wake
+from claudeteam.runtime.lifecycle import pane_env_prefix
 from claudeteam.store import local_facts
 
 
@@ -65,12 +66,8 @@ def _build_wake_args(agent: str, adapter) -> dict:
 
     Wrapping the lazy-wake setup keeps `_inject_to_pane` focused on its
     actual job (deliver text) and isolates the cross-module wiring
-    (start.pane_env_prefix, identity.init_prompt, status upsert).
+    (lifecycle.pane_env_prefix, identity.init_prompt, status upsert).
     """
-    # Local import: pane_env_prefix lives in commands/start.py to share
-    # with hire.py; importing at module-top would couple deliver.py to a
-    # command module purely for one helper. Cheap and one-shot here.
-    from claudeteam.commands.start import pane_env_prefix
     spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     return {
         "spawn_cmd": spawn_cmd,

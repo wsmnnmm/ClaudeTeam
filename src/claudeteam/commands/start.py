@@ -5,41 +5,12 @@ window per agent, each running its configured CLI.
 """
 from __future__ import annotations
 
-import shlex
-from pathlib import Path
-
-from claudeteam.agents import adapter_for_agent, identity
-from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.runtime import config, paths, tmux, wake
-from claudeteam.store import local_facts
-from claudeteam.util import env_str, error_exit, help_requested, warn
+from claudeteam.runtime import config, lifecycle, tmux
+from claudeteam.runtime.lifecycle import pane_env_prefix  # re-export
+from claudeteam.util import error_exit, help_requested, warn
 
 
-# env vars to propagate from the operator's shell into every spawned pane
-# so worker agents' shell-out calls (via Bash tool) see the deployment's
-# state dir instead of falling back to ~/.claudeteam.
-_PROPAGATED_ENV = (
-    "LARK_CLI_PROFILE",
-    "LARK_CLI_NO_PROXY",
-    "CLAUDETEAM_LARK_SEND_AS",
-    "CLAUDETEAM_TEAM_FILE",
-    "CLAUDETEAM_RUNTIME_CONFIG",
-    "CLAUDETEAM_DEFAULT_MODEL",
-)
-
-
-def pane_env_prefix() -> str:
-    """Build a shell env prefix that, prepended to a spawn_cmd, makes the
-    spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
-    worker agents calling `claudeteam say` write to the project state
-    dir, not `~/.claudeteam`.
-    """
-    parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
-    for var in _PROPAGATED_ENV:
-        val = env_str(var)
-        if val:
-            parts.append(f"{var}={shlex.quote(val)}")
-    return " ".join(parts)
+__all__ = ["main", "pane_env_prefix"]
 
 
 def main(argv: list[str]) -> int:
@@ -66,35 +37,21 @@ def main(argv: list[str]) -> int:
 
     for agent in agent_list:
         target = tmux.Target(session, agent)
-        if agent != first:
-            if not tmux.new_window(target):
-                warn(f"⚠️  failed to create window for {agent}, skipping")
-                continue
-        cfg = config.agent_config(agent)
-        cli = cfg.get("cli", "claude-code")
-        identity.write(agent)
-        if cfg.get("lazy"):
-            local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
+        if agent != first and not tmux.new_window(target):
+            warn(f"⚠️  failed to create window for {agent}, skipping")
+            continue
+        cli = config.agent_config(agent).get("cli", "claude-code")
+        outcome = lifecycle.provision_pane(agent, target)
+        if outcome == lifecycle.LAZY:
             print(f"  → {agent} ({cli}) lazy-pane ready")
-            continue
-        if cli == "codex-cli":
-            ensure_workdir_trusted(Path.cwd())
-        adapter = adapter_for_agent(agent)
-        cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
-        if not tmux.spawn_agent(target, cmd):
+        elif outcome == lifecycle.SPAWN_FAILED:
             warn(f"⚠️  failed to spawn CLI in {agent} pane")
-            continue
-        # Wait for CLI banner, then inject the identity init prompt so the
-        # agent starts knowing who it is + reads its identity.md + reports
-        # for duty. Without this it sits at an empty prompt forever.
-        if wake.wait_until_ready(target, adapter, timeout_s=20):
-            tmux.inject(target, identity.init_prompt(agent),
-                        submit_keys=adapter.submit_keys())
-        else:
+        elif outcome == lifecycle.READY_NO_INIT:
             warn(f"⚠️  {agent} CLI didn't show ready marker in 20s; "
                  f"identity init prompt skipped")
-        local_facts.upsert_status(agent, "进行中", "initializing")
-        print(f"  → {agent} ({cli}) spawned")
+            print(f"  → {agent} ({cli}) spawned (no init)")
+        else:  # READY
+            print(f"  → {agent} ({cli}) spawned")
 
     print(f"✅ team {session} started ({len(agent_list)} agents)")
     return 0

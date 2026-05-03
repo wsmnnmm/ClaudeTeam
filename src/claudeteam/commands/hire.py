@@ -6,13 +6,7 @@ CLI, mark status.  Errors out if the team isn't running yet (use
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-from claudeteam.agents import adapter_for_agent, identity
-from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.commands.start import pane_env_prefix
-from claudeteam.runtime import config, tmux, wake
-from claudeteam.store import local_facts
+from claudeteam.runtime import config, lifecycle, tmux
 from claudeteam.util import error_exit, usage_error, warn
 
 
@@ -39,31 +33,17 @@ def main(argv: list[str]) -> int:
     if tmux.has_window(target):
         print(f"⚠️  {agent} already has a pane")
         return 0
-
     if not tmux.new_window(target):
         return error_exit(f"❌ failed to create window for {agent}")
 
-    identity.write(agent)
-    if cfg.get("lazy"):
-        local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
+    outcome = lifecycle.provision_pane(agent, target)
+    if outcome == lifecycle.LAZY:
         print(f"✅ hired (lazy): {agent} ({cli}) → {target}")
         return 0
-
-    if cli == "codex-cli":
-        ensure_workdir_trusted(Path.cwd())
-    adapter = adapter_for_agent(agent)
-    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
-    if not tmux.spawn_agent(target, cmd):
+    if outcome == lifecycle.SPAWN_FAILED:
         return error_exit(f"❌ failed to spawn CLI in {agent} pane")
-
-    # Wait for CLI banner then inject identity init prompt (same as start.py).
-    if wake.wait_until_ready(target, adapter, timeout_s=20):
-        tmux.inject(target, identity.init_prompt(agent),
-                    submit_keys=adapter.submit_keys())
-    else:
+    if outcome == lifecycle.READY_NO_INIT:
         warn(f"⚠️  {agent} CLI didn't show ready marker in 20s; "
              f"identity init prompt skipped")
-
-    local_facts.upsert_status(agent, "进行中", "initializing")
     print(f"✅ hired: {agent} ({cli}) → {target}")
     return 0
