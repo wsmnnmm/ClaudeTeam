@@ -1,14 +1,22 @@
-"""Single-instance pid file lock for daemon commands.
+"""Pid file primitives + single-instance daemon lock.
 
-Both `claudeteam router` and `claudeteam watchdog` need to:
-  - claim a per-daemon pid file under $CLAUDETEAM_STATE_DIR
-  - refuse to start if another live process already holds it
-  - silently overwrite a stale lock left by a crashed previous run
-  - clean up the lock on graceful exit (only if we still own it)
+Public surface:
+  - `read_pid(pid_file)` → int | None — parse a pid file safely
+  - `pid_alive(pid)`     → bool       — kill -0 wrapper, OSError = False
+  - `acquire(pid_file)`  → bool       — claim or reject based on liveness
+  - `release(pid_file)`  → None       — drop the lock on graceful exit
 
-Watchdog already had this; router was just unconditionally overwriting,
-which let two routers race their inserts into Feishu's event stream.
-Hoisting unifies behavior and removes ~30 lines of dup.
+`acquire` / `release` are the daemon lifecycle pair (`claudeteam router`
+and `claudeteam watchdog` use them). `read_pid` / `pid_alive` are the
+primitives that grew out — `commands/down._kill_pid_file`,
+`watchdog.is_alive`, `commands/health._check_daemon` all need to
+inspect "the pid that owns this file, if any" without claiming the
+lock, and they used to each reimplement the int-parse + os.kill(0)
+fences.
+
+Stale locks (pid file present but the recorded pid is dead) are
+quietly overwritten by `acquire` on the assumption a previous run
+crashed.
 """
 from __future__ import annotations
 
