@@ -19,6 +19,20 @@ from claudeteam.runtime import config, paths
 from claudeteam.util import atomic_write_text
 
 
+# Shared section: every role's identity needs this guardrail. Keeping it
+# in one constant means any tweak (new env vars, more failure modes) only
+# happens once and both bodies stay in sync automatically.
+_WORKDIR_RULE = """\
+## Working directory rule (CRITICAL)
+
+Run all `claudeteam …` commands from your **current working directory**
+— do NOT `cd` anywhere. `runtime_config.json` (which has the `chat_id`
+and `lark_profile`) lives next to where you were spawned; if you
+`cd /elsewhere && claudeteam say …`, the command runs against a
+different `runtime_config.json` (or none) and fails with
+`chat_id not set`."""
+
+
 _MANAGER_BODY = """\
 # {name} — {role}
 
@@ -47,14 +61,7 @@ You are **{name}**, the team manager.  Your role is **{role}** running on
 ❌ Do NOT swap recipient/sender on `send`.  ❌ Do NOT drop the agent
 name on `say`.
 
-## Working directory rule (CRITICAL)
-
-Run all `claudeteam …` commands from your **current working directory**
-— do NOT `cd` anywhere. `runtime_config.json` (which has the `chat_id`
-and `lark_profile`) lives next to where you were spawned; if you
-`cd /elsewhere && claudeteam say …`, the command runs against a
-different `runtime_config.json` (or none) and fails with
-`chat_id not set`.
+{workdir_rule}
 
 ## Inbox & status
 - `claudeteam inbox manager` — your unread messages
@@ -93,14 +100,7 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
    command rejects with `usage:` line.
 ❌ Do NOT swap recipient/sender on `send`.
 
-## Working directory rule (CRITICAL)
-
-Run all `claudeteam …` commands from your **current working directory**
-— do NOT `cd` anywhere. `runtime_config.json` (which has the `chat_id`
-and `lark_profile`) lives next to where you were spawned; if you
-`cd /elsewhere && claudeteam say …`, the command runs against a
-different `runtime_config.json` (or none) and fails with
-`chat_id not set`.
+{workdir_rule}
 
 ## Quick reference
 - `claudeteam inbox {name}` — unread
@@ -121,7 +121,8 @@ def render(agent: str, *, role: str | None = None,
     cli = cli if cli is not None else (cfg.get("cli") or "claude-code")
     model = model if model is not None else (cfg.get("model") or "")
     body = _MANAGER_BODY if agent == "manager" else _WORKER_BODY
-    return body.format(name=agent, role=role, cli=cli, model=model)
+    return body.format(name=agent, role=role, cli=cli, model=model,
+                       workdir_rule=_WORKDIR_RULE)
 
 
 def init_prompt(agent: str) -> str:
