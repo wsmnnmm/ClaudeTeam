@@ -68,6 +68,22 @@ _COMMANDS: dict[str, str] = {
         "Run `claudeteam health` and summarize: any red checks? any agent with "
         "no heartbeat in the last 30 minutes?\n"
     ),
+    # Round-94: durable agent memory (R83/R87/R92). Without these hooks
+    # `/remember` and `/recall` go through claude-code's LLM parse path
+    # instead of router/CLI dispatch, which is slower and inconsistent
+    # with the other slash commands.
+    "remember": (
+        "Take the user's argument as a memory note for yourself. "
+        "Run `claudeteam remember <your-name> <kind> \"<content>\" [--ref <ref>]` "
+        "where kind is one of: task_assigned / task_completed / learning / "
+        "blocker / decision / note. Memory persists across /clear and "
+        "auto-injects into your next init prompt.\n"
+    ),
+    "recall": (
+        "Run `claudeteam recall <your-name>` to print your most recent memory "
+        "entries (default last 20, oldest-first). Add `<other-agent>` instead "
+        "of <your-name> to peek at another agent's memory (manager 巡视 use).\n"
+    ),
 }
 
 # Every command except `health` refers to <your-name>; `health` is name-agnostic.

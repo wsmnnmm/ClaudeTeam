@@ -18,10 +18,37 @@ def test_install_hooks_creates_md_per_command():
 
         cmds_dir = Path(tmp) / ".claude" / "commands"
         assert cmds_dir.exists()
-        # at least the documented commands
-        for name in ("inbox", "team", "status", "say", "task", "health"):
+        # Round-94: remember + recall hooks added to keep slash dispatch
+        # consistent with the rest (router-level, no LLM parse).
+        for name in ("inbox", "team", "status", "say", "task", "health",
+                     "remember", "recall"):
             assert (cmds_dir / f"{name}.md").exists(), f"missing {name}.md"
-        assert "wrote 6 slash command" in out
+        assert "wrote 8 slash command" in out
+
+
+def test_install_hooks_remember_md_documents_kind_vocabulary():
+    """The remember hook must teach which `kind` values are convention
+    so agents don't invent free-form labels (still works but breaks
+    cross-agent consistency for the boss reading recall output)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run_cli(["install-hooks", tmp])
+        body = (Path(tmp) / ".claude" / "commands" / "remember.md").read_text(
+            encoding="utf-8")
+        for kind in ("task_assigned", "task_completed", "learning",
+                     "blocker", "decision", "note"):
+            assert kind in body
+        assert "claudeteam remember" in body
+
+
+def test_install_hooks_recall_md_mentions_other_agent_lookup():
+    """The recall hook must mention that <other-agent> is also valid —
+    that's the manager 巡视 path enabling cross-agent memory peeks."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run_cli(["install-hooks", tmp])
+        body = (Path(tmp) / ".claude" / "commands" / "recall.md").read_text(
+            encoding="utf-8")
+        assert "claudeteam recall" in body
+        assert "other-agent" in body or "another agent" in body.lower()
 
 
 def test_install_hooks_idempotent_overwrites_existing_files():
