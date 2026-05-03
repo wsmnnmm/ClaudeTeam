@@ -1,4 +1,4 @@
-"""Thin wrapper around `npx @larksuite/cli`.
+"""Thin wrapper around the lark-cli binary.
 
 Single function: `call(args, *, profile, timeout) -> dict | None`.
 
@@ -6,9 +6,14 @@ Returns the `data` field of lark-cli's JSON response on success, `{}` if
 stdout is empty, `None` on any failure.  Proxy bypass is automatic when
 `LARK_CLI_NO_PROXY=1` is set in the environment.
 
-Production note: on host networks, lark-cli routinely takes ~73 seconds
-per call (memory: lark-cli send is ~73s).  Default timeout = 90s; bump
-via `CLAUDETEAM_LARK_TIMEOUT` if needed.
+Round-86 perf note: an earlier draft of this docstring claimed
+"lark-cli routinely takes ~73 seconds per call". That was npx's
+package-lookup overhead, not the API. `_resolve_cli_prefix` now picks
+the direct binary when one is on disk (`lark-cli` on PATH or the npx
+cache binary at `~/.npm/_npx/<hash>/node_modules/.bin/lark-cli`), so
+real round-trip is ~0.6s on macOS host. Default timeout = 90s gives
+plenty of margin; bump via `CLAUDETEAM_LARK_TIMEOUT` only if your
+network actually IS slow.
 
 Tests inject a fake subprocess.run via the `run=` kwarg.
 """
