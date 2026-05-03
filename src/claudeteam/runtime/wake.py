@@ -49,6 +49,20 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
     return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
+def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
+                      timeout_s: float, poll_interval_s: float,
+                      capture: Callable, sleep: Callable, now: Callable) -> bool:
+    """Loop `is_ready` checks until a ready marker shows up or `timeout_s`
+    elapses. Pure poll — no spawn, no side effects, no defaulting (caller
+    fills in collaborators)."""
+    deadline = now() + timeout_s
+    while now() < deadline:
+        if is_ready(target, adapter, capture=capture):
+            return True
+        sleep(poll_interval_s)
+    return False
+
+
 def wait_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                      timeout_s: float = 20.0,
                      poll_interval_s: float = 0.5,
@@ -59,15 +73,13 @@ def wait_until_ready(target: tmux.Target, adapter: CliAdapter, *,
     after a fresh `tmux.spawn_agent` to wait for the CLI banner before
     the next inject. Returns True if a marker appeared in time.
     """
-    capture = capture or tmux.capture_pane
-    sleep = sleep or time.sleep
-    now = now or time.monotonic
-    deadline = now() + timeout_s
-    while now() < deadline:
-        if is_ready(target, adapter, capture=capture):
-            return True
-        sleep(poll_interval_s)
-    return False
+    return _poll_until_ready(
+        target, adapter,
+        timeout_s=timeout_s, poll_interval_s=poll_interval_s,
+        capture=capture or tmux.capture_pane,
+        sleep=sleep or time.sleep,
+        now=now or time.monotonic,
+    )
 
 
 def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
@@ -104,17 +116,20 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
     if not spawn(target, spawn_cmd):
         return False
 
-    deadline = now() + timeout_s
-    while now() < deadline:
+    # Give the CLI a beat to boot before checking — the pane was just
+    # spawned; an immediate is_ready will always be False and burns a
+    # capture-pane call.
+    sleep(poll_interval_s)
+    if not _poll_until_ready(target, adapter,
+                             timeout_s=timeout_s, poll_interval_s=poll_interval_s,
+                             capture=capture, sleep=sleep, now=now):
+        return False
+
+    # CLI just came up. Feed it the identity init prompt before whatever
+    # real message follows, so the agent starts knowing who it is.
+    if init_msg:
+        inject(target, init_msg, submit_keys=adapter.submit_keys())
         sleep(poll_interval_s)
-        if is_ready(target, adapter, capture=capture):
-            # CLI just came up. Feed it the identity init prompt before
-            # whatever real message follows, so the agent starts knowing
-            # who it is.
-            if init_msg:
-                inject(target, init_msg, submit_keys=adapter.submit_keys())
-                sleep(poll_interval_s)
-            if on_woken is not None:
-                on_woken()
-            return True
-    return False
+    if on_woken is not None:
+        on_woken()
+    return True
