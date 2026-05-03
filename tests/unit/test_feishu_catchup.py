@@ -163,3 +163,86 @@ def test_pending_lines_round_trip_through_process_lines():
     assert stats.handled == 1
     assert applies[0].text == "catch this"
     assert applies[0].create_time == "5000"
+
+
+# ── live lark-cli 1.0.21 response shape (REGRESSION ROUND-56) ───
+#
+# `lark-cli im +chat-messages-list` emits messages with content at TOP
+# LEVEL (not under .body.content) AND create_time as a human-readable
+# string ("2026-05-03 18:53"), not epoch ms. Prior to round-56,
+# catchup silently dropped every replayed message because:
+#   - body.get("content") returned "" (no .body key in live shape)
+#   - int("2026-05-03 ...") raised ValueError → message skipped
+# Tests below pin the live shape so we don't regress.
+
+
+def _msg_live(msg_id, create_time_iso, *, text="hi", chat_id="oc_x", sender="ou_user"):
+    """Mirror lark-cli 1.0.21+ chat-messages-list shape: content at top
+    level, create_time as 'YYYY-MM-DD HH:MM[:SS]'."""
+    return {
+        "message_id": msg_id,
+        "create_time": create_time_iso,
+        "chat_id": chat_id,
+        "msg_type": "text",
+        "sender": {"id": sender, "id_type": "open_id"},
+        "content": json.dumps({"text": text}),
+    }
+
+
+def test_pending_lines_handles_live_lark_cli_shape():
+    """REGRESSION: live shape has content at top + ISO create_time. Old
+    catchup silently dropped these as 'empty' / unparseable."""
+    history = [
+        _msg_live("om_live_1", "2026-05-03 18:50",
+                  text="hello from live shape"),
+    ]
+    with isolated_env():
+        catchup.write_cursor("om_old", "1700000000000")  # in 2023
+        lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
+    assert len(lines) == 1, (
+        f"live-shape message should be kept; got {len(lines)} lines")
+    payload = json.loads(lines[0])
+    msg = payload["event"]["message"]
+    assert msg["message_id"] == "om_live_1"
+    # Content survives the conversion
+    assert "hello from live shape" in msg["content"]
+
+
+def test_pending_lines_iso_time_compared_correctly_against_epoch_cursor():
+    """The cursor stores epoch ms (set by record_decision from subscribe
+    events), but list_recent returns ISO strings. The comparator must
+    coerce both to the same scale."""
+    # 2026-05-03 18:50 local ≈ 1777805400000 ish
+    history = [
+        _msg_live("om_before", "2026-05-03 17:00"),
+        _msg_live("om_after", "2026-05-03 19:00"),
+    ]
+    with isolated_env():
+        # cursor in epoch ms, between the two ISO times above
+        # 2026-05-03 18:00 local = ~1777801200000
+        catchup.write_cursor("om_cursor", "1777801200000")
+        lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
+    parsed = [json.loads(l) for l in lines]
+    ids = [p["event"]["message"]["message_id"] for p in parsed]
+    # only om_after should survive (newer than cursor's epoch)
+    assert ids == ["om_after"], f"expected only om_after, got {ids}"
+
+
+def test_pending_lines_round_trip_with_live_shape_through_process_lines():
+    """End-to-end: replay using the live shape, the events go through
+    subscribe.process_lines and produce a real handled Decision (not
+    silently dropped as 'empty')."""
+    history = [_msg_live("om_replay_live", "2026-05-03 19:00",
+                          text="catch this live")]
+    with isolated_env():
+        lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
+        applies = []
+        stats = process_lines(
+            lines,
+            team_agents=["manager"],
+            chat_id="oc_x",
+            apply_fn=lambda d: applies.append(d),
+        )
+    assert stats.handled == 1, (
+        f"live-shape replay should produce 1 handled, got {dict(stats.drops_by_reason)}")
+    assert applies[0].text == "catch this live"

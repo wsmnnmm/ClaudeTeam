@@ -16,9 +16,16 @@ This module bridges that gap:
 Cursor advances on every classified Decision (route or drop), so a
 crash mid-apply means we re-encounter the message and lean on
 process_lines' dedup set to skip duplicates.
+
+Two response shapes seen in the wild from `lark-cli im +chat-messages-list`
+(round-56 smoke caught this):
+  - older / fixture: `{body: {content: "..."}, create_time: "<epoch-ms>"}`
+  - lark-cli 1.0.21 live: `{content: "...", create_time: "2026-05-03 18:53"}`
+The shape-normalisation helpers below accept both.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from typing import Callable, Iterable
 
@@ -55,18 +62,28 @@ def record_decision(decision: Decision) -> None:
 # ── replay ────────────────────────────────────────────────────
 
 
+def _extract_content(fei_msg: dict) -> str:
+    """Pick content out of either lark-cli response shape:
+
+    Live (lark-cli 1.0.21+): `{"content": "<text>"}`
+    Older / fixtures: `{"body": {"content": "<text>"}}`
+
+    Falls back to "" if neither is present."""
+    body = fei_msg.get("body") or {}
+    return body.get("content") or fei_msg.get("content") or ""
+
+
 def _msg_to_event_line(fei_msg: dict) -> str:
     """Convert a chat-messages-list row into one NDJSON line matching
     `lark-cli event +subscribe --compact` shape."""
     sender = fei_msg.get("sender") or {}
-    body = fei_msg.get("body") or {}
     payload = {
         "event": {
             "message": {
                 "message_id": fei_msg.get("message_id", ""),
                 "chat_id": fei_msg.get("chat_id", ""),
                 "message_type": fei_msg.get("msg_type", "text"),
-                "content": body.get("content", ""),
+                "content": _extract_content(fei_msg),
                 "create_time": fei_msg.get("create_time", ""),
             },
             "sender": {
@@ -77,17 +94,32 @@ def _msg_to_event_line(fei_msg: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _newer_than(messages: Iterable[dict], cursor_create_time: str) -> list[dict]:
-    cutoff = int(cursor_create_time or 0)
-    fresh = []
-    for m in messages:
-        ct = m.get("create_time")
+def _to_epoch_ms(create_time: object) -> int:
+    """Coerce a chat-messages-list create_time into epoch ms.
+
+    Accepts:
+      - int / numeric str: passed through (already epoch ms)
+      - "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS" (lark-cli 1.0.21
+        live shape): parsed as local time → epoch ms
+    Returns 0 when uninterpretable so `_newer_than` treats the row
+    as older than any non-zero cursor (i.e. "skip safely")."""
+    if not create_time:
+        return 0
+    s = str(create_time).strip()
+    if s.isdigit():
+        return int(s)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            if int(ct or 0) > cutoff:
-                fresh.append(m)
-        except (TypeError, ValueError):
+            return int(_dt.datetime.strptime(s, fmt).timestamp() * 1000)
+        except ValueError:
             continue
-    fresh.sort(key=lambda m: int(m.get("create_time") or 0))
+    return 0
+
+
+def _newer_than(messages: Iterable[dict], cursor_create_time: str) -> list[dict]:
+    cutoff = _to_epoch_ms(cursor_create_time)
+    fresh = [m for m in messages if _to_epoch_ms(m.get("create_time")) > cutoff]
+    fresh.sort(key=lambda m: _to_epoch_ms(m.get("create_time")))
     return fresh
 
 
