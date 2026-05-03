@@ -213,3 +213,28 @@ def test_session_name_falls_back_to_default_when_team_corrupt():
         with contextlib.redirect_stderr(io.StringIO()):
             assert config.session_name() == "ClaudeTeam"
             assert config.agent_names() == []
+
+
+def test_load_team_falls_back_on_oserror_with_warning():
+    """If the file is present but unreadable (e.g. permission denied,
+    encoding error), the lenient loader should still return the default
+    + warn. Easier to stage via attr_patch on read_json since we can't
+    portably create an unreadable file in CI."""
+    import io
+    import contextlib
+    from helpers import attr_patch
+    from claudeteam.runtime import config as cfg_module
+
+    def boom(*a, **kw):
+        raise OSError("[Errno 13] Permission denied")
+
+    with isolated_env(team={"agents": {"a": {}}}):
+        # The file IS valid; we're simulating an OS-level read failure
+        err = io.StringIO()
+        with attr_patch(cfg_module, read_json=boom), \
+                contextlib.redirect_stderr(err):
+            loaded = config.load_team()
+        # default: empty agents, default session
+        assert loaded.get("agents") == {}
+        assert "team.json" in err.getvalue()
+        assert "unreadable" in err.getvalue()

@@ -49,17 +49,26 @@ _DEFAULT_TEAM: dict = {"session": "ClaudeTeam", "agents": {}, "default_model": "
 
 
 def _read_json_lenient(path: Path, default: dict, label: str) -> dict:
-    """Like util.read_json but degrades gracefully on JSONDecodeError —
+    """Like util.read_json but degrades gracefully on parse / I/O errors —
     prints a stderr warning and returns the default dict instead of
-    raising. Used at config load points where a malformed team.json /
-    runtime_config.json shouldn't kill every claudeteam command; the
-    operator sees the warning + can still run `claudeteam health` to
-    get a structured corruption report."""
+    raising. Used at config load points where a malformed or unreadable
+    team.json / runtime_config.json shouldn't kill every claudeteam
+    command; the operator sees the warning + can still run
+    `claudeteam health` to get a structured corruption report.
+
+    Catches:
+      - JSONDecodeError: file present but not valid JSON
+      - OSError: PermissionError, file vanished mid-read, encoding
+        errors. Ditto for "cannot access this config file"; CLI
+        should still answer.
+    """
     try:
         return read_json(path, dict(default))
     except json.JSONDecodeError as e:
         print(f"  ⚠️ {label} ({path}) is not valid JSON: {e}", file=sys.stderr)
-        return dict(default)
+    except OSError as e:
+        print(f"  ⚠️ {label} ({path}) unreadable: {e}", file=sys.stderr)
+    return dict(default)
 
 
 def load_team() -> dict:
