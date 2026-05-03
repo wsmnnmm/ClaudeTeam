@@ -9,19 +9,23 @@ Pure shell-out wrapper, no caching. Add new CLI types here as their
 ecosystems grow tools.
 
 Useful when the boss asks "how much did this team burn today?" or
-when planning lazy-wake configuration.
+when planning lazy-wake configuration. With `--json`, dump a
+machine-readable record so smoke conductors / dashboards can ingest
+the same numbers without re-parsing the formatted output.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from typing import Callable
 
 from claudeteam.runtime import config
-from claudeteam.util import error_exit, help_requested, pop_flag
+from claudeteam.util import error_exit, help_requested, pop_bool_flag, pop_flag
 
 
-USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N]"
+USAGE = ("usage: claudeteam usage [--view daily|monthly|session|blocks] "
+         "[--days N] [--json]")
 
 # ccusage's documented views — validated against argv for clearer errors
 _VIEWS = ("daily", "monthly", "session", "blocks")
@@ -59,12 +63,64 @@ def _summary_for_clis(clis: set[str]) -> list[str]:
     return lines
 
 
+def _build_data(view: str, days: str, clis: set[str]) -> dict:
+    """Run ccusage if applicable, return a structured record. Used by
+    both the text renderer (formatted lines) and the --json renderer."""
+    data = {
+        "view": view,
+        "days": days or None,
+        "clis": sorted(clis),
+        "claude_code": None,
+        "other_clis": [],
+    }
+    if "claude-code" in clis:
+        rc, out = _run_ccusage(view, days)
+        data["claude_code"] = {
+            "rc": rc,
+            "ok": rc == 0,
+            "output": out,
+            "lines": (out or "").splitlines(),
+        }
+    for cli in sorted(clis):
+        if cli == "claude-code":
+            continue
+        if cli in ("codex-cli", "kimi-code", "kimi-cli"):
+            note = "no upstream usage tool — track via the provider dashboard"
+        else:
+            note = "unknown — no usage adapter"
+        data["other_clis"].append({"cli": cli, "note": note})
+    return data
+
+
+def _emit_text(data: dict) -> None:
+    print(f"━━ usage ({data['view']}) ━━")
+    cc = data.get("claude_code")
+    if cc is not None:
+        print("\nclaude-code (via ccusage):")
+        if not cc["ok"]:
+            print("  ⚠️  ccusage failed:")
+            for line in cc["lines"]:
+                print(f"    {line}")
+        else:
+            for line in cc["lines"]:
+                print(f"  {line}")
+    if data["other_clis"]:
+        print("\nother CLIs:")
+        for row in data["other_clis"]:
+            print(f"  {row['cli']}: {row['note']}")
+
+
+def _emit_json(data: dict) -> None:
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
 def main(argv: list[str]) -> int:
     rest = list(argv)
     if help_requested(rest):
         print(USAGE)
         return 0
 
+    as_json = pop_bool_flag(rest, "--json")
     view = pop_flag(rest, "--view") or "daily"
     days = pop_flag(rest, "--days") or ""
     if rest:
@@ -78,23 +134,9 @@ def main(argv: list[str]) -> int:
     except Exception:
         clis = set()
 
-    print(f"━━ usage ({view}) ━━")
-
-    if "claude-code" in clis:
-        print("\nclaude-code (via ccusage):")
-        rc, out = _run_ccusage(view, days)
-        if rc != 0:
-            print("  ⚠️  ccusage failed:")
-            for line in (out or "").splitlines():
-                print(f"    {line}")
-        else:
-            for line in out.splitlines():
-                print(f"  {line}")
-
-    other = _summary_for_clis(clis)
-    if other:
-        print("\nother CLIs:")
-        for line in other:
-            print(line)
-
+    data = _build_data(view, days, clis)
+    if as_json:
+        _emit_json(data)
+    else:
+        _emit_text(data)
     return 0

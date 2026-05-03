@@ -177,3 +177,62 @@ def test_usage_help():
     rc, out, _ = run_cli(["usage", "--help"])
     assert rc == 0
     assert "usage: claudeteam usage" in out
+
+
+# ── --json mode ─────────────────────────────────────────────────
+
+
+def test_usage_json_dumps_structured_record_with_ccusage_output():
+    """--json should serialise the ccusage rc + lines + the other-CLI
+    notes into one machine-readable record."""
+    import json as _json
+    team = {"agents": {
+        "manager":      {"cli": "claude-code"},
+        "worker_codex": {"cli": "codex-cli"},
+    }}
+    with isolated_env(team=team), _stub_npx_present(True), \
+            _stub_runner(rc=0, output="Total: 7777"):
+        rc, out, _ = run_cli(["usage", "--json"])
+        assert rc == 0
+        data = _json.loads(out)
+        assert data["view"] == "daily"
+        assert data["days"] is None
+        assert "claude-code" in data["clis"]
+        assert "codex-cli" in data["clis"]
+        assert data["claude_code"]["ok"] is True
+        assert data["claude_code"]["rc"] == 0
+        assert "Total: 7777" in data["claude_code"]["output"]
+        # other_clis lists codex with the no-upstream note
+        codex_entry = next(r for r in data["other_clis"] if r["cli"] == "codex-cli")
+        assert "no upstream usage tool" in codex_entry["note"]
+
+
+def test_usage_json_records_ccusage_failure_without_aborting():
+    """When ccusage exits non-zero, JSON still emits with ok=False so
+    consumers can branch on the field rather than re-parsing text."""
+    import json as _json
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    with isolated_env(team=team), _stub_npx_present(True), \
+            _stub_runner(rc=1, output="ccusage: not initialised"):
+        rc, out, _ = run_cli(["usage", "--json"])
+        # CLI exit is 0 — ccusage failure is data, not a CLI error
+        assert rc == 0
+        data = _json.loads(out)
+        assert data["claude_code"]["ok"] is False
+        assert data["claude_code"]["rc"] == 1
+        assert "not initialised" in data["claude_code"]["output"]
+
+
+def test_usage_json_threads_view_and_days_into_record():
+    """--view + --days flags should appear in the JSON record so
+    consumers know what window they're looking at."""
+    import json as _json
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    with isolated_env(team=team), _stub_npx_present(True), \
+            _stub_runner(rc=0, output="Monthly summary"):
+        rc, out, _ = run_cli(["usage", "--view", "monthly", "--days", "30",
+                              "--json"])
+        assert rc == 0
+        data = _json.loads(out)
+        assert data["view"] == "monthly"
+        assert data["days"] == "30"

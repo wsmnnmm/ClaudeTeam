@@ -165,6 +165,8 @@ bootstrap & ops
   claudeteam down                               graceful inverse of up
   claudeteam health [--json]                    one-shot deployment-state check
                                                 (--json for {ok, bad, warn, lines} dict)
+  claudeteam usage [--view V] [--days N] [--json]  ccusage wrapper for claude-code agents
+                                                (--json for {view, claude_code, other_clis, ...})
 
 local store / inbox
   claudeteam send <to> <from> <message> [priority]
