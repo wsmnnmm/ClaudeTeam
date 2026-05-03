@@ -49,12 +49,36 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
     return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
+def wait_until_ready(target: tmux.Target, adapter: CliAdapter, *,
+                     timeout_s: float = 20.0,
+                     poll_interval_s: float = 0.5,
+                     capture: Callable | None = None,
+                     sleep: Callable | None = None,
+                     now: Callable | None = None) -> bool:
+    """Poll the pane until a ready marker shows up. Does NOT spawn — use
+    after a fresh `tmux.spawn_agent` to wait for the CLI banner before
+    the next inject. Returns True if a marker appeared in time.
+    """
+    capture = capture or tmux.capture_pane
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
+    deadline = now() + timeout_s
+    while now() < deadline:
+        if is_ready(target, adapter, capture=capture):
+            return True
+        sleep(poll_interval_s)
+    return False
+
+
 def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
                     spawn_cmd: str,
+                    init_msg: str | None = None,
+                    on_woken: Callable[[], None] | None = None,
                     timeout_s: float = 30.0,
                     poll_interval_s: float = 0.5,
                     capture: Callable | None = None,
                     spawn: Callable | None = None,
+                    inject: Callable | None = None,
                     sleep: Callable | None = None,
                     now: Callable | None = None) -> bool:
     """Ensure the agent's CLI is ready to receive input.
@@ -62,14 +86,20 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
     Returns True iff the pane shows a ready marker (already awake, or
     woken in time).  Returns False on timeout — caller decides whether
     to inject anyway, queue, or surface to boss.
+
+    When the function had to actually spawn (pane was dormant on entry)
+    AND \`init_msg\` is provided, it injects the identity/init prompt
+    after the CLI shows ready, then calls \`on_woken\` (typically used
+    to flip the agent's status row from \"待命\" to \"进行中\").
     """
     capture = capture or tmux.capture_pane
     spawn = spawn or tmux.spawn_agent
+    inject = inject or tmux.inject
     sleep = sleep or time.sleep
     now = now or time.monotonic
 
     if is_ready(target, adapter, capture=capture):
-        return True
+        return True  # already awake — caller already handled identity at start
 
     if not spawn(target, spawn_cmd):
         return False
@@ -78,5 +108,13 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
     while now() < deadline:
         sleep(poll_interval_s)
         if is_ready(target, adapter, capture=capture):
+            # CLI just came up. Feed it the identity init prompt before
+            # whatever real message follows, so the agent starts knowing
+            # who it is.
+            if init_msg:
+                inject(target, init_msg, submit_keys=adapter.submit_keys())
+                sleep(poll_interval_s)
+            if on_woken is not None:
+                on_woken()
             return True
     return False

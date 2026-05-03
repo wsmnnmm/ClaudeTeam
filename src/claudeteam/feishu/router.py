@@ -19,6 +19,8 @@ from enum import Enum
 class Action(Enum):
     DROP = "drop"
     ROUTE = "route"
+    SLASH = "slash"   # operator slash command, dispatched at router-level (zero LLM)
+    BROADCAST = "broadcast"  # @team / @all / 全体成员 → every non-sender agent
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,24 @@ class Decision:
 # routes to worker_cc rather than being misread as worker_cc-as-sender).
 _SENDER_RE = re.compile(r"^\s*\[([A-Za-z0-9_\-]+)\]\s*")
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
+
+# Broadcast triggers — match exactly these tokens or 全体 prefix.
+_BROADCAST_TOKENS = ("@team", "@all", "@everyone")
+_BROADCAST_PREFIX = "全体"   # matches "全体成员", "全体注意" etc.
+
+
+def _is_broadcast(text: str) -> bool:
+    """Detect operator broadcast: \`@team\` / \`@all\` / \`@everyone\` or
+    a Chinese 全体X phrase."""
+    if not text:
+        return False
+    if _BROADCAST_PREFIX in text:
+        return True
+    # Token-aware check (avoid matching @teammate or @allowance)
+    for tok in _BROADCAST_TOKENS:
+        if re.search(rf"(^|\s){re.escape(tok)}(\s|$|[，。,!?])", text):
+            return True
+    return False
 
 
 def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
@@ -78,14 +98,16 @@ def classify_event(event: dict, *,
         default_target: agent to route to when no @mention and sender is human
 
     Decision rules (first match wins):
-        no message_id     → DROP "no_msg_id"
-        seen msg_id       → DROP "dedup"
-        wrong chat_id     → DROP "cross_team"
-        sender == bot_id  → DROP "bot_self"
-        empty text        → DROP "empty"
-        @mentions hit     → ROUTE to mentioned agents (excluding the sender)
-        sender unknown    → ROUTE to [default_target]
-        agent broadcast   → DROP "agent_no_target" (no humans to deliver to)
+        no message_id        → DROP "no_msg_id"
+        seen msg_id          → DROP "dedup"
+        wrong chat_id        → DROP "cross_team"
+        sender == bot_id     → DROP "bot_self"
+        empty text           → DROP "empty"
+        text starts with `/` → SLASH (operator command, zero-LLM dispatch)
+        broadcast trigger    → BROADCAST to all non-sender agents
+        @mentions hit        → ROUTE to mentioned agents (excluding the sender)
+        sender unknown       → ROUTE to [default_target]
+        agent broadcast      → DROP "agent_no_target" (no humans to deliver to)
     """
     agents = set(team_agents)
     msg_id = event.get("message_id", "")
@@ -103,8 +125,22 @@ def classify_event(event: dict, *,
     if not raw_text:
         return Decision(Action.DROP, reason="empty", **common)
 
+    # Slash command: matched at router level, NOT injected into any pane.
+    # Deliver layer runs the registered handler and posts the result back
+    # to chat as a bot reply. Zero LLM involvement.
+    if raw_text.startswith("/"):
+        return Decision(Action.SLASH, text=raw_text, **common)
+
     sender, text = _parse_sender(raw_text, agents)
     mentions = [a for a in _parse_mentions(text, agents) if a != sender]
+
+    # Broadcast: hit all non-sender agents (covers "全体成员"/"@team"/"@all"
+    # so an operator can address the whole team without listing every name).
+    if _is_broadcast(text) and not mentions:
+        targets = [a for a in team_agents if a != sender]
+        if targets:
+            return Decision(Action.BROADCAST, targets=targets, sender=sender,
+                            text=text, **common)
 
     if mentions:
         return Decision(Action.ROUTE, targets=mentions, sender=sender,

@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from claudeteam.agents import adapter_for_agent as _default_adapter_for_agent
-from claudeteam.feishu.router import Decision
+from claudeteam.feishu import slash as _slash
+from claudeteam.feishu.router import Action, Decision
 from claudeteam.runtime import config, tmux, wake
 from claudeteam.store import local_facts
 
@@ -25,6 +26,7 @@ class DeliveryReport:
     failed_inject: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)   # inbox kept, inject skipped
     skipped: bool = False                                    # True iff decision was DROP
+    slash_reply: str = ""                                    # set when action=SLASH
 
 
 @dataclass(frozen=True)
@@ -72,9 +74,16 @@ def _inject_to_pane(agent: str, decision: Decision,
         if wake_fn is not None:
             # Wrap with the same env prefix start.py / hire.py use so a
             # lazy-woken pane inherits CLAUDETEAM_STATE_DIR and friends.
+            from claudeteam.agents import identity as _identity
             from claudeteam.commands.start import pane_env_prefix
             spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
-            if not wake_fn(target, adapter, spawn_cmd=spawn_cmd):
+            init_msg = _identity.init_prompt(agent)
+            # A lazy pane that just got woken needs its status flipped from
+            # "待命" to "进行中" so `claudeteam team` reflects reality.
+            on_woken = lambda: local_facts.upsert_status(
+                agent, "进行中", "responding to first message")
+            if not wake_fn(target, adapter, spawn_cmd=spawn_cmd,
+                           init_msg=init_msg, on_woken=on_woken):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
         ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
     except Exception as e:
@@ -88,9 +97,19 @@ def apply(decision: Decision, *,
           tmux_inject: Callable | None = None,
           append_message: Callable | None = None,
           wake_fn: Callable | None = None,
-          session: str | None = None) -> DeliveryReport:
-    """Apply `decision`. Side-effects: append_message + (optional wake) +
-    tmux.inject. Skips inject when the pane is rate-limited.
+          session: str | None = None,
+          team_agents: list[str] | None = None,
+          slash_dispatch: Callable | None = None,
+          chat_send: Callable | None = None,
+          chat_id: str | None = None,
+          profile: str | None = None) -> DeliveryReport:
+    """Apply `decision`. Side-effects per action:
+
+    DROP       — no-op (skipped=True).
+    SLASH      — dispatch via slash registry, post reply to chat as bot.
+                 Zero pane touches.
+    BROADCAST  — same as ROUTE but targets are all non-sender agents.
+    ROUTE      — write inbox row + tmux inject for each target.
 
     All collaborators are injectable for tests; production defaults read
     from the real modules.
@@ -99,6 +118,15 @@ def apply(decision: Decision, *,
         return DeliveryReport(skipped=True)
 
     deps = _resolve_deps(adapter_for_agent, tmux_inject, append_message, session)
+
+    if decision.action is Action.SLASH:
+        return _apply_slash(decision, deps,
+                            team_agents=team_agents,
+                            slash_dispatch=slash_dispatch,
+                            chat_send=chat_send,
+                            chat_id=chat_id,
+                            profile=profile)
+
     sender = decision.sender or "user"
     report = DeliveryReport()
     for agent in decision.targets:
@@ -106,4 +134,32 @@ def apply(decision: Decision, *,
             continue
         outcome = _inject_to_pane(agent, decision, deps, wake_fn)
         getattr(report, outcome).append(agent)
+    return report
+
+
+def _apply_slash(decision: Decision, deps: _Deps, *,
+                 team_agents: list[str] | None,
+                 slash_dispatch: Callable | None,
+                 chat_send: Callable | None,
+                 chat_id: str | None,
+                 profile: str | None) -> DeliveryReport:
+    """Run slash command at router level (zero LLM) and post reply to chat
+    as bot. Pane is never touched."""
+    dispatch = slash_dispatch or _slash.dispatch
+    ctx = _slash.SlashContext(
+        team_agents=team_agents or config.agent_names(),
+        session=deps.session,
+    )
+    reply = dispatch(decision.text, ctx)
+
+    report = DeliveryReport(slash_reply=reply)
+    if chat_send is None:
+        from claudeteam.feishu import chat as _chat
+        chat_send = _chat.send_text
+    chat = chat_id if chat_id is not None else config.chat_id()
+    if not chat:
+        print(f"  ⚠️ slash reply ready but chat_id unset; reply suppressed:\n{reply[:200]}")
+        return report
+    prof = profile if profile is not None else config.lark_profile()
+    chat_send(chat, reply, profile=prof, as_user=False, reply_to=decision.msg_id)
     return report

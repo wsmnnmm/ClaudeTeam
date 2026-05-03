@@ -10,7 +10,7 @@ from pathlib import Path
 
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.runtime import config, paths, tmux
+from claudeteam.runtime import config, paths, tmux, wake
 from claudeteam.store import local_facts
 from claudeteam.util import env_str, error_exit, help_requested, warn
 
@@ -84,6 +84,15 @@ def main(argv: list[str]) -> int:
         if not tmux.spawn_agent(target, cmd):
             warn(f"⚠️  failed to spawn CLI in {agent} pane")
             continue
+        # Wait for CLI banner, then inject the identity init prompt so the
+        # agent starts knowing who it is + reads its identity.md + reports
+        # for duty. Without this it sits at an empty prompt forever.
+        if wake.wait_until_ready(target, adapter, timeout_s=20):
+            tmux.inject(target, identity.init_prompt(agent),
+                        submit_keys=adapter.submit_keys())
+        else:
+            warn(f"⚠️  {agent} CLI didn't show ready marker in 20s; "
+                 f"identity init prompt skipped")
         local_facts.upsert_status(agent, "进行中", "initializing")
         print(f"  → {agent} ({cli}) spawned")
 

@@ -1,0 +1,268 @@
+"""Tests for feishu/slash.py — router-level slash command dispatch."""
+from __future__ import annotations
+
+from helpers import attr_patch, tmux_patch
+from claudeteam.feishu import slash
+from claudeteam.runtime import tmux
+
+
+def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
+         session="ClaudeTeam", run=None, sleep=None):
+    """Build a SlashContext for tests with sane stubs by default."""
+    fake_run = run or (lambda *a, **kw: type("R", (), {
+        "returncode": 0, "stdout": "ok\n", "stderr": ""})())
+    fake_sleep = sleep or (lambda _s: None)
+    return slash.SlashContext(
+        team_agents=list(agents),
+        session=session,
+        run=fake_run,
+        sleep=fake_sleep,
+    )
+
+
+# ── is_slash_command (pure) ──────────────────────────────────────
+
+
+def test_is_slash_command_recognises_known_commands():
+    for ok in ("/help", "/team", "/health", "/usage", "/usage daily",
+               "/tmux manager", "/tmux manager 50",
+               "/send manager hello", "/compact", "/compact manager",
+               "/stop manager", "/clear manager"):
+        assert slash.is_slash_command(ok), f"should match: {ok}"
+
+
+def test_is_slash_command_rejects_non_slash_or_unknown():
+    for bad in ("", "no slash here", "/unknown", "/", "  /team  ",  # leading-ws OK
+                "regular text"):
+        if bad.strip().startswith("/") and any(
+                bad.strip().startswith(p) for p in
+                ("/help", "/team", "/health", "/usage", "/tmux",
+                 "/send", "/compact", "/stop", "/clear")):
+            continue
+        assert not slash.is_slash_command(bad), f"should NOT match: {bad!r}"
+
+
+def test_is_slash_command_handles_leading_whitespace():
+    # The classifier uses `text.startswith("/")` after strip; whitespace OK.
+    assert slash.is_slash_command("  /team  ") is True
+
+
+# ── /help ────────────────────────────────────────────────────────
+
+
+def test_help_lists_all_commands():
+    reply = slash.dispatch("/help", _ctx())
+    for c in ("/help", "/team", "/health", "/usage", "/tmux",
+              "/send", "/compact", "/stop", "/clear"):
+        assert c in reply
+
+
+# ── /team ────────────────────────────────────────────────────────
+
+
+def test_team_shells_to_claudeteam_team_subcommand():
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        return type("R", (), {"returncode": 0,
+                              "stdout": "manager 进行中\nworker_cc 进行中",
+                              "stderr": ""})()
+
+    reply = slash.dispatch("/team", _ctx(run=fake_run))
+    assert captured["argv"] == ["claudeteam", "team"]
+    assert "manager 进行中" in reply
+    assert "=== team ===" in reply
+
+
+# ── /health ──────────────────────────────────────────────────────
+
+
+def test_health_shells_to_claudeteam_health():
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        return type("R", (), {"returncode": 0, "stdout": "✅ all green", "stderr": ""})()
+
+    slash.dispatch("/health", _ctx(run=fake_run))
+    assert captured["argv"] == ["claudeteam", "health"]
+
+
+# ── /usage ───────────────────────────────────────────────────────
+
+
+def test_usage_no_view_shells_with_just_subcommand():
+    captured = {}
+    fake_run = lambda argv, **kw: (captured.setdefault("argv", list(argv))
+                                   or type("R", (), {"returncode": 0,
+                                                     "stdout": "x", "stderr": ""})())
+    slash.dispatch("/usage", _ctx(run=fake_run))
+    assert captured["argv"] == ["claudeteam", "usage"]
+
+
+def test_usage_view_threads_through_as_flag():
+    captured = {}
+    fake_run = lambda argv, **kw: (captured.setdefault("argv", list(argv))
+                                   or type("R", (), {"returncode": 0,
+                                                     "stdout": "x", "stderr": ""})())
+    slash.dispatch("/usage daily", _ctx(run=fake_run))
+    assert captured["argv"] == ["claudeteam", "usage", "--view", "daily"]
+
+
+# ── /tmux ────────────────────────────────────────────────────────
+
+
+def test_tmux_captures_specified_pane():
+    captured = {"calls": []}
+
+    def fake_capture(target, lines=80):
+        captured["calls"].append((str(target), lines))
+        return "line1\nline2\nline3"
+
+    with tmux_patch(capture_pane=fake_capture):
+        reply = slash.dispatch("/tmux worker_cc 30", _ctx())
+    assert ("ClaudeTeam:worker_cc", 30) in captured["calls"]
+    assert "line1\nline2\nline3" in reply
+    assert "ClaudeTeam:worker_cc" in reply
+
+
+def test_tmux_unknown_agent_returns_warning():
+    reply = slash.dispatch("/tmux ghost", _ctx())
+    assert "unknown agent" in reply
+    assert "ghost" in reply
+
+
+def test_tmux_default_agent_is_first_in_team():
+    captured = {}
+
+    def fake_capture(target, lines=80):
+        captured["target"] = str(target)
+        return ""
+
+    with tmux_patch(capture_pane=fake_capture):
+        slash.dispatch("/tmux", _ctx(agents=("manager", "worker_cc")))
+    assert captured["target"] == "ClaudeTeam:manager"
+
+
+def test_tmux_clamps_lines_to_max():
+    captured = {}
+
+    def fake_capture(target, lines=80):
+        captured["lines"] = lines
+        return ""
+
+    with tmux_patch(capture_pane=fake_capture):
+        slash.dispatch("/tmux manager 99999", _ctx())
+    assert captured["lines"] == 2000  # _MAX_TMUX_LINES
+
+
+# ── /send ────────────────────────────────────────────────────────
+
+
+def test_send_inject_into_pane():
+    captured = {}
+
+    def fake_inject(target, text, **kw):
+        captured["target"] = str(target)
+        captured["text"] = text
+        return True
+
+    with tmux_patch(inject=fake_inject):
+        reply = slash.dispatch("/send worker_cc hello world", _ctx())
+    assert captured["target"] == "ClaudeTeam:worker_cc"
+    assert captured["text"] == "hello world"
+    assert "✅" in reply
+
+
+def test_send_no_args_returns_usage():
+    reply = slash.dispatch("/send", _ctx())
+    assert "usage:" in reply
+
+
+def test_send_no_msg_returns_usage():
+    reply = slash.dispatch("/send manager", _ctx())
+    assert "missing message body" in reply
+
+
+def test_send_unknown_agent_warns():
+    reply = slash.dispatch("/send ghost yo", _ctx())
+    assert "unknown agent" in reply
+
+
+# ── /compact ─────────────────────────────────────────────────────
+
+
+def test_compact_injects_literal_compact_into_pane():
+    captured = {}
+
+    def fake_inject(target, text, **kw):
+        captured["target"] = str(target)
+        captured["text"] = text
+        return True
+
+    with tmux_patch(inject=fake_inject):
+        slash.dispatch("/compact worker_cc", _ctx())
+    assert captured["target"] == "ClaudeTeam:worker_cc"
+    assert captured["text"] == "/compact"
+
+
+# ── /stop ────────────────────────────────────────────────────────
+
+
+def test_stop_sends_ctrl_c():
+    captured = {}
+
+    def fake_send_keys(target, *keys, **kw):
+        captured["target"] = str(target)
+        captured["keys"] = keys
+        return True
+
+    with tmux_patch(send_keys=fake_send_keys):
+        reply = slash.dispatch("/stop worker_cc", _ctx())
+    assert captured["target"] == "ClaudeTeam:worker_cc"
+    assert "C-c" in captured["keys"]
+    assert "C-c" in reply
+
+
+def test_stop_no_args_returns_usage():
+    reply = slash.dispatch("/stop", _ctx())
+    assert "usage:" in reply
+
+
+# ── /clear ───────────────────────────────────────────────────────
+
+
+def test_clear_injects_clear_then_init_prompt():
+    sequence = []
+
+    def fake_inject(target, text, **kw):
+        sequence.append((str(target), text))
+        return True
+
+    with tmux_patch(inject=fake_inject):
+        reply = slash.dispatch("/clear worker_cc", _ctx())
+    # First inject: literal /clear
+    assert sequence[0] == ("ClaudeTeam:worker_cc", "/clear")
+    # Second inject: identity init prompt — must contain agent name
+    assert sequence[1][0] == "ClaudeTeam:worker_cc"
+    assert "worker_cc" in sequence[1][1]
+    assert "agents/worker_cc/identity.md" in sequence[1][1]
+    assert "✅" in reply
+
+
+# ── unknown / fallback ───────────────────────────────────────────
+
+
+def test_unknown_slash_returns_help_hint():
+    reply = slash.dispatch("/unknownfoo", _ctx())
+    assert "unknown slash command" in reply
+    assert "/help" in reply
+
+
+def test_handler_exception_is_caught():
+    def boom_run(*a, **kw):
+        raise RuntimeError("kaboom")
+    reply = slash.dispatch("/team", _ctx(run=boom_run))
+    # _shell catches OSError but not RuntimeError; dispatch's try/except does
+    assert "slash handler error" in reply or "kaboom" in reply

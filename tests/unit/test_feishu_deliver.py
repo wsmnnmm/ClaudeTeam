@@ -171,7 +171,7 @@ def test_wake_fn_called_per_target_with_spawn_cmd():
     decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
     wake_calls = []
 
-    def fake_wake(target, adapter, *, spawn_cmd):
+    def fake_wake(target, adapter, *, spawn_cmd, init_msg=None, on_woken=None):
         wake_calls.append((str(target), spawn_cmd))
         return True
 

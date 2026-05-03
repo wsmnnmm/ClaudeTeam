@@ -70,10 +70,14 @@ def _fake_alive(answers):
 def test_up_starts_session_and_spawns_two_daemons():
     team = {"session": "S",
             "agents": {"manager": {"cli": "claude-code"}}}
+    # capture_pane returns a string with claude-code's ready marker so
+    # start.py's wake.wait_until_ready short-circuits without polling.
     extras = tmux_patch(
         new_session=lambda *a, **kw: True,
         new_window=lambda *a, **kw: True,
         spawn_agent=lambda *a, **kw: True,
+        capture_pane=lambda target, lines=80: "bypass permissions on\n? for shortcuts\n>",
+        inject=lambda *a, **kw: True,
     )
     with isolated_env(team=team), _fake_tmux(session_alive=False), \
             _fake_popen() as popen_calls, _fake_alive([False, False]), extras:

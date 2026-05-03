@@ -124,6 +124,20 @@ def render(agent: str, *, role: str | None = None,
     return body.format(name=agent, role=role, cli=cli, model=model)
 
 
+def init_prompt(agent: str) -> str:
+    """On-spawn / on-clear / on-reidentify prompt: inject this into an
+    agent's pane so it loads its identity, checks inbox, and reports for
+    duty. Without this, a freshly-spawned claude-code sits at an empty
+    prompt and never knows it's "manager" or "worker_cc".
+    """
+    return (
+        f"You are {agent}. Read agents/{agent}/identity.md, then run:\n"
+        f"  claudeteam inbox {agent}\n"
+        f"  claudeteam status {agent} 进行中 \"ready\"\n"
+        f"Acknowledge with one line: name, state, unread count."
+    )
+
+
 def identity_path(agent: str) -> Path:
     """Where the rendered identity for `agent` lives on disk."""
     return paths.state_dir() / "agents" / agent / "identity.md"
