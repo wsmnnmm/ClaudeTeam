@@ -11,6 +11,11 @@ dist/
 /agents/
 /projects/
 /state/
+# /scripts/ shouldn't exist on this branch (CLAUDE.md bans it), but
+# left-over local checkouts of old main can carry stale runtime state
+# under that name. Belt-and-suspenders so `git add -A` can't sweep
+# .router.pid / runtime_config.json into a commit (caught round-79).
+/scripts/
 .claude/scheduled_tasks.lock
 team.json
 runtime_config.json
