@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~8 100 LOC (src + tests), 381 tests green.
+capability requires them.  Currently ~8 500 LOC (src + tests), 463 tests green.
 
 ## Prerequisites
 
@@ -204,7 +204,8 @@ src/claudeteam/
 
 tests/
 ├── unit/              pure-module tests (mocked I/O via attr_patch)
-├── smoke/             end-to-end in-process tests + scenarios/*.md
+├── integration/       end-to-end in-process tests
+├── scenarios/         operator-run regression playbooks (markdown)
 ├── helpers.py         isolated_env() + run_cli() + env_patch / attr_patch /
 │                      tmux_patch + FakeProc / CallRecorder
 └── run.py             stdlib-only runner (no pytest dep)
@@ -231,27 +232,29 @@ and `tests/integration/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 381 passed, 0 failed
+tests: 463 passed, 0 failed
 ```
 
 ## What's missing
 
 Documented honestly because some of it is needed for production use:
 
-- **Image / file Feishu messages**: text-only on the wire today; the
-  router drops `msg_type=image` events as `empty`
-- **Post-compact reread**: when a Claude Code agent's context gets
-  compacted, identity.md isn't re-injected automatically
 - **Docker deployment**: no Dockerfile / compose files yet
 - **Multi-team isolation polish**: env-var-based today; depends on the
   operator setting `CLAUDETEAM_STATE_DIR` and unique tmux session names
   per team. Works, but no `claudeteam switch <team>` UX
 - **Bitable / kanban projection**: skipped by design — local facts only
 
-What's done that the previous "what's missing" listed:
-slash-command interceptors (`claudeteam install-hooks`),
-`claudeteam usage` (ccusage wrapper), rate-limit detection
-(adapter `rate_limit_markers()` + deliver-skips-when-rate-limited).
+What's done that earlier revisions of this list flagged as missing:
+image / file / audio / sticker Feishu messages route as
+placeholder text instead of dropping; `/compact` schedules a 45 s
+delayed identity re-injection so agents reload `identity.md` after
+self-compacting; slash-command interceptors via
+`claudeteam install-hooks`; `claudeteam usage` (ccusage wrapper);
+rate-limit detection (adapter `rate_limit_markers()` +
+deliver-skips-when-rate-limited); zero-LLM router-level slash
+dispatch (`/help /team /tmux /send /compact /stop /clear /usage
+/health`); broadcast routing (`@team` / `@all` / `全体X`).
 
 The rebuild is on `rebuild/minimal`; it does not share history with
 `main`.  See `tests/scenarios/*.md` for natural-language scenarios
