@@ -178,6 +178,26 @@ def test_usage_view_threads_through_as_flag():
     assert captured["argv"] == ["claudeteam", "usage", "--view", "daily"]
 
 
+def test_usage_returns_card_with_fenced_body():
+    """Round-115: /usage replies as a blue card matching /team /health
+    style. Body is fence-wrapped so ccusage's table layout survives
+    Feishu's lark_md rendering."""
+    fake_run = lambda argv, **kw: type("R", (), {
+        "returncode": 0,
+        "stdout": "Total: $0.42  in: 1.2M  out: 0.4M\n",
+        "stderr": "",
+    })()
+    reply = slash.dispatch("/usage", _ctx(run=fake_run))
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "blue"
+    title = reply["header"]["title"]["content"]
+    assert "/usage" in title
+    assert "(daily)" in title  # default view label
+    body = reply["elements"][0]["text"]["content"]
+    assert "```" in body  # fenced
+    assert "Total: $0.42" in body
+
+
 # ── /tmux ────────────────────────────────────────────────────────
 
 

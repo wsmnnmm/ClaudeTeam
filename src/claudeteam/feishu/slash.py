@@ -195,7 +195,13 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _handle_usage(args: str, ctx: SlashContext) -> str:
+def _handle_usage(args: str, ctx: SlashContext) -> dict:
+    """Run `claudeteam usage` and wrap its output in a card.
+
+    Round-115: was plain text; now matches /team /health card style.
+    Body fences raw output so the table-formatted ccusage rows
+    (totals / per-day breakdown) survive Feishu's lark_md collapsing.
+    """
     now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     view_arg = args.strip().split()[0] if args.strip() else ""
     argv = ["claudeteam", "usage"]
@@ -203,7 +209,12 @@ def _handle_usage(args: str, ctx: SlashContext) -> str:
         argv += ["--view", view_arg]
     view = view_arg or "daily"
     out = _shell(ctx, argv, timeout=120)
-    return f"📊 /usage ({view}) — ({now_str} 北京时间)\n\n{out}"
+    body = f"```\n{out}\n```"
+    return simple_card(
+        f"📊 /usage ({view}) — {now_str} 北京时间",
+        body,
+        color="blue",
+    )
 
 
 def _handle_tmux(args: str, ctx: SlashContext) -> str:
