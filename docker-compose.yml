@@ -1,0 +1,32 @@
+# Minimum-viable compose for ClaudeTeam.
+#
+# Mounts a host `./team-data/` directory into /data so team.json,
+# runtime_config.json, and the state dir survive `docker compose down`.
+# Mounts the host's lark-cli OAuth profile so `claudeteam say`/`router`
+# don't need a fresh authentication round inside the container.
+#
+# Usage:
+#   mkdir -p team-data && cd team-data && claudeteam init   # bootstrap once
+#   docker compose up -d
+#   docker compose exec claudeteam claudeteam up
+#   docker compose exec claudeteam claudeteam health
+#
+# Network: host mode lets lark-cli's long-poll reach Feishu without
+# NAT timeouts. On Docker Desktop (macOS/Windows) host mode is partially
+# emulated — switch to a bridge port-publish if the long-poll dies.
+
+services:
+  claudeteam:
+    build: .
+    image: claudeteam:dev
+    volumes:
+      - ./team-data:/data
+      - ${HOME}/.lark-cli:/root/.lark-cli:ro
+    network_mode: host
+    tty: true
+    stdin_open: true
+    # Keep the container alive so `docker compose exec` works without
+    # auto-restart loops. Operator-driven lifecycle: `claudeteam up`
+    # starts tmux + daemons inside; `claudeteam down` stops them; the
+    # container itself stays around until `docker compose down`.
+    command: ["sleep", "infinity"]

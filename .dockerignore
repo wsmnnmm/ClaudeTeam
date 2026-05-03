@@ -1,0 +1,35 @@
+# Keep the build context small + reproducible.
+
+# Local debris
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Tests + docs aren't needed inside the runtime image; devs who want
+# them bind-mount the repo at /app.
+tests/
+projects/
+workspace/
+scripts/
+
+# Per-deployment state — never bake into an image
+state/
+team-data/
+*.pid
+*.cursor
+
+# Editor / VCS / OS clutter
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Local team config from the host shouldn't leak into images
+team.json
+runtime_config.json
+.claude/

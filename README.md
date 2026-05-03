@@ -112,6 +112,29 @@ Expected: a `[worker_cc] [reply] ok` row newer than the boss message.
 If the loop breaks anywhere, `claudeteam health` + `state/router.cursor`
 + `tmux capture-pane -t ClaudeTeam:worker_cc -p` localize the failure.
 
+## Docker
+
+```bash
+docker compose build
+docker compose up -d
+docker compose exec claudeteam claudeteam install-hooks
+docker compose exec claudeteam claudeteam up
+docker compose exec claudeteam claudeteam health
+docker compose exec claudeteam tmux attach -t ClaudeTeam   # see panes
+```
+
+`./team-data/` (mounted at `/data`) holds `team.json` +
+`runtime_config.json` + state across container restarts.
+`~/.lark-cli/` is mounted read-only so the OAuth profile is reused.
+
+The base image deliberately does NOT bake in `claude` / `codex` /
+`kimi` CLIs — each has its own auth + licence, and shipping all three
+locks the image to one provider stack. Derive from `claudeteam:dev`
+and `RUN` the install you actually need (or bind-mount the host
+binary into the container's `$PATH`).
+
+See `tests/scenarios/docker_deploy.md` for the full playbook.
+
 ## Operator notes
 
 - **venv must be active in the parent shell** before `claudeteam up`.
@@ -241,7 +264,6 @@ tests: 463 passed, 0 failed
 
 Documented honestly because some of it is needed for production use:
 
-- **Docker deployment**: no Dockerfile / compose files yet
 - **Multi-team isolation polish**: still env-var-based at the runtime
   level; `claudeteam switch <team-dir>` now emits the three exports
   in one shell-evaluable line, but operators still need unique tmux
