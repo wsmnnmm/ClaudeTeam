@@ -12,7 +12,7 @@ from typing import Callable
 
 from claudeteam.commands import (
     init, send, inbox, read, status, log, team, workspace,
-    start, hire, fire, up, down, reset, reidentify,
+    start, hire, fire, up, down, reset, reidentify, switch,
     say, router, watchdog, task,
     health, usage, install_hooks,
 )
@@ -43,6 +43,7 @@ COMMANDS: dict[str, CommandHandler] = {
     "down": down.main,
     "reset": reset.main,
     "reidentify": reidentify.main,
+    "switch": switch.main,
     # feishu transport
     "say": say.main,
     "router": router.main,

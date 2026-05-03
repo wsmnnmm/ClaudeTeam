@@ -154,6 +154,8 @@ team lifecycle
   claudeteam start                              tmux session + per-agent panes
   claudeteam hire <agent>                       add a new pane (lazy-aware)
   claudeteam fire <agent>
+  claudeteam switch [<team-dir>]                print env exports for multi-team UX
+                                                (eval the output to switch shells)
 
 feishu transport
   claudeteam say <agent> <message> [--reply <message_id>] [--as user|bot] [--no-local]
@@ -240,9 +242,10 @@ tests: 463 passed, 0 failed
 Documented honestly because some of it is needed for production use:
 
 - **Docker deployment**: no Dockerfile / compose files yet
-- **Multi-team isolation polish**: env-var-based today; depends on the
-  operator setting `CLAUDETEAM_STATE_DIR` and unique tmux session names
-  per team. Works, but no `claudeteam switch <team>` UX
+- **Multi-team isolation polish**: still env-var-based at the runtime
+  level; `claudeteam switch <team-dir>` now emits the three exports
+  in one shell-evaluable line, but operators still need unique tmux
+  session names per team (set in each team.json's `session` field).
 - **Bitable / kanban projection**: skipped by design — local facts only
 
 What's done that earlier revisions of this list flagged as missing:

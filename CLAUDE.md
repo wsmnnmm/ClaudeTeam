@@ -129,5 +129,5 @@ fixture instead of a real subprocess.
 16. (done) Broadcast routing (`@team` / `@all` / `全体X` → fan out to non-sender agents)
 17. (done) Lifecycle helper extraction (`runtime/lifecycle.provision_pane`)
 18. (next) Dockerfile + compose
-19. (next) Multi-team isolation polish (`claudeteam switch <team>`)
+19. (done) Multi-team isolation UX (`claudeteam switch <team-dir>` emits shell exports)
 20. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes)
