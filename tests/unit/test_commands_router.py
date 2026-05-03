@@ -45,16 +45,29 @@ def test_build_cmd_filters_to_im_message_receive():
     assert cmd[et_idx + 1] == "im.message.receive_v1"
 
 
-def test_build_cmd_uses_compact_quiet_force_bot_identity():
-    """REGRESSION: --compact gets the JSON shape we parse;
-    --quiet drops banner noise; --force suppresses the auth-confirm
-    prompt; --as bot uses the app's im:message scope rather than user
-    OAuth (which expires)."""
+def test_build_cmd_uses_compact_quiet_bot_identity():
+    """REGRESSION: --compact gets the JSON shape we parse; --quiet
+    drops banner noise; --as bot uses the app's im:message scope
+    rather than user OAuth (which expires)."""
     cmd = _build_subscribe_cmd("")
-    for flag in ("--compact", "--quiet", "--force"):
+    for flag in ("--compact", "--quiet"):
         assert flag in cmd, f"missing {flag}"
     as_idx = cmd.index("--as")
     assert cmd[as_idx + 1] == "bot"
+
+
+def test_build_cmd_does_NOT_use_force_anymore():
+    """REGRESSION (round-57): --force is "UNSAFE: server randomly splits
+    events across connections, each instance only receives a subset"
+    per lark-cli 1.0.21 docs. Was almost certainly a contributor to
+    the silent event loss the catchup fix (round-56) papered over.
+    The single-instance lock at ~/.lark-cli/locks/subscribe_<app>.lock
+    is fcntl-advisory and auto-releases on process exit; claudeteam's
+    own pidlock keeps us at one router at a time so collision is
+    impossible in practice."""
+    cmd = _build_subscribe_cmd("")
+    assert "--force" not in cmd, (
+        "--force re-introduced; will cause silent event sharding")
 
 
 # ── main() early validations ─────────────────────────────────────

@@ -23,12 +23,24 @@ from claudeteam.util import error_exit, help_requested, warn
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
+    """Build the lark-cli `event +subscribe` argv.
+
+    Note on --force: previously included to bypass the single-instance
+    lock from a possibly-zombie previous daemon. lark-cli 1.0.21+ docs
+    that flag explicitly: "UNSAFE: server randomly splits events across
+    connections, each instance only receives a subset". Removing it
+    means events flow to one connection (ours); the lock file at
+    ~/.lark-cli/locks/subscribe_<app_id>.lock is fcntl-advisory, so it
+    auto-releases on process exit. claudeteam's own pidlock + the
+    watchdog respawn keep us at one daemon at a time, so the
+    single-instance lock is harmless.
+    """
     return [
         "npx", "@larksuite/cli",
         *(["--profile", profile] if profile else []),
         "event", "+subscribe",
         "--event-types", "im.message.receive_v1",
-        "--compact", "--quiet", "--force",
+        "--compact", "--quiet",
         "--as", "bot",
     ]
 
