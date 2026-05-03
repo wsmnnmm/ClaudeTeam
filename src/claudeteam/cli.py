@@ -13,7 +13,7 @@ from typing import Callable
 from claudeteam.commands import (
     init, send, inbox, read, status, log, team, workspace,
     start, hire, fire, up, down, reset, reidentify, switch,
-    say, router, watchdog, task, remember, recall, forget,
+    say, router, watchdog, task, remember, recall, forget, peek,
     health, usage, install_hooks, version,
 )
 from claudeteam.util import error_exit
@@ -39,6 +39,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
         ("log", log.main),
         ("team", team.main),
         ("workspace", workspace.main),
+        ("peek", peek.main),
     ]),
     ("team lifecycle", [
         ("start", start.main),
