@@ -170,5 +170,11 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
         print(f"  ⚠️ slash reply ready but chat_id unset; reply suppressed:\n{reply[:200]}")
         return report
     prof = profile if profile is not None else config.lark_profile()
-    chat_send(chat, reply, profile=prof, as_user=False, reply_to=decision.msg_id)
+    result = chat_send(chat, reply, profile=prof, as_user=False, reply_to=decision.msg_id)
+    if result is None:
+        # chat.send_text already logged the underlying failure (timeout,
+        # FileNotFoundError, API error, etc.). Surface a one-line warning
+        # here too so router.log makes it obvious the slash dispatch
+        # ran but its reply card never landed in chat.
+        print(f"  ⚠️ slash dispatched OK but chat reply for {decision.msg_id} failed to post")
     return report

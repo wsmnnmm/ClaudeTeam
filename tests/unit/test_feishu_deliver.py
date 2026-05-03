@@ -284,3 +284,40 @@ def test_each_agent_uses_its_own_submit_keys():
         )
     assert keys_seen["S:codex_w"] == ["M-Enter"]
     assert keys_seen["S:claude_w"] == ["Enter"]
+
+
+# ── SLASH dispatch + chat-send failure logging ───────────────────
+
+
+def test_slash_logs_warning_when_chat_send_returns_none():
+    """REGRESSION: when lark-cli timeout / OAuth wall / proxy interference
+    makes chat.send_text return None, the slash command silently lost
+    its bot reply card. router log should now make this visible."""
+    import io
+    import contextlib
+
+    decision = Decision(action=Action.SLASH, text="/help",
+                        msg_id="om_slash_test", create_time="0")
+    chat_send_calls = []
+
+    def failing_chat_send(chat_id, text, **kw):
+        chat_send_calls.append({"chat_id": chat_id, "text": text, **kw})
+        return None  # simulate lark-cli failure
+
+    out = io.StringIO()
+    with isolated_env(team={"agents": {"manager": {}}},
+                      runtime_config={"chat_id": "oc_x"}), \
+            contextlib.redirect_stdout(out):
+        report = apply(decision,
+                       chat_send=failing_chat_send,
+                       team_agents=["manager"],
+                       chat_id="oc_x",
+                       profile="prod")
+    # chat_send was called (slash dispatched + tried to post)
+    assert len(chat_send_calls) == 1
+    assert "/help" in chat_send_calls[0]["text"] or "🆘" in chat_send_calls[0]["text"]
+    # Warning was logged so operator can grep the daemon log
+    log = out.getvalue()
+    assert "chat reply for om_slash_test failed to post" in log
+    # slash_reply was still computed (the dispatch worked)
+    assert report.slash_reply
