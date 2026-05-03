@@ -13,7 +13,7 @@ from typing import Callable
 from claudeteam.commands import (
     init, send, inbox, read, status, log, team, workspace,
     start, hire, fire, up, down, reset, reidentify, switch,
-    say, router, watchdog, task,
+    say, router, watchdog, task, remember,
     health, usage, install_hooks, version,
 )
 from claudeteam.util import error_exit
@@ -51,6 +51,8 @@ COMMANDS: dict[str, CommandHandler] = {
     "watchdog": watchdog.main,
     # task tracking
     "task": task.main,
+    # durable agent memory
+    "remember": remember.main,
     # operational
     "health": health.main,
     "usage": usage.main,
