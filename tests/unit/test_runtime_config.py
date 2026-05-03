@@ -163,3 +163,53 @@ def test_adapter_for_agent_unknown_agent_raises():
             pass
         else:
             raise AssertionError("expected KeyError")
+
+
+# ── lenient JSONDecodeError handling ─────────────────────────────
+
+
+def test_load_team_returns_default_on_corrupt_json_with_warning():
+    """REGRESSION: a malformed team.json used to raise JSONDecodeError
+    straight through every claudeteam command. Now it falls back to
+    the default + emits a stderr warning so the operator can fix the
+    file without losing access to the CLI."""
+    import io
+    import contextlib
+    with isolated_env() as tmp:
+        team_path = tmp / "team.json"
+        team_path.write_text("{ this is not valid json", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            loaded = config.load_team()
+        # Default — empty agents dict
+        assert loaded.get("agents") == {}
+        assert loaded.get("session") == "ClaudeTeam"
+        assert "team.json" in err.getvalue()
+        assert "not valid JSON" in err.getvalue()
+
+
+def test_load_runtime_config_returns_default_on_corrupt_json():
+    """Sister case for runtime_config.json — same fallback semantics."""
+    import io
+    import contextlib
+    with isolated_env() as tmp:
+        rt_path = tmp / "runtime_config.json"
+        rt_path.write_text("not-json-at-all", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            loaded = config.load_runtime_config()
+        assert loaded == {}
+        assert "runtime_config.json" in err.getvalue()
+        assert "not valid JSON" in err.getvalue()
+
+
+def test_session_name_falls_back_to_default_when_team_corrupt():
+    """Downstream accessor `session_name()` should also degrade
+    gracefully — `claudeteam start` shouldn't blow up just because
+    team.json got truncated."""
+    with isolated_env() as tmp:
+        (tmp / "team.json").write_text("{partial", encoding="utf-8")
+        import io, contextlib
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert config.session_name() == "ClaudeTeam"
+            assert config.agent_names() == []

@@ -24,6 +24,8 @@ without restart.  Writes are explicit via save_runtime_config().
 """
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 from claudeteam.util import env_path, env_str, read_json, write_json
@@ -46,8 +48,22 @@ def runtime_config_file() -> Path:
 _DEFAULT_TEAM: dict = {"session": "ClaudeTeam", "agents": {}, "default_model": "opus"}
 
 
+def _read_json_lenient(path: Path, default: dict, label: str) -> dict:
+    """Like util.read_json but degrades gracefully on JSONDecodeError —
+    prints a stderr warning and returns the default dict instead of
+    raising. Used at config load points where a malformed team.json /
+    runtime_config.json shouldn't kill every claudeteam command; the
+    operator sees the warning + can still run `claudeteam health` to
+    get a structured corruption report."""
+    try:
+        return read_json(path, dict(default))
+    except json.JSONDecodeError as e:
+        print(f"  ⚠️ {label} ({path}) is not valid JSON: {e}", file=sys.stderr)
+        return dict(default)
+
+
 def load_team() -> dict:
-    return read_json(team_file(), dict(_DEFAULT_TEAM))
+    return _read_json_lenient(team_file(), _DEFAULT_TEAM, "team.json")
 
 
 def session_name() -> str:
@@ -83,7 +99,7 @@ def agent_model(agent: str) -> str:
 
 
 def load_runtime_config() -> dict:
-    return read_json(runtime_config_file(), {})
+    return _read_json_lenient(runtime_config_file(), {}, "runtime_config.json")
 
 
 def save_runtime_config(cfg: dict) -> None:

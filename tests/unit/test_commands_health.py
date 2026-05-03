@@ -188,6 +188,32 @@ def test_health_silent_when_proxy_unset():
         assert "HTTPS_PROXY" not in out
 
 
+def test_health_red_when_team_json_corrupt():
+    """REGRESSION: after config.load_team became lenient, health needs
+    to do its own raw parse to surface corruption as a red check.
+    Otherwise a malformed team.json would silently fall through to
+    'team.json: 0 agent(s)' and confuse the operator."""
+    with isolated_env() as tmp, _stub_tmux(session_alive=False):
+        (tmp / "team.json").write_text("{ broken", encoding="utf-8")
+        (tmp / "runtime_config.json").write_text(
+            '{"chat_id": "oc_x"}', encoding="utf-8")
+        rc, out, _ = run_cli(["health"])
+        assert rc == 1
+        assert "team.json parse error" in out
+
+
+def test_health_red_when_runtime_config_corrupt():
+    """Sister case — corrupt runtime_config.json should also red,
+    not silently fall back to defaults."""
+    with isolated_env() as tmp, _stub_tmux(session_alive=False):
+        (tmp / "team.json").write_text(
+            '{"agents": {"m": {}}}', encoding="utf-8")
+        (tmp / "runtime_config.json").write_text("garbage", encoding="utf-8")
+        rc, out, _ = run_cli(["health"])
+        assert rc == 1
+        assert "runtime_config.json parse error" in out
+
+
 def test_health_info_when_proxy_set_with_no_proxy_flag():
     """HTTPS_PROXY set + LARK_CLI_NO_PROXY=1 → informational ℹ️ rather
     than warning ⚠️. The wrapper strips proxy at lark.subprocess_env(),

@@ -78,9 +78,12 @@ def _check_team(rep: HealthReport) -> None:
     if not tf.exists():
         rep.fail(f"team.json missing at {tf}")
         return
+    # config.load_team is lenient (returns default + stderr-warns on
+    # corrupt JSON) — health needs to do its own raw parse to surface
+    # the corruption as a red check.
     try:
-        team = config.load_team()
-    except json.JSONDecodeError as e:
+        team = json.loads(tf.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
         rep.fail(f"team.json parse error: {e}")
         return
     agents = team.get("agents", {})
@@ -94,7 +97,13 @@ def _check_runtime_config(rep: HealthReport) -> None:
     if not rc.exists():
         rep.fail(f"runtime_config.json missing at {rc}")
         return
-    cfg = config.load_runtime_config()
+    # Same parse-explicitly pattern as _check_team — surface corruption
+    # rather than silently using the lenient default.
+    try:
+        cfg = json.loads(rc.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        rep.fail(f"runtime_config.json parse error: {e}")
+        return
     if chat := cfg.get("chat_id", ""):
         rep.ok(f"chat_id: {chat}")
     else:
