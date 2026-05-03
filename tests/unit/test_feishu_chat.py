@@ -92,3 +92,53 @@ def test_list_recent_uses_user_identity_by_default():
     chat.list_recent("oc_x", lark_run=spy)
     args = spy.calls[0]["args"]
     assert args[args.index("--as") + 1] == "user"
+
+
+def test_list_recent_can_override_to_bot_identity():
+    """When the user OAuth profile has expired or isn't available,
+    callers can fall back to bot — provided the app has chat-history
+    read scope. Verify the override is wired correctly."""
+    spy = _Spy({"messages": []})
+    chat.list_recent("oc_x", as_user=False, lark_run=spy)
+    args = spy.calls[0]["args"]
+    assert args[args.index("--as") + 1] == "bot"
+
+
+def test_list_recent_threads_page_size_into_argv():
+    spy = _Spy({"messages": []})
+    chat.list_recent("oc_x", page_size=50, lark_run=spy)
+    args = spy.calls[0]["args"]
+    assert "--page-size" in args
+    assert args[args.index("--page-size") + 1] == "50"
+
+
+def test_list_recent_threads_profile_through_to_lark_run():
+    spy = _Spy({"messages": []})
+    chat.list_recent("oc_x", profile="prod", lark_run=spy)
+    assert spy.calls[0]["kwargs"]["profile"] == "prod"
+
+
+def test_list_recent_handles_missing_messages_field():
+    """If lark-cli returns a `data` dict that has no `messages` key
+    (e.g. the chat is genuinely empty), list_recent should return []
+    not crash on the .get(...) chain."""
+    spy = _Spy({"has_more": False})  # no "messages" key
+    assert chat.list_recent("oc_x", lark_run=spy) == []
+
+
+def test_send_card_returns_none_when_chat_id_empty():
+    """Sister to send_text's same guard — silently skip on empty
+    chat_id rather than letting lark-cli error."""
+    spy = _Spy({})
+    assert chat.send_card("", {"title": "x"}, lark_run=spy) is None
+    assert spy.calls == []
+
+
+def test_send_card_threads_profile_and_identity_through():
+    spy = _Spy({"message_id": "om_card"})
+    out = chat.send_card("oc_x", {"title": "hi"}, profile="prod",
+                         as_user=True, lark_run=spy)
+    assert out == {"message_id": "om_card"}
+    assert spy.calls[0]["kwargs"]["profile"] == "prod"
+    args = spy.calls[0]["args"]
+    assert args[args.index("--as") + 1] == "user"
