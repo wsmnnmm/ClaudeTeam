@@ -127,14 +127,28 @@ def _heartbeat_file() -> Path:
 
 
 def touch_heartbeat(agent: str) -> None:
-    """Record `agent` as alive right now. Cheap; safe to call from any command."""
+    """Record `agent` as alive right now. Cheap and best-effort —
+    failures (disk full, permission denied, flock contention timeout)
+    are swallowed with a stderr warning rather than raised. Heartbeat
+    is auxiliary; killing `claudeteam send` or `claudeteam inbox`
+    because we couldn't update a freshness timestamp would be an
+    unhelpful trade-off.
+    """
     if not agent:
         return
-    with _locked():
-        path = _heartbeat_file()
-        data = read_json(path, {})
-        data[agent] = now_ms()
-        write_json(path, data)
+    try:
+        with _locked():
+            path = _heartbeat_file()
+            data = read_json(path, {})
+            data[agent] = now_ms()
+            write_json(path, data)
+    except OSError as e:
+        # OSError covers PermissionError, FileNotFoundError on lock dir,
+        # No-space-left-on-device. ValueError / JSON errors are NOT
+        # caught here — those mean a corrupt heartbeat file and the
+        # operator should see them.
+        import sys
+        print(f"  ⚠️ heartbeat write failed for {agent}: {e}", file=sys.stderr)
 
 
 def get_heartbeat(agent: str) -> int | None:

@@ -127,3 +127,27 @@ def test_all_heartbeats_returns_each_recorded_agent():
 def test_get_heartbeat_returns_none_for_unknown_agent():
     with isolated_env():
         assert local_facts.get_heartbeat("ghost") is None
+
+
+def test_touch_heartbeat_swallows_oserror_so_callers_dont_die():
+    """REGRESSION: touch_heartbeat is called early in send/inbox/log/say/
+    status. A disk-full OSError there shouldn't kill those commands —
+    heartbeat is auxiliary, the underlying message/log/status update is
+    the actual user intent. Verify the swallow path."""
+    import io
+    import contextlib
+    from helpers import attr_patch
+    from claudeteam.store import local_facts as lf
+
+    def boom(*a, **kw):
+        raise OSError("[Errno 28] No space left on device")
+
+    err = io.StringIO()
+    with isolated_env(), attr_patch(lf, write_json=boom), \
+            contextlib.redirect_stderr(err):
+        # Should NOT raise — caller continues
+        local_facts.touch_heartbeat("alice")
+
+    # Warning was logged so the operator knows heartbeat is broken
+    assert "heartbeat write failed" in err.getvalue()
+    assert "alice" in err.getvalue()
