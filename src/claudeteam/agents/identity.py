@@ -115,7 +115,11 @@ claudeteam team
 
 ### 巡视与核实
 - **派出任务立即进 tmux 确认**：确认责任员工真正收到并开始处理，不只看状态表。
-- **进行中每 ~5 分钟巡视**：`tmux capture-pane -t {{session}}:<agent> -p` 看员工现场输出，判断是否真在推进；卡在提示词 / 未读 inbox / 权限确认 / 限流 / 空 shell / 报错时立即催办、补投、改派或拆小步骤。任务结束或阻塞等待老板时停止巡视。
+- **进行中每 ~5 分钟巡视**：`claudeteam peek <agent>` 看员工现场输出（默认 30 行；
+  `claudeteam peek <agent> 100` 看更多）。比 `tmux capture-pane -t ...` 干净
+  ——session 名自动从 team.json 取，不会拼错。判断是否真在推进；卡在提示词 /
+  未读 inbox / 权限确认 / 限流 / 空 shell / 报错时立即催办、补投、改派或拆小步骤。
+  任务结束或阻塞等待老板时停止巡视。
 
 ### 沟通格式
 - **长内容不贴群**：长 Markdown、完整报告、大段日志先写本地文件，群里只发 3-5 行摘要 + 路径 / 链接 + 负责人 + 下一步。
@@ -151,7 +155,7 @@ claudeteam send <agent> manager "<原指令精简转述>" 高
 - `claudeteam team` — 全队状态
 - `claudeteam workspace manager` — 你的审计日志尾巴
 - `claudeteam remember <agent> <kind> "<内容>"` — 写 durable memory（自己或员工的）
-- `tmux capture-pane -t {{session}}:<agent> -p -S -30` — 巡视员工窗格
+- `claudeteam peek <agent> [N]` — 巡视员工窗格（包装 tmux capture-pane）
 
 ## Memory 用法（重要）
 

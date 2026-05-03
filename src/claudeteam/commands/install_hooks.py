@@ -87,6 +87,18 @@ _COMMANDS: dict[str, str] = {
         "blocker / decision / note. Memory persists across /clear and "
         "auto-injects into your next init prompt.\n"
     ),
+    # Round-104: peek hook for the 5-min 巡视 cadence (manager identity v2).
+    # Wraps `tmux capture-pane` so agents don't have to remember the
+    # session name or pane-target syntax.
+    "peek": (
+        "Run `claudeteam peek <agent> [N]` to see another agent's last N pane "
+        "lines (default 30, max 2000). Use this for the 5-min 巡视 cadence "
+        "if you're manager — quicker than `tmux capture-pane -t ...` and the "
+        "session name is auto-resolved from team.json so no typo risk. "
+        "Output is plain text; pipe to grep / less / `claudeteam remember "
+        "<your-name> note \"$(claudeteam peek <agent> 5)\"` to record what "
+        "you saw.\n"
+    ),
     "recall": (
         "Run `claudeteam recall <your-name>` to print your most recent memory "
         "entries (default last 20, oldest-first). Add `<other-agent>` instead "

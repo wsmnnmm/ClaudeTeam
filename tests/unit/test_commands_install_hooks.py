@@ -18,12 +18,29 @@ def test_install_hooks_creates_md_per_command():
 
         cmds_dir = Path(tmp) / ".claude" / "commands"
         assert cmds_dir.exists()
-        # Round-94: remember + recall hooks added to keep slash dispatch
-        # consistent with the rest (router-level, no LLM parse).
+        # Round-94 added remember/recall, round-104 added peek to keep
+        # slash dispatch consistent with the manager identity v2's 巡视
+        # cadence (was hard-coded raw tmux capture-pane).
         for name in ("inbox", "team", "status", "say", "task", "health",
-                     "remember", "recall"):
+                     "remember", "recall", "peek"):
             assert (cmds_dir / f"{name}.md").exists(), f"missing {name}.md"
-        assert "wrote 8 slash command" in out
+        assert "wrote 9 slash command" in out
+
+
+def test_install_hooks_peek_md_documents_5min_cadence():
+    """Round-104: /peek hook teaches `claudeteam peek <agent> [N]` as
+    the branded 5-min 巡视 path, replacing manager identity v2's
+    hard-coded raw `tmux capture-pane -t {session}:<agent>`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run_cli(["install-hooks", tmp])
+        body = (Path(tmp) / ".claude" / "commands" / "peek.md").read_text(
+            encoding="utf-8")
+        assert "claudeteam peek" in body
+        # The 巡视 phrase must show up so agents recognise the use-case
+        assert "巡视" in body or "cadence" in body.lower()
+        # Default N + max documented (matches command's clamp)
+        assert "30" in body
+        assert "2000" in body
 
 
 def test_install_hooks_remember_md_documents_kind_vocabulary():
