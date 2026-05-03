@@ -73,6 +73,74 @@ def test_recall_invalid_limit_returns_error():
     assert "must be an integer" in err
 
 
+# ── --kind filter (round-107) ───────────────────────────────────
+
+
+def test_recall_kind_filter_only_returns_matching_entries():
+    """Round-107: --kind narrows recall to one of memory.KNOWN_KINDS,
+    so boss can scan a slice (`--kind decision`) without grep."""
+    with isolated_env():
+        memory.append("manager", "decision", "use bcrypt")
+        memory.append("manager", "learning", "auth path is /auth/v2")
+        memory.append("manager", "decision", "rotate keys monthly")
+        memory.append("manager", "note", "stand-up at 10am")
+
+        rc, out, _ = run_cli(["recall", "manager", "--kind", "decision"])
+        assert rc == 0
+        assert "filter kind=decision" in out
+        assert "use bcrypt" in out
+        assert "rotate keys monthly" in out
+        # Non-matching kinds excluded
+        assert "auth path" not in out
+        assert "stand-up" not in out
+
+
+def test_recall_kind_filter_empty_match_friendly_message():
+    """Filter matches nothing: print empty-state line that mentions the
+    filter so operator knows what was queried."""
+    with isolated_env():
+        memory.append("manager", "note", "only a note")
+        rc, out, _ = run_cli(["recall", "manager", "--kind", "decision"])
+        assert rc == 0
+        assert "no memory entries (kind=decision)" in out
+
+
+def test_recall_kind_unknown_warns_but_proceeds():
+    """An unconventional kind filter (`fyi`) is allowed (someone might
+    have written a `fyi` entry past the soft-warn gate in append) — but
+    surfaces a stderr warning pointing at KNOWN_KINDS, so a typo of a
+    real kind is obvious."""
+    with isolated_env():
+        memory.append("manager", "fyi", "non-canonical entry")  # also stderr-warns
+        rc, out, err = run_cli(["recall", "manager", "--kind", "fyi"])
+        assert rc == 0
+        # Stderr surfaced the convention list
+        assert "not in known kinds" in err
+        # Result still found
+        assert "non-canonical entry" in out
+
+
+def test_recall_kind_filter_with_limit_trims_after_filter():
+    """`--limit N` + `--kind K` should give N MATCHES, not N reads.
+    Otherwise a hot agent with mostly notes would never surface its
+    rare decisions."""
+    with isolated_env():
+        # 50 notes, 3 decisions (recent-most ordering)
+        for i in range(50):
+            memory.append("worker_cc", "note", f"note {i}")
+        memory.append("worker_cc", "decision", "decision 1")
+        memory.append("worker_cc", "decision", "decision 2")
+        memory.append("worker_cc", "decision", "decision 3")
+        rc, out, _ = run_cli(["recall", "worker_cc", "--kind", "decision",
+                              "--limit", "5"])
+        assert rc == 0
+        for d in ("decision 1", "decision 2", "decision 3"):
+            assert d in out
+        # No notes leaked despite limit > matches
+        assert "note 0" not in out
+        assert "note 49" not in out
+
+
 def test_recall_zero_limit_returns_error():
     rc, _, err = run_cli(["recall", "w", "--limit", "0"])
     assert rc == 1
