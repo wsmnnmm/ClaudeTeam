@@ -2,25 +2,35 @@
 
 When the chat receives a message starting with `/`, `feishu/router.py`
 emits `Decision(Action.SLASH, text=raw_text)`. `feishu/deliver.py` calls
-`dispatch(text, ctx)` here, gets a string reply, and posts it back to
-the chat as a bot message. **No worker pane is touched, no LLM runs.**
+`dispatch(text, ctx)` here, gets a `str | dict` reply, and posts it
+back to the chat — `str` via `chat.send_text`, `dict` (Feishu card
+schema) via `chat.send_card`. **No worker pane is touched, no LLM runs.**
 
-Supported commands (mirrors the old branch's contract 1:1):
+Supported commands:
 
-    /help                    list commands
-    /team                    `claudeteam team` output
-    /health                  `claudeteam health` output
-    /usage [view]            `claudeteam usage [--view <view>]` output
-    /tmux <agent> [N]        last N (default 10) lines of agent's pane
-    /send <agent> <msg>      tmux send-keys + Enter into agent's pane
-    /compact <agent>         inject literal "/compact" so agent self-compacts
-    /stop <agent>            send Ctrl-C to agent's pane
-    /clear <agent>           inject "/clear" + re-init prompt to reset agent
+    /help                              card listing every command
+    /team                              card with each agent's pane state
+                                       (health-color: green / yellow)
+    /health                            card with `claudeteam health` output
+                                       (yellow on ❌ / ⚠️)
+    /usage [view]                      card wrapping `claudeteam usage`
+                                       (default view = daily)
+    /tmux [agent] [N]                  card with last N (default 10) pane lines
+    /send <agent> <msg>                tmux send-keys + Enter into agent pane
+    /compact [agent]                   inject /compact then schedule reidentify
+    /recall <agent> [N] [--kind K]     card with agent's recent memory (R95+R108)
+    /forget <agent> [--kind K] --yes   wipe agent memory; --yes gated (R112)
+    /stop <agent>                      send Ctrl-C to agent pane
+    /clear <agent>                     /clear + re-init (rehire shape)
 
 Dispatch is a leading-token dict lookup (`/cmd args…` → handler(args, ctx))
-so detection and execution share one path — no per-handler regex
-preamble. Each handler receives only the part of the message after the
-command name.
+so detection and execution share one path — no per-handler regex preamble.
+Each handler receives only the part of the message after the command name.
+
+Three shared helpers keep card builders declarative:
+    simple_card(title, body, color)    feishu/cards.py
+    _beijing_stamp(ctx) -> str         R117: card-title timestamp suffix
+    _fenced_block(text) -> str         R118: monospace lark_md fence
 """
 from __future__ import annotations
 
