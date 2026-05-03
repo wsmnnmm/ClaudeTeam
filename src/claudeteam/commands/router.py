@@ -1,10 +1,36 @@
 """`claudeteam router`
 
-Long-running event subscriber: spawns `npx @larksuite/cli event +subscribe`
-and feeds each NDJSON line into the routing loop.
+Long-running event subscriber: spawns `lark-cli event +subscribe`
+(direct binary preferred, npx fallback — see `feishu/lark._resolve_cli_prefix`,
+R86) and feeds each NDJSON line into the routing loop
+(`feishu/subscribe.process_lines`).
 
-Stops on Ctrl-C or when lark-cli exits.  Writes its PID to
-state_dir/router.pid so the watchdog can supervise.
+Boot order:
+  1. Validate chat_id + agents (fast-fail BEFORE pidlock so up.py can
+     detect "no pid written" and surface the boot error — R62).
+  2. Acquire `state_dir/router.pid` via pidlock so two routers can't
+     fight.
+  3. Replay `pending_lines(chat_id)` to backfill anything received while
+     the daemon was down (catchup-on-restart cursor).
+  4. Spawn the subscribe subprocess in its own session (so SIGTERMing
+     the daemon kills the entire npx → node → lark-cli tree via
+     killpg).
+  5. Spawn a daemon thread that polls the subscribe child's exit code
+     every ~20s and self-SIGTERMs when it dies (R52: lark-cli sometimes
+     dies silently while npm-exec parent keeps stdout open, blocking
+     readline forever).
+  6. Drive `process_lines` over the subscribe stdout iterator.
+
+Stops on:
+  - Ctrl-C → SIGINT
+  - SIGTERM → registered handler reaps the subscribe group, releases
+    pidlock, exits 0.
+  - subscribe child dies → watchdog thread SIGTERMs us; same cleanup.
+
+Writes the daemon's pid to `state_dir/router.pid` so watchdog can
+supervise via `runtime.watchdog.is_alive`. Watchdog separately reaps
+orphan `+subscribe` processes left by a SIGKILL'd predecessor before
+respawning (R65 `reap_orphans`).
 """
 from __future__ import annotations
 
