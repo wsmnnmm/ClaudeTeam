@@ -217,7 +217,16 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _handle_tmux(args: str, ctx: SlashContext) -> str:
+def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
+    """`/tmux [agent] [N]` — capture last N pane lines as a Feishu card.
+
+    Round-116: was plain text; now a blue card with code-fenced body
+    so the monospace pane content (banners / spinners / box drawing)
+    renders aligned. Empty pane gets a placeholder, mirroring the
+    CLI `claudeteam peek`'s (R103) `(empty buffer for X)` line.
+
+    Unknown-agent / illegal-name still return text (warning is
+    one-line — a card here would be over-formatting)."""
     parts = args.split()
     agent = parts[0] if parts else _default_agent(ctx)
     raw_lines = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 10
@@ -225,8 +234,13 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str:
     if agent not in ctx.agent_set:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
     target = tmux.Target(ctx.session, agent)
-    body = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
-    return f"📺 /tmux {agent} — 最近 {n_lines} 行 ({ctx.session})\n\n{body}"
+    raw = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
+    body = f"```\n{raw}\n```"
+    return simple_card(
+        f"📺 /tmux {agent} — 最近 {n_lines} 行 [{ctx.session}]",
+        body,
+        color="blue",
+    )
 
 
 def _handle_send(args: str, ctx: SlashContext) -> str:

@@ -202,6 +202,9 @@ def test_usage_returns_card_with_fenced_body():
 
 
 def test_tmux_captures_specified_pane():
+    """Round-116: /tmux returns a blue card with fenced pane body so
+    the monospace pane content (spinner / box drawing / banners)
+    renders aligned in Feishu."""
     captured = {"calls": []}
 
     def fake_capture(target, lines=80):
@@ -211,10 +214,14 @@ def test_tmux_captures_specified_pane():
     with tmux_patch(capture_pane=fake_capture):
         reply = slash.dispatch("/tmux worker_cc 30", _ctx())
     assert ("ClaudeTeam:worker_cc", 30) in captured["calls"]
-    assert "line1\nline2\nline3" in reply
-    # Title now matches main: "📺 /tmux worker_cc — 最近 N 行 (SESSION)"
-    assert "/tmux worker_cc" in reply
-    assert "ClaudeTeam" in reply  # session shown in parens
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "blue"
+    title = reply["header"]["title"]["content"]
+    assert "/tmux worker_cc" in title
+    assert "ClaudeTeam" in title  # session shown in brackets
+    body = reply["elements"][0]["text"]["content"]
+    assert "```" in body  # fenced
+    assert "line1\nline2\nline3" in body
 
 
 def test_tmux_unknown_agent_returns_warning():
