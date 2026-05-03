@@ -1,0 +1,144 @@
+"""Per-agent durable memory.
+
+Round-83: each agent gets a `memory.jsonl` under their state dir
+(`facts/<agent>/memory.jsonl`) — append-only structured notes that
+survive across tmux pane restarts and `/clear` cycles.
+
+Why not reuse `local_facts.append_log`? Logs are an audit trail
+(every action). Memory is a curated subset — what an agent should
+*re-read* on wake to keep continuity. Keeping them separate lets us:
+  - inject memory (NOT logs) into identity init prompt without
+    flooding the worker with audit minutiae.
+  - rate-limit memory growth without forcing log truncation.
+
+Each entry is a tiny dict:
+  {kind, content, ref?, created_at}
+
+`kind` is a short tag: `task_assigned`, `task_completed`, `learning`,
+`blocker`, `note` — convention, not enforced. Future code can branch on
+known kinds; unknown ones still display verbatim.
+"""
+from __future__ import annotations
+
+import json
+from typing import Iterable
+
+from claudeteam.runtime import paths
+from claudeteam.util import flock, now_ms
+
+
+_MAX_PER_AGENT = 200  # cap retained entries; oldest get dropped on overflow
+
+
+def _agent_dir(agent: str):
+    return paths.facts_dir() / agent
+
+
+def _memory_file(agent: str):
+    return _agent_dir(agent) / "memory.jsonl"
+
+
+def _locked(agent: str):
+    return flock(_agent_dir(agent) / ".memory.lock")
+
+
+def append(agent: str, kind: str, content: str, *, ref: str = "") -> dict:
+    """Append a memory entry. Returns the persisted record (for caller logging).
+
+    The append is fcntl-locked so concurrent writers from different
+    panes don't interleave bytes mid-line. Caller passes `ref` (a
+    message_id, task_id, etc.) when the memory is tied to an external
+    artefact — it is rendered verbatim into the recall view, not parsed.
+    """
+    entry = {
+        "kind": str(kind),
+        "content": str(content or ""),
+        "ref": str(ref or ""),
+        "created_at": now_ms(),
+    }
+    _agent_dir(agent).mkdir(parents=True, exist_ok=True)
+    path = _memory_file(agent)
+    with _locked(agent):
+        # Read existing (if any), append, truncate from front if over cap,
+        # write back atomically. Append-only file mode would be faster but
+        # we need the truncate-from-front step to keep memory size bounded.
+        rows: list[dict] = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # Corrupt line (partial write from a crash) — drop it
+                    # silently rather than let one bad entry brick the file.
+                    continue
+        rows.append(entry)
+        if len(rows) > _MAX_PER_AGENT:
+            rows = rows[-_MAX_PER_AGENT:]
+        path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+            encoding="utf-8",
+        )
+    return entry
+
+
+def list_recent(agent: str, *, limit: int = 20) -> list[dict]:
+    """Return up to `limit` most recent memory entries, oldest-first
+    (so the agent reads them in chronological order)."""
+    path = _memory_file(agent)
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows[-limit:]
+
+
+def clear(agent: str) -> int:
+    """Wipe an agent's memory file. Returns the number of dropped entries.
+
+    Used by `claudeteam reset` (the whole-state nuke) and operationally
+    when an agent's history is poisoned and starting fresh is cheaper
+    than triaging which memories are stale."""
+    path = _memory_file(agent)
+    if not path.exists():
+        return 0
+    n = sum(1 for _ in path.read_text(encoding="utf-8").splitlines() if _.strip())
+    path.unlink()
+    return n
+
+
+def render_for_prompt(agent: str, *, limit: int = 20) -> str:
+    """Format `agent`'s recent memory as a markdown block suitable for
+    injecting into the identity init prompt.
+
+    Empty memory → empty string (callers should branch on `if memory:`).
+    Each entry renders as one bullet line: `- [<kind>] <content> (ref=<ref>)`
+    with the ref suffix omitted when empty.
+    """
+    rows = list_recent(agent, limit=limit)
+    if not rows:
+        return ""
+    lines = ["## 既往记忆（按时间）"]
+    for r in rows:
+        suffix = f" (ref={r['ref']})" if r.get("ref") else ""
+        lines.append(f"- [{r.get('kind', '?')}] {r.get('content', '')}{suffix}")
+    return "\n".join(lines)
+
+
+def all_agents_with_memory() -> Iterable[str]:
+    """Yield agent names that have a memory file. For health / audit."""
+    facts = paths.facts_dir()
+    if not facts.exists():
+        return
+    for child in sorted(facts.iterdir()):
+        if child.is_dir() and (child / "memory.jsonl").exists():
+            yield child.name
