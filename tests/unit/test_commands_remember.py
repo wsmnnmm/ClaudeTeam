@@ -54,6 +54,16 @@ def test_remember_help_flag():
     assert "usage: claudeteam remember" in out
 
 
+def test_remember_help_lists_known_kinds():
+    """Round-110: --help advertises memory.KNOWN_KINDS so agents see
+    the convention before writing their first entry, instead of
+    discovering it via the stderr soft-warn after the fact."""
+    from claudeteam.store import memory
+    rc, out, _ = run_cli(["remember", "--help"])
+    for k in memory.KNOWN_KINDS:
+        assert k in out
+
+
 def test_remember_registered_in_cli():
     """Round-87: top-level `claudeteam remember` must be in the COMMANDS
     registry; otherwise managers/workers calling from pane get

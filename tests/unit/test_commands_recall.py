@@ -159,6 +159,16 @@ def test_recall_help_flag():
     assert "usage: claudeteam recall" in out
 
 
+def test_recall_help_lists_known_kinds():
+    """Round-110: --help advertises memory.KNOWN_KINDS so operators
+    don't have to grep the source to learn the convention."""
+    rc, out, _ = run_cli(["recall", "--help"])
+    for k in memory.KNOWN_KINDS:
+        assert k in out
+    # Make the "any string accepted" caveat visible too
+    assert "stderr" in out.lower() or "nudge" in out.lower()
+
+
 def test_recall_registered_in_cli():
     from claudeteam.cli import COMMANDS
     assert "recall" in COMMANDS

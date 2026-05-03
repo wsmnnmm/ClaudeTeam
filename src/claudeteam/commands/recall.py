@@ -27,8 +27,11 @@ from claudeteam.util import (
 )
 
 
-USAGE = ("usage: claudeteam recall <agent> "
-         "[--limit N] [--kind K] [--json]")
+USAGE = (
+    "usage: claudeteam recall <agent> [--limit N] [--kind K] [--json]\n"
+    f"       known kinds: {' / '.join(memory.KNOWN_KINDS)}\n"
+    "       (--kind accepts any string; unknown kinds get a stderr nudge)"
+)
 
 _DEFAULT_LIMIT = 20
 
