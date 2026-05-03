@@ -451,6 +451,80 @@ def test_recall_invalid_limit_returns_warning():
     assert "N 必须是正整数" in reply
 
 
+# ── /recall --kind filter (round-108) ────────────────────────────
+
+
+def test_recall_kind_filter_narrows_results():
+    """Round-108: /recall --kind K filters to entries matching that kind.
+    Title carries `kind=K` so boss sees what was queried."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "decision", "use bcrypt")
+        memory.append("manager", "learning", "auth path /auth")
+        memory.append("manager", "decision", "rotate keys monthly")
+        reply = slash.dispatch("/recall manager --kind decision", _ctx())
+    assert isinstance(reply, dict)
+    title = reply["header"]["title"]["content"]
+    assert "kind=decision" in title
+    body = reply["elements"][0]["text"]["content"]
+    assert "use bcrypt" in body
+    assert "rotate keys monthly" in body
+    assert "auth path" not in body
+
+
+def test_recall_kind_filter_argument_order_flexible():
+    """Both `worker_cc --kind blocker 5` and `--kind blocker worker_cc 5`
+    work — flag position shouldn't matter."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("worker_cc", "blocker", "missing PAT")
+        for layout in (
+            "/recall worker_cc --kind blocker",
+            "/recall --kind blocker worker_cc",
+            "/recall worker_cc 5 --kind blocker",
+        ):
+            reply = slash.dispatch(layout, _ctx())
+            assert isinstance(reply, dict), f"layout={layout!r} → {type(reply)}"
+            body = reply["elements"][0]["text"]["content"]
+            assert "missing PAT" in body, f"layout={layout!r}"
+
+
+def test_recall_kind_with_no_value_returns_warning():
+    """`--kind` with no following token → warning, not silent default."""
+    reply = slash.dispatch("/recall manager --kind", _ctx())
+    assert isinstance(reply, str)
+    assert "--kind needs a value" in reply
+
+
+def test_recall_kind_unknown_inline_notes_in_card():
+    """Unconventional kind: card still renders (free-form entries DO
+    exist) but body shows a typo-guard line with KNOWN_KINDS list."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "fyi", "non-canonical entry")
+        reply = slash.dispatch("/recall manager --kind fyi", _ctx())
+    assert isinstance(reply, dict)
+    body = reply["elements"][0]["text"]["content"]
+    assert "fyi" in body
+    # KNOWN_KINDS hint visible
+    assert "decision" in body  # one of KNOWN_KINDS list rendering
+    assert "约定" in body or "kind=" in body
+
+
+def test_recall_kind_no_match_returns_grey_card_with_filter_label():
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "note", "only a note")
+        reply = slash.dispatch("/recall manager --kind decision", _ctx())
+    assert reply["header"]["template"] == "grey"
+    title = reply["header"]["title"]["content"]
+    assert "kind=decision" in title
+
+
 def test_handler_exception_is_caught():
     """A handler that raises mid-flight should produce a graceful warning,
     not propagate. /team now reads tmux panes directly; force capture_pane
