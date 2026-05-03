@@ -188,6 +188,36 @@ def test_health_silent_when_proxy_unset():
         assert "HTTPS_PROXY" not in out
 
 
+def test_health_info_when_proxy_set_with_no_proxy_flag():
+    """HTTPS_PROXY set + LARK_CLI_NO_PROXY=1 → informational ℹ️ rather
+    than warning ⚠️. The wrapper strips proxy at lark.subprocess_env(),
+    so this is intentional + harmless — but the env var still shows
+    so operators don't get confused why their proxy isn't applying."""
+    team = {"session": "S", "agents": {"m": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=["m"]), \
+            env_patch(HTTPS_PROXY="http://proxy:7890", LARK_CLI_NO_PROXY="1"):
+        rc, out, _ = run_cli(["health"])
+        assert "HTTPS_PROXY set" in out
+        assert "wrapper will strip" in out
+        # Confirm it's INFO not WARNING — the test would also fire a
+        # warning on bad emoji selection, so check the explicit string.
+        assert "ℹ️" in out
+
+
+def test_health_no_proxy_flag_truthy_variants_all_recognised():
+    """LARK_CLI_NO_PROXY accepts 1/true/yes/on (case-insensitive). Make
+    sure the ℹ️ branch fires for the full set, not just the literal '1'."""
+    team = {"session": "S", "agents": {"m": {}}}
+    for truthy in ("1", "true", "True", "YES", "on"):
+        with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
+                _stub_tmux(session_alive=True, panes_with_cli=["m"]), \
+                env_patch(HTTPS_PROXY="http://p", LARK_CLI_NO_PROXY=truthy):
+            rc, out, _ = run_cli(["health"])
+            assert "wrapper will strip" in out, (
+                f"LARK_CLI_NO_PROXY={truthy!r} should be recognised as truthy")
+
+
 # ── help ────────────────────────────────────────────────────────
 
 
