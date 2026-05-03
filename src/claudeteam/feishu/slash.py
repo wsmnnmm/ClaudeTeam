@@ -120,20 +120,15 @@ def _handle_help(args: str, ctx: SlashContext) -> dict:
     return simple_card("🆘 ClaudeTeam 自定义斜杠命令", _HELP_TEXT)
 
 
-def _handle_team(args: str, ctx: SlashContext) -> str:
-    """Capture each agent's pane, classify state, format as table.
+def _handle_team(args: str, ctx: SlashContext) -> dict:
+    """Capture each agent's pane, classify state, return as Feishu card.
 
-    Output mirrors main branch's /team text block (cards aren't supported
-    yet on this rebuild — text only):
-      👥 /team — 员工实时状态 (2026-05-03 09:30 北京时间)
+    Round-80: was a plain-text table; now a card with header containing
+    the timestamp + session, body listing one `**emoji agent**: brief`
+    line per agent followed by a tally summary.
 
-      [本机 ClaudeTeam]
-        💤 manager     idle
-        🔄 worker_cc   working 1m 12s
-        ⚠️  worker_codex awaiting permission
-        🛑 worker_kimi CLI not running (bash)
-
-      汇总：4 agents · 💤 1 / 🔄 1 / ⚠️ 1 / 🛑 1
+    Color is `green` when no agent is in a warning/down state, `yellow`
+    when at least one is, so the boss can scan group chat at a glance.
     """
     now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     rows = []
@@ -148,16 +143,28 @@ def _handle_team(args: str, ctx: SlashContext) -> str:
         rows.append((agent, emoji, brief))
         tally[emoji] += 1
 
-    name_w = max((len(a) for a, *_ in rows), default=8)
-    lines = [f"👥 /team — 员工实时状态 ({now_str} 北京时间)", ""]
-    lines.append(f"[本机 {ctx.session}]")
+    body_lines = []
     for agent, emoji, brief in rows:
-        lines.append(f"  {emoji} {agent.ljust(name_w)} {brief}")
-    lines.append("")
+        body_lines.append(f"{emoji} **{agent}**: {brief}")
+    if not rows:
+        body_lines.append("_(no agents configured)_")
+
     total = sum(tally.values())
-    summary = " / ".join(f"{k} {v}" for k, v in tally.most_common())
-    lines.append(f"汇总：{total} agents · {summary}")
-    return "\n".join(lines)
+    summary = " / ".join(f"{k} {v}" for k, v in tally.most_common()) or "—"
+    body_lines.append("")
+    body_lines.append(f"**汇总**: {total} agents · {summary}")
+
+    # Yellow if any agent looks unhappy (⚠️ awaiting permission, 🛑 CLI down,
+    # ❌ etc.), green otherwise. 💤 idle / 🔄 working are healthy.
+    healthy_glyphs = ("💤", "🔄")
+    color = ("green" if all(e in healthy_glyphs for e in tally)
+             else "yellow")
+
+    return simple_card(
+        f"👥 /team — 员工实时状态 [{ctx.session}] {now_str} 北京时间",
+        "\n".join(body_lines),
+        color=color,
+    )
 
 
 def _handle_health(args: str, ctx: SlashContext) -> str:

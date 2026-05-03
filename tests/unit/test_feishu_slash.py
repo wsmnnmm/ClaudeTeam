@@ -72,9 +72,9 @@ def test_help_returns_card_listing_all_commands():
 
 
 def test_team_classifies_each_pane_state_with_emoji():
-    """REGRESSION: /team output mirrors main's format — header with
-    Beijing time, per-agent emoji + brief from pane state, tally
-    summary footer."""
+    """REGRESSION: /team groups each agent by pane-state emoji + brief.
+    Round-80: returns a Feishu card; check the body element for the
+    emoji+name+brief lines and the tally summary footer."""
     pane_buffers = {
         "manager": "...\n⏵⏵ bypass permissions on (shift+tab to cycle)\n",
         "worker_cc": "...\nesc to interrupt (1m 12s · ↓ 99 tokens)\n",
@@ -88,11 +88,33 @@ def test_team_classifies_each_pane_state_with_emoji():
         reply = slash.dispatch("/team",
                                _ctx(agents=("manager", "worker_cc", "worker_codex")))
 
-    assert "/team" in reply and "员工实时状态" in reply
-    assert "💤" in reply and "manager" in reply       # bypass marker → idle
-    assert "🔄" in reply and "worker_cc" in reply     # esc to interrupt → working
-    assert "🔘" in reply and "worker_codex" in reply  # tail-fallback
-    assert "汇总：3 agents" in reply
+    assert isinstance(reply, dict)
+    title = reply["header"]["title"]["content"]
+    assert "/team" in title and "员工实时状态" in title
+    body = reply["elements"][0]["text"]["content"]
+    assert "💤" in body and "manager" in body         # bypass marker → idle
+    assert "🔄" in body and "worker_cc" in body       # esc to interrupt → working
+    assert "🔘" in body and "worker_codex" in body    # tail-fallback
+    assert "3 agents" in body
+
+
+def test_team_card_color_yellow_when_any_agent_unhealthy():
+    """Health colour shortcut: green when every agent is in a healthy
+    state (💤/🔄), yellow as soon as one shows ⚠️/🛑/❌. Lets boss
+    glance the chat without reading the body."""
+    # one agent showing 🛑 (CLI not running)
+    pane_buffers = {
+        "manager": "...\n⏵⏵ bypass permissions on\n",
+        "worker_cc": "$ ",  # bash prompt → 🛑 CLI not running
+    }
+
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    with tmux_patch(capture_pane=fake_capture):
+        reply = slash.dispatch("/team",
+                               _ctx(agents=("manager", "worker_cc")))
+    assert reply["header"]["template"] == "yellow"
 
 
 # ── /health ──────────────────────────────────────────────────────
