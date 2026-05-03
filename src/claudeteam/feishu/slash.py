@@ -167,10 +167,28 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _handle_health(args: str, ctx: SlashContext) -> str:
+def _handle_health(args: str, ctx: SlashContext) -> dict:
+    """Run `claudeteam health` and wrap its text output in a card.
+
+    Round-81: was a plain text reply; now a card. Color signals overall
+    state — `green` when no `❌` glyph appears in the output (the health
+    report's `_BAD` marker is `❌`), `yellow` when one or more `❌` lines
+    are present. Body fences the raw health text in a code block so
+    indentation + glyph alignment carry through Feishu's lark_md
+    rendering without getting collapsed.
+    """
     now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
-    return f"🩺 /health — 部署快照 ({now_str} 北京时间)\n\n{out}"
+    # Health uses ❌ for hard fails and ⚠️ for warnings (see health.py
+    # _BAD / _WARN). Either should flip the card off green so the boss
+    # notices something's off without reading the body.
+    color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
+    body = f"```\n{out}\n```"
+    return simple_card(
+        f"🩺 /health — 部署快照 {now_str} 北京时间",
+        body,
+        color=color,
+    )
 
 
 def _handle_usage(args: str, ctx: SlashContext) -> str:

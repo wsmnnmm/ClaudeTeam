@@ -120,15 +120,40 @@ def test_team_card_color_yellow_when_any_agent_unhealthy():
 # ── /health ──────────────────────────────────────────────────────
 
 
-def test_health_shells_to_claudeteam_health():
+def test_health_shells_to_claudeteam_health_and_returns_card():
     captured = {}
 
     def fake_run(argv, **kwargs):
         captured["argv"] = list(argv)
         return type("R", (), {"returncode": 0, "stdout": "✅ all green", "stderr": ""})()
 
-    slash.dispatch("/health", _ctx(run=fake_run))
+    reply = slash.dispatch("/health", _ctx(run=fake_run))
     assert captured["argv"] == ["claudeteam", "health"]
+    assert isinstance(reply, dict)
+    assert "/health" in reply["header"]["title"]["content"]
+    body = reply["elements"][0]["text"]["content"]
+    assert "✅ all green" in body
+    # No ❌ in the output → green template
+    assert reply["header"]["template"] == "green"
+
+
+def test_health_card_is_yellow_when_output_contains_red_or_warn_glyph():
+    """The health command emits ❌ for hard fails and ⚠️ for warnings.
+    Either flips the card off green so the boss notices."""
+    def fake_run_bad(argv, **kwargs):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "✅ tmux session\n❌ router pid file missing",
+                              "stderr": ""})()
+    reply = slash.dispatch("/health", _ctx(run=fake_run_bad))
+    assert reply["header"]["template"] == "yellow"
+    assert "❌" in reply["elements"][0]["text"]["content"]
+
+    def fake_run_warn(argv, **kwargs):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "✅ team.json: 4 agents\n⚠️  lark_profile blank",
+                              "stderr": ""})()
+    reply = slash.dispatch("/health", _ctx(run=fake_run_warn))
+    assert reply["header"]["template"] == "yellow"
 
 
 # ── /usage ───────────────────────────────────────────────────────
