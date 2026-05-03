@@ -18,6 +18,11 @@ _BASH_PROMPT_RE = re.compile(r"root@[0-9a-f]+:[^#]*#\s*$")
 _PERM_PROMPT_RE = re.compile(r"❯\s*\d\.")
 _BYPASS_RE = re.compile(r"⏵⏵\s*bypass permissions")
 _WORK_TIME_RE = re.compile(r"\((\d+m\s*\d+s|\d+s)(?:\s*·[^)]*)?\)")
+# Codex idle: status line shows "gpt-5.5 default · ~/path" or
+# "permissions: YOLO" inside the boxed banner.
+_CODEX_IDLE_RE = re.compile(r"\b(?:gpt-\d|o1|o3|o4|codex)\S*\s+default\b")
+# Kimi idle: ready markers from adapter — "context:" line or "── input"
+_KIMI_IDLE_RE = re.compile(r"context:\s*[\d.]+%|── input|Send /help for help")
 
 
 def parse(buf: str) -> tuple[str, str]:
@@ -53,5 +58,9 @@ def parse(buf: str) -> tuple[str, str]:
     if "manifesting" in low:
         return ("🔄", "thinking")
     if _BYPASS_RE.search(buf) or "new task?" in low:
+        return ("💤", "idle")
+    if "permissions: yolo" in low or _CODEX_IDLE_RE.search(buf):
+        return ("💤", "idle")
+    if _KIMI_IDLE_RE.search(buf):
         return ("💤", "idle")
     return ("🔘", tail.strip()[:40])

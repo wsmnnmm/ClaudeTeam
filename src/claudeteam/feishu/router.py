@@ -128,8 +128,15 @@ def classify_event(event: dict, *,
     # Slash command: matched at router level, NOT injected into any pane.
     # Deliver layer runs the registered handler and posts the result back
     # to chat as a bot reply. Zero LLM involvement.
-    if raw_text.startswith("/"):
-        return Decision(Action.SLASH, text=raw_text, **common)
+    #
+    # Strip any leading `[<token>]` prefix before the / check — `say.py`
+    # always wraps outgoing chat with `[<sender>] <body>`, even when the
+    # body is a slash command. Without this strip, `claudeteam say boss
+    # "/team"` produces `[boss] /team` in chat and the slash detection
+    # misses it entirely (round A2 bug B1).
+    slash_text = re.sub(r"^\s*\[[^\]]+\]\s*", "", raw_text)
+    if slash_text.startswith("/"):
+        return Decision(Action.SLASH, text=slash_text, **common)
 
     sender, text = _parse_sender(raw_text, agents)
     mentions = [a for a in _parse_mentions(text, agents) if a != sender]
