@@ -17,6 +17,42 @@ def test_help_prints_usage():
     assert "commands:" in out
 
 
+def test_help_groups_commands_by_category():
+    """Round-93: usage output renders commands grouped by `[group label]`
+    section instead of a flat alphabetical wall. New operators see
+    related commands together (`[team lifecycle]` has start/up/down,
+    `[durable agent memory]` has remember/recall, etc.)."""
+    rc, out, _ = run_cli(["--help"])
+    assert rc == 0
+    # At least the four most-used groups must appear as section labels
+    assert "[bootstrap]" in out
+    assert "[team lifecycle]" in out
+    assert "[feishu transport]" in out
+    assert "[durable agent memory]" in out
+    # Commands appear under their group, indented
+    # (memory commands sit together)
+    rem = out.index("remember")
+    rec = out.index("recall")
+    mem_label = out.index("[durable agent memory]")
+    # Both commands appear AFTER the group label
+    assert mem_label < rem
+    assert mem_label < rec
+    # And before the next group
+    op_label = out.index("[operational]")
+    assert rem < op_label
+    assert rec < op_label
+
+
+def test_command_groups_and_flat_dict_in_sync():
+    """The flat COMMANDS dict is built from _COMMAND_GROUPS so a command
+    can never exist in one but not the other. Pin that invariant —
+    catches a future contributor adding to one and forgetting the other."""
+    from_groups = {
+        name for _, pairs in cli._COMMAND_GROUPS for name, _ in pairs
+    }
+    assert from_groups == set(cli.COMMANDS)
+
+
 def test_unknown_command_returns_one_and_writes_to_stderr():
     rc, _, err = run_cli(["__definitely_unknown__"])
     assert rc == 1

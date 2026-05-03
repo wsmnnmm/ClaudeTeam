@@ -22,43 +22,61 @@ from claudeteam.util import error_exit
 CommandHandler = Callable[[list[str]], int | None]
 
 
-# Subcommand registry. Adding a new command means: write a module under
-# claudeteam.commands, expose a `main(argv)` callable, register it here.
+# Subcommand registry, structured as ordered (group_label, [(name, fn)…])
+# pairs so `claudeteam --help` can render commands in semantic groups
+# instead of a flat 26-line wall (round-93). Adding a new command:
+# write a module under claudeteam.commands with `main(argv)`, then
+# append the (name, fn) pair into the appropriate group below.
+_COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
+    ("bootstrap", [
+        ("init", init.main),
+    ]),
+    ("local store I/O", [
+        ("send", send.main),
+        ("inbox", inbox.main),
+        ("read", read.main),
+        ("status", status.main),
+        ("log", log.main),
+        ("team", team.main),
+        ("workspace", workspace.main),
+    ]),
+    ("team lifecycle", [
+        ("start", start.main),
+        ("hire", hire.main),
+        ("fire", fire.main),
+        ("up", up.main),
+        ("down", down.main),
+        ("reset", reset.main),
+        ("reidentify", reidentify.main),
+        ("switch", switch.main),
+    ]),
+    ("feishu transport", [
+        ("say", say.main),
+        ("router", router.main),
+    ]),
+    ("supervision", [
+        ("watchdog", watchdog.main),
+    ]),
+    ("task tracking", [
+        ("task", task.main),
+    ]),
+    ("durable agent memory", [
+        ("remember", remember.main),
+        ("recall", recall.main),
+    ]),
+    ("operational", [
+        ("health", health.main),
+        ("usage", usage.main),
+        ("install-hooks", install_hooks.main),
+        ("version", version.main),
+    ]),
+]
+
+# Flat dict for fast dispatch. Built from _COMMAND_GROUPS so the two
+# views can never drift — adding a command in one place automatically
+# updates the other.
 COMMANDS: dict[str, CommandHandler] = {
-    # bootstrap
-    "init": init.main,
-    # local store I/O
-    "send": send.main,
-    "inbox": inbox.main,
-    "read": read.main,
-    "status": status.main,
-    "log": log.main,
-    "team": team.main,
-    "workspace": workspace.main,
-    # team lifecycle
-    "start": start.main,
-    "hire": hire.main,
-    "fire": fire.main,
-    "up": up.main,
-    "down": down.main,
-    "reset": reset.main,
-    "reidentify": reidentify.main,
-    "switch": switch.main,
-    # feishu transport
-    "say": say.main,
-    "router": router.main,
-    # supervision
-    "watchdog": watchdog.main,
-    # task tracking
-    "task": task.main,
-    # durable agent memory
-    "remember": remember.main,
-    "recall": recall.main,
-    # operational
-    "health": health.main,
-    "usage": usage.main,
-    "install-hooks": install_hooks.main,
-    "version": version.main,
+    name: fn for _, pairs in _COMMAND_GROUPS for name, fn in pairs
 }
 
 
@@ -67,8 +85,11 @@ def _usage() -> str:
         "usage: claudeteam <command> [args...]",
         "",
         "commands:",
-        *[f"  {name}" for name in sorted(COMMANDS)],
     ]
+    for group_label, pairs in _COMMAND_GROUPS:
+        lines.append(f"  [{group_label}]")
+        for name, _ in pairs:
+            lines.append(f"    {name}")
     return "\n".join(lines)
 
 
