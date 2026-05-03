@@ -151,4 +151,13 @@ fixture instead of a real subprocess.
 17. (done) Lifecycle helper extraction (`runtime/lifecycle.provision_pane`)
 18. (done) Dockerfile + compose (base image: python:3.11-slim + tmux + nodejs; agent CLIs left to derived images)
 19. (done) Multi-team isolation UX (`claudeteam switch <team-dir>` emits shell exports)
-20. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes)
+20. (done) Watchdog orphan-reap (kill PPID=1 lark-cli `+subscribe` left by SIGKILL'd router before respawn)
+21. (done) Feishu interactive cards for `/help` `/team` `/health` slash replies, with health-aware header colour
+22. (done) Watchdog → Feishu chat alert when a daemon enters cooldown
+23. (done) Per-agent durable memory (`store/memory.py`, `facts/<agent>/memory.jsonl`) with auto-injection into identity init prompt on wake
+24. (done) Memory CRUD CLI: `claudeteam remember` / `recall` / `forget` (matching `/recall <agent> [N]` router-level slash for boss-from-chat)
+25. (done) `gemini-cli` adapter; manager identity v2 ported management discipline rules from main (角色边界 / 集合指令必须 dispatch / 巡视核实 / 沟通格式)
+26. (done) Lark perf — bypass `npx`'s package-lookup overhead (`feishu/lark._resolve_cli_prefix`); 73s → 0.6s on macOS host
+27. (done) Structured `--help` output grouped by `[bootstrap]` / `[team lifecycle]` / `[durable agent memory]` etc.
+28. (done) `claudeteam reidentify --all` for batch re-injection across the team
+29. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes — playbook `tests/scenarios/round_c_real_task.md` exists; live boss→manager→workers→summary loop has not been confirmed in a single session yet)
