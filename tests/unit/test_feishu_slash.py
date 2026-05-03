@@ -60,19 +60,28 @@ def test_help_lists_all_commands():
 # ── /team ────────────────────────────────────────────────────────
 
 
-def test_team_shells_to_claudeteam_team_subcommand():
-    captured = {}
+def test_team_classifies_each_pane_state_with_emoji():
+    """REGRESSION: /team output mirrors main's format — header with
+    Beijing time, per-agent emoji + brief from pane state, tally
+    summary footer."""
+    pane_buffers = {
+        "manager": "...\n⏵⏵ bypass permissions on (shift+tab to cycle)\n",
+        "worker_cc": "...\nesc to interrupt (1m 12s · ↓ 99 tokens)\n",
+        "worker_codex": "(empty)",  # → 🔘
+    }
 
-    def fake_run(argv, **kwargs):
-        captured["argv"] = list(argv)
-        return type("R", (), {"returncode": 0,
-                              "stdout": "manager 进行中\nworker_cc 进行中",
-                              "stderr": ""})()
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
 
-    reply = slash.dispatch("/team", _ctx(run=fake_run))
-    assert captured["argv"] == ["claudeteam", "team"]
-    assert "manager 进行中" in reply
-    assert "=== team ===" in reply
+    with tmux_patch(capture_pane=fake_capture):
+        reply = slash.dispatch("/team",
+                               _ctx(agents=("manager", "worker_cc", "worker_codex")))
+
+    assert "/team" in reply and "员工实时状态" in reply
+    assert "💤" in reply and "manager" in reply       # bypass marker → idle
+    assert "🔄" in reply and "worker_cc" in reply     # esc to interrupt → working
+    assert "🔘" in reply and "worker_codex" in reply  # tail-fallback
+    assert "汇总: 3 agents" in reply
 
 
 # ── /health ──────────────────────────────────────────────────────
@@ -129,7 +138,7 @@ def test_tmux_captures_specified_pane():
 
 def test_tmux_unknown_agent_returns_warning():
     reply = slash.dispatch("/tmux ghost", _ctx())
-    assert "unknown agent" in reply
+    assert "未知 agent" in reply
     assert "ghost" in reply
 
 
@@ -177,17 +186,17 @@ def test_send_inject_into_pane():
 
 def test_send_no_args_returns_usage():
     reply = slash.dispatch("/send", _ctx())
-    assert "usage:" in reply
+    assert "用法:" in reply
 
 
 def test_send_no_msg_returns_usage():
     reply = slash.dispatch("/send manager", _ctx())
-    assert "missing message body" in reply
+    assert "缺少消息内容" in reply
 
 
 def test_send_unknown_agent_warns():
     reply = slash.dispatch("/send ghost yo", _ctx())
-    assert "unknown agent" in reply
+    assert "未知 agent" in reply
 
 
 # ── /compact ─────────────────────────────────────────────────────
@@ -227,7 +236,7 @@ def test_stop_sends_ctrl_c():
 
 def test_stop_no_args_returns_usage():
     reply = slash.dispatch("/stop", _ctx())
-    assert "usage:" in reply
+    assert "用法:" in reply
 
 
 # ── /clear ───────────────────────────────────────────────────────
@@ -256,13 +265,23 @@ def test_clear_injects_clear_then_init_prompt():
 
 def test_unknown_slash_returns_help_hint():
     reply = slash.dispatch("/unknownfoo", _ctx())
-    assert "unknown slash command" in reply
+    assert "未知斜杠命令" in reply
     assert "/help" in reply
 
 
 def test_handler_exception_is_caught():
-    def boom_run(*a, **kw):
+    """A handler that raises mid-flight should produce a graceful warning,
+    not propagate. /team now reads tmux panes directly; force capture_pane
+    to raise so we exercise the dispatch try/except."""
+    def boom_capture(target, lines=80):
         raise RuntimeError("kaboom")
-    reply = slash.dispatch("/team", _ctx(run=boom_run))
-    # _shell catches OSError but not RuntimeError; dispatch's try/except does
+    with tmux_patch(capture_pane=boom_capture):
+        reply = slash.dispatch("/team", _ctx())
+    # /team's per-agent capture has its own try/except → falls back to
+    # empty buffer → tally still works. Use /tmux to exercise the
+    # outer dispatch error path instead, since it doesn't catch internally.
+    # …actually /tmux's tmux.capture_pane call is unguarded; dispatch
+    # outer catch should land it.
+    with tmux_patch(capture_pane=boom_capture):
+        reply = slash.dispatch("/tmux manager", _ctx())
     assert "slash handler error" in reply or "kaboom" in reply

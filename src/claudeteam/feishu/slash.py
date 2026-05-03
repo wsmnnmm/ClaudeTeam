@@ -29,10 +29,13 @@ import re
 import shutil
 import subprocess
 import time
+from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from claudeteam.agents import identity
+from claudeteam.feishu import pane_state
 from claudeteam.runtime import tmux
 
 
@@ -47,6 +50,7 @@ class SlashContext:
     session: str
     run: Callable = subprocess.run    # for shell-out (`claudeteam <cmd>`)
     sleep: Callable = time.sleep      # for /clear's settle delay
+    now: Callable = datetime.now      # injectable clock for header timestamps
 
     @property
     def agent_set(self) -> frozenset[str]:
@@ -71,46 +75,82 @@ def _shell(ctx: SlashContext, argv: list[str], timeout: int = 30) -> str:
 # ── individual handlers ───────────────────────────────────────────
 
 
+_HELP_TEXT = """🆘 ClaudeTeam 斜杠命令（router 直接处理，零 LLM 消耗）
+
+/help                    → 本帮助
+/team                    → 所有员工 tmux 实时状态（emoji + 汇总）
+/health                  → 部署 health 快照（路径/binaries/proxy/tmux/daemons）
+/usage [view]            → claude-code 用量（ccusage 包装）
+/tmux [agent] [lines]    → capture-pane 抓窗口（默认第一个 agent / 10 行）
+/send <agent> <msg>      → 直接 tmux send-keys 注入消息到 agent 窗口
+/compact [agent]         → 群聊无参=压缩第一个 agent；带参压缩指定 agent
+/stop <agent>            → 送 C-c 到 agent 窗口（中断当前动作）
+/clear <agent>           → 送 /clear + 重新入职 init prompt"""
+
+
 def _handle_help(text: str, ctx: SlashContext) -> str | None:
     if not re.fullmatch(r"/help\s*", text):
         return None
-    return (
-        "Slash commands (router-side, zero LLM):\n"
-        "  /help                   — this list\n"
-        "  /team                   — agent status table\n"
-        "  /health                 — deployment health snapshot\n"
-        "  /usage [view]           — token consumption (claude-code only)\n"
-        "  /tmux <agent> [N]       — capture last N (default 10) lines of agent pane\n"
-        "  /send <agent> <msg>     — type <msg> into agent's pane via tmux send-keys\n"
-        "  /compact <agent>        — make agent /compact its context\n"
-        "  /stop <agent>           — Ctrl-C agent (interrupt current action)\n"
-        "  /clear <agent>          — wipe agent context + re-inject identity init"
-    )
+    return _HELP_TEXT
 
 
 def _handle_team(text: str, ctx: SlashContext) -> str | None:
+    """Capture each agent's pane, classify state, format as table.
+
+    Output mirrors the old branch's /team text block:
+      👥 /team — 员工实时状态 (2026-05-03 09:30)
+        💤 manager       idle
+        🔄 worker_cc     working 1m 12s
+        ⚠️  worker_codex  awaiting permission
+        🛑 worker_kimi   CLI not running (bash)
+      汇总: 4 agents · 💤 1 / 🔄 1 / ⚠️ 1 / 🛑 1
+    """
     if not re.fullmatch(r"/team\s*", text):
         return None
-    out = _shell(ctx, ["claudeteam", "team"])
-    return f"=== team ===\n{out}"
+    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
+    rows = []
+    tally: Counter[str] = Counter()
+    for agent in ctx.team_agents:
+        target = tmux.Target(ctx.session, agent)
+        try:
+            buf = tmux.capture_pane(target, lines=80)
+        except Exception:
+            buf = ""
+        emoji, brief = pane_state.parse(buf)
+        rows.append((agent, emoji, brief))
+        tally[emoji] += 1
+
+    name_w = max((len(a) for a, *_ in rows), default=8)
+    lines = [f"👥 /team — 员工实时状态 ({now_str})", ""]
+    for agent, emoji, brief in rows:
+        lines.append(f"  {emoji} {agent.ljust(name_w)}  {brief}")
+    lines.append("")
+    total = sum(tally.values())
+    summary = " / ".join(f"{k} {v}" for k, v in tally.most_common())
+    lines.append(f"汇总: {total} agents · {summary}")
+    return "\n".join(lines)
 
 
 def _handle_health(text: str, ctx: SlashContext) -> str | None:
+    """Wrap `claudeteam health` output with a header + Beijing-time stamp."""
     if not re.fullmatch(r"/health\s*", text):
         return None
+    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
-    return f"=== health ===\n{out}"
+    return f"🩺 /health — 部署快照 ({now_str})\n\n{out}"
 
 
 def _handle_usage(text: str, ctx: SlashContext) -> str | None:
     m = re.fullmatch(r"/usage(?:\s+(\S+))?\s*", text)
     if not m:
         return None
+    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     argv = ["claudeteam", "usage"]
+    view = m.group(1) or "daily"
     if m.group(1):
         argv += ["--view", m.group(1)]
     out = _shell(ctx, argv, timeout=120)
-    return f"=== usage ===\n{out}"
+    return f"📊 /usage ({view}) ({now_str})\n\n{out}"
 
 
 def _handle_tmux(text: str, ctx: SlashContext) -> str | None:
@@ -121,30 +161,38 @@ def _handle_tmux(text: str, ctx: SlashContext) -> str | None:
     lines = int(m.group(2)) if m.group(2) else 10
     lines = max(1, min(lines, _MAX_TMUX_LINES))
     if agent not in ctx.agent_set:
-        return f"⚠️ unknown agent: `{agent}` (known: {sorted(ctx.agent_set)})"
+        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
     target = tmux.Target(ctx.session, agent)
     body = tmux.capture_pane(target, lines=lines)
-    body = body.rstrip() or "(window empty)"
-    return f"=== {ctx.session}:{agent} (last {lines} lines) ===\n{body}"
+    body = body.rstrip() or "(窗口为空)"
+    return f"📺 {ctx.session}:{agent} 最后 {lines} 行\n\n{body}"
+
+
+def _bad_agent(agent: str, ctx: SlashContext) -> str | None:
+    """Common name-validation for /send, /compact, /stop, /clear. Returns
+    a Chinese warning string on failure, None when the name is valid."""
+    if not _AGENT_NAME_RE.fullmatch(agent):
+        return f"⚠️ 非法 agent 名: `{agent}`"
+    if agent not in ctx.agent_set:
+        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
+    return None
 
 
 def _handle_send(text: str, ctx: SlashContext) -> str | None:
     if re.fullmatch(r"/send\s*", text):
-        return "usage: /send <agent> <message>"
+        return "用法: /send <agent> <message>\n例: /send worker_cc \"看一下 README\""
     m = re.match(r"^/send\s+(\S+)\s+(.+)$", text, re.DOTALL)
     if not m:
         if re.match(r"^/send\s+\S+\s*$", text):
-            return "usage: /send <agent> <message>  (missing message body)"
+            return "用法: /send <agent> <message>（缺少消息内容）"
         return None
-    agent = m.group(1).strip()
-    msg = m.group(2).strip()
-    if not _AGENT_NAME_RE.fullmatch(agent):
-        return f"⚠️ invalid agent name: `{agent}`"
-    if agent not in ctx.agent_set:
-        return f"⚠️ unknown agent: `{agent}` (known: {sorted(ctx.agent_set)})"
+    agent, msg = m.group(1).strip(), m.group(2).strip()
+    if (warn := _bad_agent(agent, ctx)):
+        return warn
     target = tmux.Target(ctx.session, agent)
     ok = tmux.inject(target, msg)
-    return f"{'✅' if ok else '❌'} /send → {ctx.session}:{agent}\ncontent: {msg}"
+    glyph = "✅" if ok else "❌"
+    return f"{glyph} /send → {ctx.session}:{agent}\n内容: {msg}"
 
 
 def _handle_compact(text: str, ctx: SlashContext) -> str | None:
@@ -152,49 +200,47 @@ def _handle_compact(text: str, ctx: SlashContext) -> str | None:
     if not m:
         return None
     agent = (m.group(1) or (ctx.team_agents[0] if ctx.team_agents else "manager")).strip()
-    if not _AGENT_NAME_RE.fullmatch(agent):
-        return f"⚠️ invalid agent name: `{agent}`"
-    if agent not in ctx.agent_set:
-        return f"⚠️ unknown agent: `{agent}`"
+    if (warn := _bad_agent(agent, ctx)):
+        return warn
     target = tmux.Target(ctx.session, agent)
     ok = tmux.inject(target, "/compact")
-    return f"{'✅' if ok else '❌'} /compact → {ctx.session}:{agent}"
+    glyph = "✅" if ok else "❌"
+    return f"{glyph} /compact → {ctx.session}:{agent} · 已让 agent 自压缩上下文"
 
 
 def _handle_stop(text: str, ctx: SlashContext) -> str | None:
     if re.fullmatch(r"/stop\s*", text):
-        return "usage: /stop <agent>"
+        return "用法: /stop <agent>\n例: /stop worker_cc（送 C-c 中断当前动作）"
     m = re.match(r"^/stop\s+(\S+)\s*$", text)
     if not m:
         return None
     agent = m.group(1).strip()
-    if not _AGENT_NAME_RE.fullmatch(agent):
-        return f"⚠️ invalid agent name: `{agent}`"
-    if agent not in ctx.agent_set:
-        return f"⚠️ unknown agent: `{agent}`"
+    if (warn := _bad_agent(agent, ctx)):
+        return warn
     target = tmux.Target(ctx.session, agent)
     ok = tmux.send_keys(target, "C-c")
-    return f"{'✅' if ok else '❌'} /stop → {ctx.session}:{agent} · sent C-c"
+    glyph = "✅" if ok else "❌"
+    return f"{glyph} /stop → {ctx.session}:{agent} · 已送 C-c"
 
 
 def _handle_clear(text: str, ctx: SlashContext) -> str | None:
     if re.fullmatch(r"/clear\s*", text):
-        return "usage: /clear <agent>  (wipes agent context + re-inits identity)"
+        return ("用法: /clear <agent>\n"
+                "例: /clear worker_cc（清上下文 + 重新入职 init_msg，相当于 rehire）\n"
+                "⚠️ 会丢 agent 当前会话记忆，谨慎用")
     m = re.match(r"^/clear\s+(\S+)\s*$", text)
     if not m:
         return None
     agent = m.group(1).strip()
-    if not _AGENT_NAME_RE.fullmatch(agent):
-        return f"⚠️ invalid agent name: `{agent}`"
-    if agent not in ctx.agent_set:
-        return f"⚠️ unknown agent: `{agent}`"
+    if (warn := _bad_agent(agent, ctx)):
+        return warn
     target = tmux.Target(ctx.session, agent)
     if not tmux.inject(target, "/clear"):
-        return f"❌ /clear → {ctx.session}:{agent} · failed at /clear inject"
+        return f"❌ /clear → {ctx.session}:{agent} · 送 /clear 失败"
     ctx.sleep(2.0)
     if not tmux.inject(target, identity.init_prompt(agent)):
-        return f"⚠️ /clear → {ctx.session}:{agent} · /clear sent but re-init inject failed"
-    return f"✅ /clear → {ctx.session}:{agent} · cleared + re-injected identity init"
+        return f"⚠️ /clear → {ctx.session}:{agent} · /clear 已送但 init_msg 重注入失败"
+    return f"✅ /clear → {ctx.session}:{agent} · 已 /clear + 重新入职 init_msg"
 
 
 # Dispatch order matters — first matching handler wins. Ordered by likely
@@ -236,4 +282,4 @@ def dispatch(text: str, ctx: SlashContext) -> str:
             return f"⚠️ slash handler error: {e}"
         if reply is not None:
             return reply
-    return f"⚠️ unknown slash command: `{stripped}` — try /help"
+    return f"⚠️ 未知斜杠命令: `{stripped}` — 试 /help 看支持的命令清单"
