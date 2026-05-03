@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from typing import Callable
@@ -39,8 +40,41 @@ def subprocess_env() -> dict[str, str]:
     return env
 
 
+def _resolve_cli_prefix() -> list[str]:
+    """Return the argv prefix for invoking lark-cli, preferring direct
+    binaries over `npx` to skip npm's package-lookup overhead.
+
+    Resolution order (first hit wins):
+      1. `CLAUDETEAM_LARK_CLI_BIN` env — operator explicit override.
+      2. `lark-cli` on PATH — npm global install (`npm i -g @larksuite/cli`).
+      3. The npx cache binary at `~/.npm/_npx/<hash>/node_modules/.bin/lark-cli`
+         (auto-installed once when npx ran). Direct invocation skips
+         npx's lookup but uses the same code.
+      4. `npx @larksuite/cli` — fallback when nothing direct is on disk
+         (round-86 introduced this whole chain; before it was always npx).
+
+    Resolved fresh on each call so a newly-installed lark-cli takes
+    effect without restarting daemons. Round 64 / round-86 perf:
+    direct binary saves ~250–500 ms per send vs the npx fork.
+    """
+    override = env_str("CLAUDETEAM_LARK_CLI_BIN")
+    if override and os.path.exists(override):
+        return [override]
+    direct = shutil.which("lark-cli")
+    if direct:
+        return [direct]
+    home = os.path.expanduser("~/.npm/_npx")
+    if os.path.isdir(home):
+        for entry in os.listdir(home):
+            candidate = os.path.join(home, entry,
+                                      "node_modules/.bin/lark-cli")
+            if os.path.exists(candidate):
+                return [candidate]
+    return ["npx", "@larksuite/cli"]
+
+
 def _build_argv(args: list[str], profile: str) -> list[str]:
-    base = ["npx", "@larksuite/cli"]
+    base = _resolve_cli_prefix()
     if profile:
         base += ["--profile", profile]
     return base + list(args)
