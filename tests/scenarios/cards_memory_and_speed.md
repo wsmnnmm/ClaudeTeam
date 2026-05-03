@@ -1,27 +1,72 @@
-# Cards / memory / watchdog alerts / speed (R79-R88 push)
+# Cards / memory / watchdog alerts / speed (R79-R112 extended push)
 
-Coverage for the boss-directed 10-round push (rounds 79-89, 2026-05-04).
+Coverage for the boss-directed extended push (rounds 79-112, 2026-05-04).
+Originally R79-R89; subsequent rounds (R90-R112) added complementary
+behaviours but kept the same scenario shape, hence the rolled-up doc.
 
 ## 场景
 
-The push delivered five operator-visible behaviors on top of the
+The push delivered these operator-visible behaviours on top of the
 existing rebuild:
-1. Slash replies (/help, /team, /health) now post Feishu **interactive
-   cards** with health-aware header colours instead of plain text blobs.
-2. Watchdog **posts to Feishu chat** when a supervised daemon enters
-   cooldown (max_retries failed respawns).
-3. Each agent has a **durable memory** file under `facts/<agent>/memory.jsonl`
-   that survives `/clear` and pane restart. Memory auto-injects into the
-   identity init prompt on next wake.
-4. New top-level `claudeteam remember <agent> <kind> "<content>" [--ref X]`
-   command lets agents write memory entries from inside their tmux pane.
-5. **lark-cli send latency 73s → 0.6s** by bypassing `npx`'s package-lookup
-   overhead in favour of the direct binary in `~/.npm/_npx/<hash>/.bin/`
-   (or whatever `which lark-cli` returns when `npm i -g @larksuite/cli`).
 
-Plus identity v2: manager body ported management discipline from old
-main (角色边界 / 秒回闭环 / 巡视核实 / 集合指令必须 dispatch / 沟通格式 / 需求纪律
-/ 外部系统). Worker body teaches `remember` + memory-vs-log distinction.
+1. Slash replies (/help, /team, /health, /recall) post Feishu
+   **interactive cards** with health-aware header colours instead of
+   plain text blobs. Watchdog cooldown alerts also card-formatted (R98,
+   red header).
+
+2. Watchdog **posts to Feishu chat** when a supervised daemon enters
+   cooldown (max_retries failed respawns), now as a red card with
+   recovery checklist.
+
+3. Each agent has a **durable memory** file under
+   `facts/<agent>/memory.jsonl` that survives `/clear` and pane restart.
+   Memory auto-injects into the identity init prompt on next wake.
+
+4. **Memory CRUD slice trio** (R87/R92/R96/R107/R108/R111/R112), CLI
+   and slash on both surfaces:
+   - `claudeteam remember <agent> <kind> "<content>" [--ref X]` — write
+   - `claudeteam recall <agent> [--limit N] [--kind K] [--json]` — read
+   - `claudeteam forget <agent> [--kind K] --yes` — drop
+   - `/recall <agent> [N] [--kind K]` — boss-from-chat read (card)
+   - `/forget <agent> [--kind K] --yes` — boss-from-chat drop
+     (`--yes` gated; without it returns a grey CONFIRM card showing
+     the exact reissue string)
+
+   Convention: `KNOWN_KINDS = (task_assigned, task_completed, learning,
+   blocker, decision, note)`. Unknown kinds soft-warn but write
+   anyway. `--help` for remember/recall/forget all advertise the
+   convention.
+
+5. **lark-cli send latency 73s → 0.6s** (R86) by bypassing `npx`'s
+   package-lookup overhead in favour of the direct binary in
+   `~/.npm/_npx/<hash>/.bin/` (or whatever `which lark-cli` returns
+   when `npm i -g @larksuite/cli`). Resolver in
+   `feishu/lark._resolve_cli_prefix`.
+
+6. **`claudeteam say <agent> <msg> --card`** (R99) for card-formatted
+   chat replies; manager → blue, worker_* → green template by
+   convention. `_color_for(agent)` is the shared helper.
+
+7. **`claudeteam peek <agent> [N]`** (R103) — branded fast path for
+   the manager 5-min 巡视 cadence (replaces raw `tmux capture-pane`).
+   `/peek` install-hooks (R104).
+
+8. **5/5 adapter parity** with old main: `qwen-code` adapter (R101)
+   alongside claude-code / codex-cli / gemini-cli / kimi-code. Both
+   `qwen-code` and `qwen-cli` resolve to the same instance.
+
+9. **Structured `--help`** (R93): `claudeteam --help` renders commands
+   grouped by `[bootstrap]` / `[team lifecycle]` / `[durable agent
+   memory]` / etc. instead of a flat alphabetical wall.
+
+10. **`reidentify --all`** (R91) batches identity re-injection across
+    every agent in team.json with a live pane.
+
+Plus identity v2 (R85): manager body ported management discipline from
+old main (角色边界 / 秒回闭环 / 巡视核实 / 集合指令必须 dispatch / 沟通格式
+/ 需求纪律 / 外部系统). Worker body teaches `remember` + memory-vs-log
+distinction. Manager 巡视 line now uses `claudeteam peek <agent>`
+instead of raw tmux invocation.
 
 ## 范围
 
@@ -130,7 +175,11 @@ npm install -g @larksuite/cli
 
 ## Out of scope
 
-- Reverse memory pruning (operator deciding to drop one entry from the middle): there's no `claudeteam forget <id>` yet; only `clear(agent)` for the whole file.
+- Single-entry pruning (operator dropping ONE specific entry by id from
+  the middle): not exposed yet. `claudeteam forget <agent> [--kind K]
+  --yes` (R96/R111) handles all-at-once or per-kind slice; per-id
+  surgery would need an entry index in memory.jsonl that today's
+  schema doesn't have.
 - Cards with buttons / actions: this push only adds static info cards.
   Action-buttons would require an event handler at the router level for
   `card.action.trigger` events.
