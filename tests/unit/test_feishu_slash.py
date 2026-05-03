@@ -514,6 +514,110 @@ def test_recall_kind_unknown_inline_notes_in_card():
     assert "约定" in body or "kind=" in body
 
 
+# ── /forget (round-112) ─────────────────────────────────────────
+
+
+def test_forget_no_args_returns_usage_text():
+    reply = slash.dispatch("/forget", _ctx())
+    assert isinstance(reply, str)
+    assert "用法: /forget" in reply
+    # Convention list visible so operator sees what kinds exist
+    for k in ("decision", "blocker", "learning", "note"):
+        assert k in reply
+
+
+def test_forget_unknown_agent_returns_warning():
+    reply = slash.dispatch("/forget ghost --yes", _ctx())
+    assert isinstance(reply, str)
+    assert "未知 agent" in reply
+
+
+def test_forget_without_yes_returns_grey_confirm_card():
+    """Round-112 safety gate: /forget without --yes never wipes; shows
+    a grey confirm card with the exact reissue string."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "decision", "important")
+        reply = slash.dispatch("/forget manager", _ctx())
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "grey"
+    assert "确认前不会执行" in reply["header"]["title"]["content"]
+    body = reply["elements"][0]["text"]["content"]
+    assert "/forget manager --yes" in body
+    # Memory NOT touched
+    with isolated_env():
+        # (re-isolate; previous block had its own env)
+        pass
+
+
+def test_forget_without_yes_does_not_mutate_memory():
+    """Pinned separately: confirm-card path is read-only."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "decision", "x")
+        slash.dispatch("/forget manager", _ctx())
+        slash.dispatch("/forget manager --kind decision", _ctx())
+        assert len(memory.list_recent("manager")) == 1
+
+
+def test_forget_yes_wipes_all_returns_red_card():
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "decision", "a")
+        memory.append("manager", "note", "b")
+        reply = slash.dispatch("/forget manager --yes", _ctx())
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "red"
+    body = reply["elements"][0]["text"]["content"]
+    assert "已清掉" in body and "2" in body
+
+
+def test_forget_yes_with_kind_drops_only_slice():
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "decision", "a")
+        memory.append("manager", "decision", "b")
+        memory.append("manager", "note", "c")
+        reply = slash.dispatch("/forget manager --kind decision --yes",
+                               _ctx())
+        assert reply["header"]["template"] == "red"
+        body = reply["elements"][0]["text"]["content"]
+        assert "2" in body and "decision" in body
+        # `note` survived
+        rows = memory.list_recent("manager")
+        assert [r["kind"] for r in rows] == ["note"]
+
+
+def test_forget_yes_no_match_returns_grey_card():
+    """Empty-match wipe is a no-op — grey card, no claims of removal."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "note", "x")
+        reply = slash.dispatch("/forget manager --kind decision --yes",
+                               _ctx())
+    assert reply["header"]["template"] == "grey"
+    assert "无事可做" in reply["elements"][0]["text"]["content"]
+
+
+def test_forget_kind_no_value_returns_warning():
+    reply = slash.dispatch("/forget manager --kind", _ctx())
+    assert isinstance(reply, str)
+    assert "--kind needs a value" in reply
+
+
+def test_help_text_now_advertises_forget():
+    """Round-112: /help card body must list /forget so boss can discover
+    it without grepping source."""
+    reply = slash.dispatch("/help", _ctx())
+    body = reply["elements"][0]["text"]["content"]
+    assert "/forget" in body
+
+
 def test_recall_kind_no_match_returns_grey_card_with_filter_label():
     from helpers import isolated_env
     from claudeteam.store import memory
