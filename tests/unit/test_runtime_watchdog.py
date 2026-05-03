@@ -1,6 +1,7 @@
 """Tests for runtime/watchdog.py — process supervision state machine."""
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 
 from helpers import isolated_env
@@ -9,9 +10,33 @@ from claudeteam.runtime.watchdog import (
     ProcessState,
     default_specs,
     is_alive,
+    list_orphan_pids,
+    reap_orphans,
     respawn,
     supervise,
 )
+
+
+class _FakeRun:
+    """Minimal subprocess.run stand-in producing a configurable CompletedProcess."""
+
+    def __init__(self, stdout: str = "", returncode: int = 0,
+                 raises: Exception | None = None):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.raises = raises
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **kw):
+        self.calls.append(list(argv))
+        if self.raises is not None:
+            raise self.raises
+        class _R:
+            pass
+        r = _R()
+        r.stdout = self.stdout
+        r.returncode = self.returncode
+        return r
 
 
 def _spec(**overrides) -> ProcessSpec:
@@ -22,6 +47,7 @@ def _spec(**overrides) -> ProcessSpec:
         spawn_cmd=["claudeteam", "router"],
         max_retries=3,
         cooldown_secs=600,
+        orphan_markers=(),
     )
     base.update(overrides)
     return ProcessSpec(**base)
@@ -91,6 +117,127 @@ def test_respawn_returns_false_on_oserror():
         raise OSError("nope")
 
     assert respawn(spec, popen=bad) is False
+
+
+# ── orphan reap (round-65) ───────────────────────────────────────
+
+
+_PS_HEADER = "  PID  PPID COMMAND\n"
+# Realistic mac/linux ps snapshot. The orphan-root after a SIGKILL'd
+# router is the `npm exec @larksuite/cli` process (it had npx as parent;
+# npx already exited, so it reparents to launchd/init when router dies).
+# Its child node binary keeps the orphan as parent (PPID != 1) until
+# the orphan exits, so it doesn't directly count as orphan-root.
+_PS_REAL_SAMPLE = _PS_HEADER + (
+    "    1     0 /sbin/launchd\n"
+    "  100     1 /usr/libexec/UserEventAgent\n"
+    "95773     1 npm exec @larksuite/cli --profile test-live-a event +subscribe --as bot\n"
+    "96397 95773 node /Users/x/.npm/_npx/.../lark-cli --profile test-live-a event +subscribe --as bot\n"
+    "98765     1 npm exec @larksuite/cli --profile test-live-b event +subscribe --as bot\n"
+    "99999     1 some-other-daemon --foo\n"
+)
+
+
+def test_list_orphan_pids_finds_lark_subscribe_with_ppid_one():
+    """Orphan-detection sees only PPID=1 lark-cli +subscribe processes
+    (not their non-orphan descendants, not unrelated daemons)."""
+    fake = _FakeRun(stdout=_PS_REAL_SAMPLE)
+    pids = list_orphan_pids(("@larksuite/cli", "+subscribe"), run=fake)
+    # Both 95773 (team A) and 98765 (team B) are orphan-root npm-exec
+    # processes whose parent reparented to launchd. 96397 has PPID 95773
+    # so it's not an orphan-root. 100 and 99999 don't carry both markers.
+    assert sorted(pids) == [95773, 98765]
+
+
+def test_list_orphan_pids_returns_empty_when_markers_empty():
+    """A spec with no orphan_markers MUST not invoke ps at all (saves the
+    fork and avoids surprise on systems where ps is slow/missing)."""
+    fake = _FakeRun(stdout="should not be read")
+    assert list_orphan_pids((), run=fake) == []
+    assert fake.calls == []
+
+
+def test_list_orphan_pids_handles_ps_failure_gracefully():
+    """Best-effort: a missing ps, a timeout, or a non-zero return all
+    just yield an empty list — never raise (orphan reap is not
+    load-bearing for liveness)."""
+    for failure in (FileNotFoundError("ps"),
+                    OSError("EPERM")):
+        fake = _FakeRun(raises=failure)
+        assert list_orphan_pids(("X", "Y"), run=fake) == []
+    fake = _FakeRun(stdout="garbage", returncode=1)
+    assert list_orphan_pids(("X", "Y"), run=fake) == []
+
+
+def test_list_orphan_pids_skips_malformed_lines():
+    """Lines without three columns or with non-int PID/PPID must be
+    silently skipped, not blow up."""
+    bad = _PS_HEADER + (
+        "garbage\n"
+        "  abc  def something\n"   # non-int PID/PPID
+        "1     1\n"                # only two columns
+        "2     1 hello world\n"    # valid but no marker match
+    )
+    fake = _FakeRun(stdout=bad)
+    assert list_orphan_pids(("@larksuite/cli", "+subscribe"), run=fake) == []
+
+
+def test_reap_orphans_sigterms_each_orphan():
+    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    fake_run = _FakeRun(stdout=_PS_REAL_SAMPLE)
+    killed: list[tuple[int, int]] = []
+    n = reap_orphans(spec, run=fake_run,
+                     kill=lambda pid, sig: killed.append((pid, sig)),
+                     log=lambda *_: None)
+    assert n == 2
+    assert sorted(killed) == [(95773, signal.SIGTERM), (98765, signal.SIGTERM)]
+
+
+def test_reap_orphans_tolerates_lookup_and_permission_errors():
+    """Process exited between scan and kill, OR runs as a different uid:
+    just count it as not-reaped, never raise."""
+    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    fake_run = _FakeRun(stdout=_PS_REAL_SAMPLE)
+
+    def angry_kill(pid, sig):
+        if pid == 95773:
+            raise ProcessLookupError()
+        if pid == 98765:
+            raise PermissionError()
+        return None
+
+    n = reap_orphans(spec, run=fake_run, kill=angry_kill, log=lambda *_: None)
+    assert n == 0
+
+
+def test_reap_orphans_returns_zero_for_empty_markers():
+    spec = _spec(orphan_markers=())
+    fake_run = _FakeRun(stdout="ignored")
+    assert reap_orphans(spec, run=fake_run, kill=lambda *_: None,
+                        log=lambda *_: None) == 0
+
+
+def test_respawn_invokes_reap_before_spawning_when_markers_present():
+    """The reap must happen BEFORE Popen — otherwise the new daemon's
+    subscribe would race with the orphan's subscribe for events."""
+    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    order: list[str] = []
+    respawn(spec,
+            popen=lambda *a, **k: order.append("popen") or object(),
+            reap=lambda s: order.append("reap"))
+    assert order == ["reap", "popen"]
+
+
+def test_respawn_skips_reap_when_no_markers():
+    """Specs without orphan_markers (e.g. watchdog itself) shouldn't
+    trigger a ps scan — reap is still called but is a noop."""
+    spec = _spec(orphan_markers=())
+    reap_called: list[ProcessSpec] = []
+    respawn(spec,
+            popen=lambda *a, **k: object(),
+            reap=lambda s: reap_called.append(s) or 0)
+    # reap is invoked uniformly; the noop check is in list_orphan_pids
+    assert reap_called == [spec]
 
 
 # ── supervise: alive path ────────────────────────────────────────
@@ -211,6 +358,23 @@ def test_default_specs_includes_router_pointing_at_state_dir():
         router = next(s for s in specs if s.name == "router")
         assert str(router.pid_file).startswith(str(tmp))
         assert router.spawn_cmd == ["claudeteam", "router"]
+        # Round-65: router spec ships with orphan-reap markers so the
+        # watchdog reaps stale lark-cli +subscribe processes left by a
+        # SIGKILL'd predecessor before respawning.
+        assert "@larksuite/cli" in router.orphan_markers
+        assert "+subscribe" in router.orphan_markers
+
+
+def test_all_known_specs_router_has_orphan_markers_watchdog_does_not():
+    """Only the router runs lark-cli +subscribe subprocesses, so only the
+    router spec needs orphan reap. The watchdog spec must stay at empty
+    markers — otherwise it would scan ps every supervise sweep for a
+    process tree it never spawns."""
+    from claudeteam.runtime.watchdog import all_known_specs
+    with isolated_env():
+        specs = {s.name: s for s in all_known_specs()}
+    assert specs["router"].orphan_markers
+    assert specs["watchdog"].orphan_markers == ()
 
 
 def test_default_specs_does_not_include_watchdog():

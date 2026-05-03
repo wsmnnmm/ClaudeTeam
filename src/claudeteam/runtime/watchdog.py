@@ -17,6 +17,7 @@ cmdline check defends against PID reuse (memory: ClaudeTeam Bug 14).
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -37,6 +38,14 @@ class ProcessSpec:
     spawn_cmd: list[str]      # subprocess.Popen argv to (re)start the daemon
     max_retries: int = 3
     cooldown_secs: int = 600
+    # If set, before respawning this spec the watchdog scans for processes
+    # whose command line contains all of these substrings AND whose PPID
+    # is 1, and SIGTERMs them. Use to reap orphaned subprocess children
+    # (e.g. lark-cli `event +subscribe`) left behind by a SIGKILL'd
+    # predecessor — without it, the new daemon's subscribe runs in
+    # parallel with the orphan and Feishu randomly splits events between
+    # them. Empty tuple = no reap.
+    orphan_markers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -78,14 +87,86 @@ def is_alive(spec: ProcessSpec, *,
 # ── respawn ────────────────────────────────────────────────────────
 
 
+def list_orphan_pids(markers: tuple[str, ...], *,
+                     run: Callable = subprocess.run) -> list[int]:
+    """PIDs of processes whose command line contains every marker AND
+    whose PPID is 1 (orphaned to init/launchd).
+
+    Scans `ps -eo pid,ppid,command`. Returns [] if the markers tuple is
+    empty, or if `ps` fails / times out / produces malformed lines —
+    orphan-reap is best-effort, not load-bearing for liveness.
+    """
+    if not markers:
+        return []
+    try:
+        r = run(["ps", "-eo", "pid,ppid,command"],
+                capture_output=True, text=True, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError,
+            AttributeError):
+        # AttributeError covers test fakes that don't fully implement
+        # Popen — orphan reap is best-effort, never load-bearing for
+        # liveness, so swallow and bail.
+        return []
+    if r is None or r.returncode != 0:
+        return []
+    orphans: list[int] = []
+    for line in r.stdout.splitlines()[1:]:  # skip "PID PPID COMMAND" header
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        if ppid != 1:
+            continue
+        cmd = parts[2]
+        if all(m in cmd for m in markers):
+            orphans.append(pid)
+    return orphans
+
+
+def reap_orphans(spec: ProcessSpec, *,
+                 run: Callable = subprocess.run,
+                 kill: Callable = os.kill,
+                 log: Callable = print) -> int:
+    """SIGTERM any orphan processes matching `spec.orphan_markers`.
+
+    Idempotent — subsequent calls find nothing once reaped. Safe to call
+    even when there's no risk of orphans (returns 0). ProcessLookupError
+    and PermissionError are swallowed: the process exited between scan
+    and kill, or belongs to a different uid (rare on a single-user box,
+    impossible to clean up anyway).
+    """
+    pids = list_orphan_pids(spec.orphan_markers, run=run)
+    reaped = 0
+    for pid in pids:
+        try:
+            kill(pid, signal.SIGTERM)
+            reaped += 1
+        except (ProcessLookupError, PermissionError):
+            continue
+    if reaped:
+        log(f"  ♻️  reaped {reaped} orphan {spec.name} subprocess(es)")
+    return reaped
+
+
 def respawn(spec: ProcessSpec, *,
-            popen: Callable | None = None) -> bool:
+            popen: Callable | None = None,
+            reap: Callable = reap_orphans) -> bool:
     """Spawn `spec` detached. Returns True on launch, False on OSError.
+
+    Before spawning, reap any orphan subprocess children matching
+    `spec.orphan_markers` — without this, a SIGKILL'd previous daemon's
+    children (e.g. lark-cli `event +subscribe`) would run in parallel
+    with the new daemon's children and split events between them.
 
     `popen` is resolved at call time (not as a default-arg) so callers
     that monkeypatch `subprocess.Popen` for tests intercept this call
     too — `claudeteam up`'s test rig relies on that.
     """
+    reap(spec)
     runner = popen if popen is not None else subprocess.Popen
     try:
         runner(spec.spawn_cmd, start_new_session=True,
@@ -146,7 +227,8 @@ def supervise(specs: list[ProcessSpec],
 # ── default specs for ClaudeTeam ──────────────────────────────────
 
 
-def _claudeteam_spec(name: str, pid_file: Path) -> ProcessSpec:
+def _claudeteam_spec(name: str, pid_file: Path, *,
+                     orphan_markers: tuple[str, ...] = ()) -> ProcessSpec:
     """Build a ProcessSpec for a `claudeteam <name>` daemon. The cmdline-match
     string is just `\"claudeteam\"` so any process whose argv contains the
     word counts — defends against PID reuse, doesn't lock to argv shape."""
@@ -155,13 +237,23 @@ def _claudeteam_spec(name: str, pid_file: Path) -> ProcessSpec:
         pid_file=pid_file,
         expected_cmdline="claudeteam",
         spawn_cmd=["claudeteam", name],
+        orphan_markers=orphan_markers,
     )
+
+
+# Markers identifying an orphaned lark-cli `event +subscribe` chain
+# left behind when a previous router daemon was SIGKILL'd before its
+# SIGTERM handler could reap the subscribe group. The npm-exec parent
+# of the chain reparents to PID 1; matching it (rather than the deeper
+# node/lark-cli children) reaps the entire group on SIGTERM.
+_ROUTER_SUBSCRIBE_MARKERS = ("@larksuite/cli", "+subscribe")
 
 
 def default_specs() -> list[ProcessSpec]:
     """Specs the watchdog supervises. Just the router — the watchdog
     doesn't supervise itself."""
-    return [_claudeteam_spec("router", paths.router_pid_file())]
+    return [_claudeteam_spec("router", paths.router_pid_file(),
+                             orphan_markers=_ROUTER_SUBSCRIBE_MARKERS)]
 
 
 def all_known_specs() -> list[ProcessSpec]:
@@ -169,6 +261,7 @@ def all_known_specs() -> list[ProcessSpec]:
     Includes the watchdog itself so health can verify its lock file
     matches a live process."""
     return [
-        _claudeteam_spec("router", paths.router_pid_file()),
+        _claudeteam_spec("router", paths.router_pid_file(),
+                         orphan_markers=_ROUTER_SUBSCRIBE_MARKERS),
         _claudeteam_spec("watchdog", paths.watchdog_pid_file()),
     ]

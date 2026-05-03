@@ -29,12 +29,33 @@ def _fake_tmux(session_alive=False):
 
 @contextlib.contextmanager
 def _fake_popen():
-    """Replace subprocess.Popen used by up.py."""
+    """Replace subprocess.Popen used by up.py.
+
+    Round-65: _FakeProc must support the context-manager protocol because
+    subprocess.run (used by watchdog.list_orphan_pids → ps) calls Popen
+    via `with Popen(...) as process:`. Without __enter__/__exit__, run
+    raises TypeError before reaching our reap_orphans logic.
+    """
     calls = []
 
     class _FakeProc:
         def __init__(self, argv):
             self.argv = argv
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def communicate(self, *a, **kw):
+            return (self.stdout, self.stderr)
+
+        def wait(self, *a, **kw):
+            return self.returncode
 
     def fake_popen(argv, *args, **kwargs):
         calls.append(list(argv))
@@ -128,6 +149,15 @@ def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
         class _FakeProc:
             def __init__(self, argv):
                 self.argv = argv
+                self.returncode = 0
+                self.stdout = ""
+                self.stderr = ""
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def communicate(self, *a, **kw): return ("", "")
+            def wait(self, *a, **kw): return 0
+            def poll(self): return self.returncode
+            def kill(self): return None
         return _FakeProc(argv)
 
     with isolated_env(team=team), _fake_tmux(session_alive=True), \
