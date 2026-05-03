@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~8 500 LOC (src + tests), 463 tests green.
+capability requires them.  Currently ~12.9 K LOC (src + tests), 583 tests green.
 
 ## Prerequisites
 
@@ -207,9 +207,10 @@ src/claudeteam/
 ├── cli.py             single console-scripts entry; dispatch only
 ├── util.py            shared helpers: now_ms, fmt_time_ms, ago_ms,
 │                      pop_flag, pop_bool_flag, read_json, write_json,
-│                      atomic_write_text, flock, env_path, env_str,
-│                      help_requested, usage_error, error_exit, warn
-├── commands/          one module per subcommand (~30-100 LOC each)
+│                      print_json, atomic_write_text, flock, env_path,
+│                      env_str, help_requested, maybe_print_help,
+│                      reject_extra_args, usage_error, error_exit, warn
+├── commands/          one module per subcommand (~30-300 LOC each)
 ├── store/
 │   ├── local_facts.py inbox / status / log / heartbeats (JSON + JSONL, file-locked)
 │   └── tasks.py       coordination cards
@@ -222,12 +223,15 @@ src/claudeteam/
 │   ├── paths.py       env-driven $CLAUDETEAM_STATE_DIR layout
 │   ├── tmux.py        pane / window / inject wrappers
 │   ├── wake.py        lazy-pane wake (capture + spawn + poll-for-ready)
+│   ├── lifecycle.py   pane provisioning shared between start + hire
 │   ├── pidlock.py     single-instance daemon lock (acquire / release)
-│   └── watchdog.py    process supervisor (ProcessSpec, all_known_specs, supervise)
+│   └── watchdog.py    process supervisor (specs + orphan-reap + supervise)
 └── feishu/
     ├── lark.py        npx @larksuite/cli wrapper (call())
     ├── chat.py        send_text / send_card / list_recent
+    ├── pane_state.py  parse pane buffer → emoji + brief status
     ├── router.py      pure event → Decision classifier
+    ├── slash.py       zero-LLM slash command dispatch (/help /team /tmux /...)
     ├── deliver.py     Decision → write inbox + inject pane (rate-limit aware)
     ├── subscribe.py   NDJSON event loop (drives `claudeteam router`)
     └── catchup.py     replay missed messages on router restart (cursor-based)
