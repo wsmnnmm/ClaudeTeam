@@ -115,3 +115,22 @@ def test_say_zero_or_one_arg_returns_one():
     rc, _, err = run_cli(["say", "manager"])
     assert rc == 1
     assert "usage:" in err
+
+
+def test_say_audit_log_failure_does_not_block_chat_send():
+    """REGRESSION: audit log write is best-effort. Disk full / permission
+    denied / corrupt logs.jsonl should NOT prevent the chat send — the
+    boss is waiting for the message to land in the group, audit row
+    is secondary."""
+    def boom(*a, **kw):
+        raise OSError("[Errno 28] No space left on device")
+
+    with _isolated(), _fake_send() as send, \
+            attr_patch(local_facts, append_log=boom):
+        rc, _, err = run_cli(["say", "manager", "important message"])
+    # Chat send still succeeded despite audit failing
+    assert rc == 0
+    # The Feishu chat got the message
+    assert len(send["calls"]) == 1
+    # Stderr surfaced the audit-log warning so operator knows
+    assert "audit log write failed" in err

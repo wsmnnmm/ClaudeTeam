@@ -11,6 +11,7 @@ Exits non-zero if `chat_id` is unset (run setup or set runtime_config.json).
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from claudeteam.feishu import chat as feishu_chat
@@ -71,7 +72,15 @@ def main(argv: list[str]) -> int:
 
     local_facts.touch_heartbeat(args.agent)
     if args.local:
-        local_facts.append_log(args.agent, "say", args.message)
+        # Audit log is best-effort — a disk-full or permission-denied
+        # error here should NOT block the chat send (the boss is
+        # waiting for the message to land in the group; losing the
+        # local audit row is a smaller cost than losing the message).
+        try:
+            local_facts.append_log(args.agent, "say", args.message)
+        except OSError as e:
+            print(f"  ⚠️ audit log write failed for {args.agent}: {e}",
+                  file=sys.stderr)
 
     result = feishu_chat.send_text(
         chat, f"[{args.agent}] {args.message}",
