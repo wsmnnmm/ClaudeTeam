@@ -10,10 +10,8 @@ task, blocker, updated_at_ms, heartbeat_ms) so CI / smoke conductors
 """
 from __future__ import annotations
 
-import json
-
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, pop_bool_flag
+from claudeteam.util import ago_ms, pop_bool_flag, print_json
 
 
 def _emit_text(rows: list[dict], heartbeats: dict[str, int]) -> None:
@@ -50,7 +48,7 @@ def _emit_json(rows: list[dict], heartbeats: dict[str, int]) -> None:
         }
         for r in rows
     ]
-    print(json.dumps(out, ensure_ascii=False, indent=2))
+    print_json(out)
 
 
 def main(argv: list[str]) -> int:

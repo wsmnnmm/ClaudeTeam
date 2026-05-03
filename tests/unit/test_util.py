@@ -13,7 +13,7 @@ from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
     fmt_time_ms, help_requested, maybe_print_help, now_ms, pop_bool_flag,
-    pop_flag, read_json, reject_extra_args, usage_error, warn,
+    pop_flag, print_json, read_json, reject_extra_args, usage_error, warn,
 )
 
 
@@ -268,6 +268,26 @@ def test_reject_extra_args_returns_one_and_prints_when_leftover():
     assert "unexpected args" in msg
     assert "bogus" in msg
     assert "usage: foo bar" in msg
+
+
+# ── print_json ──────────────────────────────────────────────────
+
+
+def test_print_json_uses_canonical_formatting():
+    """ensure_ascii=False so Chinese stays readable; indent=2 so jq /
+    smoke conductors get diff-friendly multi-line output. The trailing
+    newline is print()'s default, not part of json.dumps."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        print_json({"agent": "manager", "task": "回执"})
+    text = out.getvalue()
+    # multi-line indent
+    assert '\n  "agent"' in text
+    # Chinese kept literal, not escaped
+    assert "回执" in text
+    assert "\\u" not in text
+    # newline at end of print()
+    assert text.endswith("\n")
 
 
 # ── pop_flag ────────────────────────────────────────────────────

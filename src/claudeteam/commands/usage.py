@@ -15,14 +15,14 @@ the same numbers without re-parsing the formatted output.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from typing import Callable
 
 from claudeteam.runtime import config
 from claudeteam.util import (
-    error_exit, maybe_print_help, pop_bool_flag, pop_flag, reject_extra_args,
+    error_exit, maybe_print_help, pop_bool_flag, pop_flag, print_json,
+    reject_extra_args,
 )
 
 
@@ -106,7 +106,7 @@ def _emit_text(data: dict) -> None:
 
 
 def _emit_json(data: dict) -> None:
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    print_json(data)
 
 
 def main(argv: list[str]) -> int:

@@ -23,7 +23,9 @@ from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, env_str, maybe_print_help, pop_bool_flag, reject_extra_args
+from claudeteam.util import (
+    ago_ms, env_str, maybe_print_help, pop_bool_flag, print_json, reject_extra_args,
+)
 
 
 _OK = "✅"
@@ -268,12 +270,12 @@ def _emit_json(rep: HealthReport) -> None:
         {"ok": bool, "bad": int, "warn": int, "lines": [str, ...]}
     Smoke conductors / CI can branch on `ok` and inspect `lines` for
     the rendered glyphs (which still appear in `lines`, just packaged)."""
-    print(json.dumps({
+    print_json({
         "ok": rep.bad == 0,
         "bad": rep.bad,
         "warn": rep.warn,
         "lines": list(rep.lines),
-    }, ensure_ascii=False, indent=2))
+    })
 
 
 def main(argv: list[str]) -> int:

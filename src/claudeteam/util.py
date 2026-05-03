@@ -168,6 +168,19 @@ def write_json(path: Path, data) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def print_json(data) -> None:
+    """Print `data` as pretty UTF-8 JSON to stdout — the convention
+    every `--json` flag uses (`team`, `health`, `usage`).
+
+    Same `ensure_ascii=False` + `indent=2` choices as `write_json` so
+    machine-piped output (jq, grep, smoke conductors) gets identical
+    formatting to checked-in JSON files. Single source of truth for
+    these knobs — earlier the call was inlined in three commands and
+    each could drift independently.
+    """
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
 def env_str(name: str) -> str:
     """Return `os.environ[name].strip()` (empty str when unset). The strip
     handles `FOO=  bar  ` style sloppy quoting. Use `env_str(...) or
