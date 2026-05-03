@@ -34,6 +34,20 @@ def read_pid(pid_file: Path) -> int | None:
         return None
 
 
+def pid_alive(pid: int) -> bool:
+    """True if `pid` exists and we can signal it (kill 0).
+
+    OSError covers ProcessLookupError (no such pid), PermissionError
+    (not ours — but daemons here are always owned by the same user
+    so this rarely fires), and other variants. Either way: not usable.
+    """
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def acquire(pid_file: Path, *, name: str = "") -> bool:
     """Claim `pid_file` for the current process.
 
@@ -44,14 +58,11 @@ def acquire(pid_file: Path, *, name: str = "") -> bool:
     """
     if pid_file.exists():
         old = read_pid(pid_file)
-        if old is not None:
-            try:
-                os.kill(old, 0)
-            except OSError:
-                pass  # stale: overwrite
-            else:
-                warn(f"❌ another {name or 'instance'} already running (pid {old})")
-                return False
+        if old is not None and pid_alive(old):
+            warn(f"❌ another {name or 'instance'} already running (pid {old})")
+            return False
+        # else: missing-or-corrupt pid file, or stale lock from a dead
+        # previous run — quietly overwrite below.
     paths.ensure_state_dir()
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
     return True

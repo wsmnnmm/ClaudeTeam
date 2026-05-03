@@ -50,16 +50,6 @@ class ProcessState:
 # ── liveness check ────────────────────────────────────────────────
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        # Covers ProcessLookupError (no such pid), PermissionError (not ours),
-        # and other OSError variants. Either way the process isn't usable.
-        return False
-    return True
-
-
 def _read_cmdline(pid: int) -> str:
     try:
         # Linux /proc; on macOS /proc doesn't exist so we fall back to ps
@@ -77,7 +67,7 @@ def _read_cmdline(pid: int) -> str:
 
 def is_alive(spec: ProcessSpec, *,
              read_pid: Callable = pidlock.read_pid,
-             pid_alive: Callable = _pid_alive,
+             pid_alive: Callable = pidlock.pid_alive,
              read_cmdline: Callable = _read_cmdline) -> bool:
     pid = read_pid(spec.pid_file)
     if pid is None or not pid_alive(pid):
