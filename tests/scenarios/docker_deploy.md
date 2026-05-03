@@ -73,6 +73,23 @@ CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。两条原则：
    命令；这跟 host 上的操作 pattern 一致（user 自己 `claudeteam up`），
    减少行为分叉。
 
+## Known caveats
+
+- **macOS host: lark-cli auth doesn't carry into container** — round-59
+  smoke caught this. lark-cli stores app secrets + user OAuth tokens
+  in the macOS keychain (`source: keychain` in config.json). The
+  container can mount `~/.lark-cli/config.json` but CANNOT reach the
+  host's macOS keychain. Result: `lark-cli ... --as user` fails with
+  `Error: need_user_authorization`; `--as bot` fails with
+  `Error: TAT API error: [10003] invalid param`. Workaround:
+    1. Run claudeteam on a Linux host (keychain doesn't apply, secrets
+       go in `~/.lark-cli/config.json` directly).
+    2. Or run an interactive `lark-cli login` *inside* the container
+       once at first boot, persisting tokens via the `/root/.lark-cli`
+       volume.
+  Not a blocker for non-Feishu-touching tests (`claudeteam health`,
+  `claudeteam team`, local inbox flow).
+
 ## Out of scope
 
 - **多容器编排**：每个 agent 各自一容器、router 单独一容器 etc. ——
@@ -81,5 +98,6 @@ CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。两条原则：
 - **CI/CD 集成**：smoke conductor 在容器里跑、push 镜像到 registry
   这些都不在 B.3 范围内。手动 build + run 就够最小可行。
 - **Windows host**：Docker Desktop 上 host 网络只是部分模拟，lark-cli
-  long-poll 可能要换 bridge + port-publish。Linux/macOS 上按上面
-  pattern 直接能跑。
+  long-poll 可能要换 bridge + port-publish。Linux 上按上面 pattern
+  直接能跑；macOS 上 build 需要 `docker build --network host`，并
+  受限于 keychain 问题（见 Known caveats）。

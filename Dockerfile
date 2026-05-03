@@ -20,14 +20,32 @@
 FROM python:3.11-slim
 
 # Pin apt index once; install in one layer to keep the image lean.
+# `curl` is required by @larksuite/cli's postinstall script (downloads
+# a platform-specific binary blob via curl into node_modules); slim
+# image doesn't ship it. Round-58 smoke caught this — without curl
+# the npm install errors out with "spawnSync curl ENOENT".
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tmux \
         nodejs \
         npm \
         git \
+        curl \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Pre-install lark-cli into npm's global prefix at build time so the
+# first `claudeteam router` invocation doesn't have to fetch+install
+# +run install.js for ~600 deps on cold start. Round-58 smoke caught
+# this: in a fresh container the install.js script fails (rc=1) under
+# slim image conditions and router exits immediately. Globally
+# installing once at build time means npx resolves to the cached copy
+# instantly and no install.js runs at request time.
+#
+# Pinned to >=1.0.21 (the version host smoke validated against) but
+# allow patches; --silent reduces build log noise.
+RUN npm install --silent --global @larksuite/cli@latest \
+    && lark-cli --version
 
 WORKDIR /app
 
