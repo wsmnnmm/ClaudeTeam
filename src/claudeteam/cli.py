@@ -78,7 +78,22 @@ def main(argv: list[str] | None = None) -> int:
     handler = COMMANDS.get(cmd)
     if handler is None:
         return error_exit(f"unknown command: {cmd}\n\n{_usage()}")
-    return int(handler(rest) or 0)
+    try:
+        return int(handler(rest) or 0)
+    except KeyboardInterrupt:
+        # Ctrl-C from user; standard SIGINT exit code, no Python traceback
+        print(file=sys.stderr)  # newline so the prompt doesn't glue to ^C
+        return 130
+    except Exception as e:
+        # Friendly one-liner by default; full traceback when debugging.
+        # Without this, every unhandled handler exception dumps a 30-line
+        # traceback at the operator — useless for non-Python-fluent ops.
+        import os
+        if os.environ.get("CLAUDETEAM_DEBUG") == "1":
+            raise
+        return error_exit(
+            f"❌ {cmd}: unhandled error: {type(e).__name__}: {e}\n"
+            f"   set CLAUDETEAM_DEBUG=1 to see the full traceback")
 
 
 if __name__ == "__main__":
