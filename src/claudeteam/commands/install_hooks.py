@@ -55,8 +55,16 @@ _COMMANDS: dict[str, str] = {
         "`进行中 / 已完成 / 阻塞 / 待命`. Update at every meaningful transition.\n"
     ),
     "say": (
-        "Take the user's argument as the message to post in the Feishu chat as you. "
-        "Run `claudeteam say <your-name> \"<message>\"`.\n"
+        "Take the user's argument as the message to post in the Feishu chat as you.\n"
+        "\n"
+        "- Default (text):  `claudeteam say <your-name> \"<message>\"`\n"
+        "- Card form:       `claudeteam say <your-name> \"<message>\" --card`\n"
+        "  Use --card for long reports / status announcements / completion "
+        "summaries — the boss reads these as visually-distinct cards "
+        "(manager → blue header, worker_* → green) instead of monospace blobs.\n"
+        "\n"
+        "Card cannot thread (`--reply <id>` is silently ignored when --card is set).\n"
+        "Short interactive replies (`收到`, `开始处理`, `已完成`) keep using text.\n"
     ),
     "task": (
         "Manage the task tracker:\n"

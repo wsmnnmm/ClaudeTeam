@@ -40,6 +40,22 @@ def test_install_hooks_remember_md_documents_kind_vocabulary():
         assert "claudeteam remember" in body
 
 
+def test_install_hooks_say_md_documents_card_flag():
+    """Round-100: /say hook teaches --card for long reports / status
+    announcements (manager → blue, worker_* → green) so agents know
+    when to upgrade from plain text."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run_cli(["install-hooks", tmp])
+        body = (Path(tmp) / ".claude" / "commands" / "say.md").read_text(
+            encoding="utf-8")
+        assert "--card" in body
+        # Both invocation forms documented (default text + card)
+        assert "claudeteam say <your-name>" in body
+        # Threading caveat surfaced so agents don't combine --card + --reply
+        # and silently lose the threading
+        assert "thread" in body.lower() or "ignored" in body.lower()
+
+
 def test_install_hooks_recall_md_mentions_other_agent_lookup():
     """The recall hook must mention that <other-agent> is also valid —
     that's the manager 巡视 path enabling cross-agent memory peeks."""
