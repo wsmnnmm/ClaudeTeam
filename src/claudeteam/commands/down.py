@@ -14,7 +14,7 @@ import os
 import signal
 import time
 
-from claudeteam.runtime import config, tmux, watchdog
+from claudeteam.runtime import config, pidlock, tmux, watchdog
 from claudeteam.util import error_exit, help_requested, warn
 
 
@@ -22,9 +22,8 @@ def _kill_pid_file(name: str, pid_file) -> int:
     if not pid_file.exists():
         print(f"⏭  {name}: no pid file")
         return 0
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+    pid = pidlock.read_pid(pid_file)
+    if pid is None:
         print(f"⏭  {name}: corrupt pid file, removing")
         pid_file.unlink(missing_ok=True)
         return 0

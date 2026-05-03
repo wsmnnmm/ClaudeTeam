@@ -19,6 +19,21 @@ from claudeteam.runtime import paths
 from claudeteam.util import warn
 
 
+def read_pid(pid_file: Path) -> int | None:
+    """Parse `pid_file` as an integer. Returns None when the file is
+    missing, unreadable, or contains non-int content.
+
+    Used wherever code needs "the pid that owns this file, if any" —
+    `acquire` here, `watchdog.is_alive`, `commands/down._kill_pid_file`,
+    `commands/health._check_daemon`. Centralised so any future tweak
+    (e.g. trimming a pid+timestamp format) lands in one place.
+    """
+    try:
+        return int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def acquire(pid_file: Path, *, name: str = "") -> bool:
     """Claim `pid_file` for the current process.
 
@@ -28,13 +43,15 @@ def acquire(pid_file: Path, *, name: str = "") -> bool:
     overwritten on the assumption a previous run crashed.
     """
     if pid_file.exists():
-        try:
-            old = int(pid_file.read_text(encoding="utf-8").strip())
-            os.kill(old, 0)
-            warn(f"❌ another {name or 'instance'} already running (pid {old})")
-            return False
-        except (OSError, ValueError):
-            pass  # stale: overwrite
+        old = read_pid(pid_file)
+        if old is not None:
+            try:
+                os.kill(old, 0)
+            except OSError:
+                pass  # stale: overwrite
+            else:
+                warn(f"❌ another {name or 'instance'} already running (pid {old})")
+                return False
     paths.ensure_state_dir()
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
     return True

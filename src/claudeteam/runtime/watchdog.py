@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from claudeteam.runtime import paths
+from claudeteam.runtime import paths, pidlock
 
 
 # ── per-process spec & state ──────────────────────────────────────
@@ -48,13 +48,6 @@ class ProcessState:
 
 
 # ── liveness check ────────────────────────────────────────────────
-
-
-def _read_pid(pid_file: Path) -> int | None:
-    try:
-        return int(pid_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -83,7 +76,7 @@ def _read_cmdline(pid: int) -> str:
 
 
 def is_alive(spec: ProcessSpec, *,
-             read_pid: Callable = _read_pid,
+             read_pid: Callable = pidlock.read_pid,
              pid_alive: Callable = _pid_alive,
              read_cmdline: Callable = _read_cmdline) -> bool:
     pid = read_pid(spec.pid_file)
