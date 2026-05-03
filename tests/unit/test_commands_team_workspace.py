@@ -1,6 +1,8 @@
 """Tests for `claudeteam team` and `claudeteam workspace` (read-side)."""
 from __future__ import annotations
 
+import json
+
 from helpers import isolated_env, run_cli
 from claudeteam.store import local_facts
 
@@ -48,6 +50,36 @@ def test_team_shows_relative_age():
         assert rc == 0
         # latest write is < 1m ago
         assert "ago)" in out
+
+
+def test_team_json_dumps_machine_readable_records():
+    """`--json` emits a list[dict] consumable by CI / smoke conductors
+    / peer agents — no emoji, no relative timestamps to parse."""
+    with isolated_env():
+        run_cli(["status", "worker_a", "进行中", "task A"])
+        run_cli(["status", "worker_b", "已完成", "task B", "blocked on review"])
+        rc, out, _ = run_cli(["team", "--json"])
+        assert rc == 0
+        data = json.loads(out)
+        assert isinstance(data, list)
+        assert len(data) == 2
+        # Sorted alphabetically: worker_a before worker_b
+        assert data[0]["agent"] == "worker_a"
+        assert data[0]["status"] == "进行中"
+        assert data[0]["task"] == "task A"
+        assert data[0]["heartbeat_ms"] > 0  # status command touched it
+        assert data[1]["agent"] == "worker_b"
+        assert data[1]["blocker"] == "blocked on review"
+
+
+def test_team_json_empty_returns_empty_list_not_message():
+    """When no agents have reported, JSON mode emits `[]`, not the
+    "no agents" friendly text — consumers can iterate without
+    string-checking."""
+    with isolated_env():
+        rc, out, _ = run_cli(["team", "--json"])
+        assert rc == 0
+        assert json.loads(out) == []
 
 
 # ── workspace ─────────────────────────────────────────────────────

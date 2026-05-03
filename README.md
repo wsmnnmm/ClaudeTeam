@@ -171,7 +171,8 @@ local store / inbox
   claudeteam read <local_id>
   claudeteam status <agent> [<state> <task> [blocker]]
   claudeteam log <agent> <kind> <content> [ref]
-  claudeteam team                               status + ♥ heartbeat per agent
+  claudeteam team [--json]                      status + ♥ heartbeat per agent
+                                                (--json for machine-readable list[dict])
   claudeteam workspace <agent> [--limit N]
 
 team lifecycle
