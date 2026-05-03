@@ -115,6 +115,32 @@ def test_up_help():
     assert "usage: claudeteam up" in out
 
 
+def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
+    """REGRESSION (round-62, real bug): a daemon that fast-fails at
+    startup (e.g. chat_id missing in runtime_config) error_exits
+    BEFORE writing its pid file. up.py used to print
+    '⚠️ launched but no pid file yet' and STILL return 0, masking
+    the boot failure. Now treats absence-of-pidfile as failure."""
+    team = {"session": "S", "agents": {"manager": {}}}
+
+    def silent_popen(argv, *args, **kwargs):
+        # Popen succeeds but the daemon fast-fails — never writes a pid
+        class _FakeProc:
+            def __init__(self, argv):
+                self.argv = argv
+        return _FakeProc(argv)
+
+    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+            attr_patch(subprocess, Popen=silent_popen), \
+            _fake_alive([False, False]):
+        rc, out, err = run_cli(["up"])
+    # Must return non-zero; warning explains what to do
+    assert rc != 0, f"up rc={rc} should be non-zero on no-pid-file"
+    combined = out + err
+    assert "didn't write a pid file" in combined
+    assert "fast-failed at startup" in combined
+
+
 def test_up_warns_when_daemon_spawn_fails():
     """REGRESSION (round 7 D4): up was printing '✅ team up' even when
     router/watchdog Popen raised OSError (e.g. 'claudeteam' not on PATH).

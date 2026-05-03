@@ -32,14 +32,23 @@ def _ensure_daemon(spec: watchdog.ProcessSpec) -> int:
     if not watchdog.respawn(spec):
         # respawn() already prints the OS error reason; up.py just sets rc=1.
         return error_exit(f"❌ failed to spawn {spec.name}")
-    # Give the daemon a beat to write its pid file
-    for _ in range(20):
+    # Wait up to 3s for the daemon to write its pid file. The pidlock
+    # acquire happens immediately after early config validation in the
+    # daemon's main(), so 3s is generous for a healthy spawn. If the
+    # daemon fast-failed (e.g. missing chat_id, no team agents, port
+    # collision), no pid file appears — treat that as failure rather
+    # than silently saying "team up". Round-62 caught this: a missing
+    # chat_id used to give "⚠️ launched but no pid file yet" + rc=0,
+    # masking the boot failure from `claudeteam up`'s exit code.
+    for _ in range(30):
         if spec.pid_file.exists():
             print(f"🚀 {spec.name} launched (pid {spec.pid_file.read_text().strip()})")
             return 0
         time.sleep(0.1)
-    print(f"⚠️  {spec.name} launched but no pid file yet; check `claudeteam health`")
-    return 0
+    return error_exit(
+        f"❌ {spec.name} launched but didn't write a pid file in 3s — "
+        f"likely fast-failed at startup; check `claudeteam {spec.name}` "
+        f"directly to see the error")
 
 
 def main(argv: list[str]) -> int:
