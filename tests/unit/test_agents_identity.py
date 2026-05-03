@@ -112,16 +112,20 @@ def test_write_persists_file_and_creates_parents():
 
 
 def test_write_overwrites_existing_file():
-    team = {"agents": {"w": {"cli": "claude-code", "model": "opus", "role": "old"}}}
+    """Round-88 caught: worker body now mentions 'oldest auto-drop' so a
+    naive 'old' substring leaks. Pin the role line explicitly so the
+    override is what's being tested."""
+    team = {"agents": {"w": {"cli": "claude-code", "model": "opus",
+                              "role": "FIRST_ROLE"}}}
     with isolated_env(team=team):
         path = identity.write("w")
         first = path.read_text(encoding="utf-8")
-        assert "old" in first
-        # render again with overrides
-        identity.write("w", role="new")
+        assert "FIRST_ROLE" in first
+        # render again with override
+        identity.write("w", role="SECOND_ROLE")
         second = path.read_text(encoding="utf-8")
-        assert "new" in second
-        assert "old" not in second
+        assert "SECOND_ROLE" in second
+        assert "FIRST_ROLE" not in second
 
 
 # ── init_prompt() — round-84 memory injection ─────────────────────

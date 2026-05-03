@@ -65,8 +65,12 @@ claudeteam say manager "<回复内容>"
 # 更新自己的状态
 claudeteam status manager 进行中 "<当前在做什么>"
 
-# 记录工作日志（审计 + 跨 session memory）
+# 记录工作日志（审计；写一行 logs.jsonl）
 claudeteam log manager 任务日志 "<做了什么>"
+
+# 写 *durable memory*（重要决定 / 学到的事 / 阻塞）— 跨 /clear / pane 重启可见
+# kind 约定: task_assigned / task_completed / learning / blocker / decision / note
+claudeteam remember manager learning "<重要洞察>" --ref <om_xxx>
 
 # 直接看所有员工状态
 claudeteam team
@@ -146,7 +150,17 @@ claudeteam send <agent> manager "<原指令精简转述>" 高
 - `claudeteam read <local_id>` — 标已读
 - `claudeteam team` — 全队状态
 - `claudeteam workspace manager` — 你的审计日志尾巴
+- `claudeteam remember <agent> <kind> "<内容>"` — 写 durable memory（自己或员工的）
 - `tmux capture-pane -t {{session}}:<agent> -p -S -30` — 巡视员工窗格
+
+## Memory 用法（重要）
+
+`claudeteam remember` 写到 `facts/<agent>/memory.jsonl`，会在该 agent 下次
+spawn / `/clear` 后自动注入到 init prompt。**不是审计 log**（那是 `claudeteam log`），
+是策划过的"我下次回来需要再读一遍"的关键事项。典型场景：
+- 派给员工任务时同步给员工 + 自己各写一条 `remember`，避免 /clear 后丢上下文
+- 员工汇报"已完成 X" → manager 用 `remember worker_X task_completed "X"` 记一笔
+- 学到反复犯的错（员工不会读 inbox 等）→ `remember manager learning "..."`
 """
 
 
@@ -185,6 +199,20 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
 - `claudeteam inbox {name}` — unread
 - `claudeteam workspace {name}` — your audit log tail
 - `claudeteam log {name} <kind> "<note>"` — append an audit entry
+- `claudeteam remember {name} <kind> "<important note>"` — write *durable
+   memory* (re-read on next /clear or pane restart). kinds: learning,
+   blocker, decision, task_completed, note.
+
+## Memory vs log
+
+- `log` writes every step (audit). Verbose. Don't read it back manually.
+- `remember` writes the curated subset you'd re-read after a /clear:
+  decisions, blockers, key learnings about this codebase, completion
+  acks. Capped at 200 entries; oldest auto-drop. Auto-injected into your
+  next init prompt.
+
+When in doubt: log it AND remember it if it's important enough that
+losing it would slow you down on resume.
 """
 
 
