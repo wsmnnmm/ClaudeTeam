@@ -158,9 +158,27 @@ def process_lines(lines: Iterable[str], *,
         if decision.is_drop():
             _record_drop(stats, decision.reason or "drop")
             continue
+        try:
+            apply_fn(decision)
+        except Exception as e:
+            # apply_fn is deliver.apply in production. It catches its
+            # own side-effect failures (inbox write, pane inject, slash
+            # reply) and returns flagged DeliveryReport, so this branch
+            # only fires on unexpected errors (config corruption mid-
+            # daemon, adapter resolution, slash handler typos that
+            # escape slash.dispatch's wrapper). Log and continue rather
+            # than killing the daemon. Don't mark seen so a retry path
+            # (catchup or stream re-receive) can re-attempt later.
+            print(f"  ⚠️ apply_fn raised on {decision.msg_id}: {e}")
+            _record_drop(stats, "apply_error")
+            continue
+        # Mark seen ONLY after successful apply. Round-63: previous order
+        # added to seen BEFORE apply, which meant a transient apply
+        # failure permanently dedup'd the message (no retry possible
+        # within the process_lines run). With the new order, retries
+        # from catchup/replay can re-process.
         if decision.msg_id:
             stats.seen_msg_ids.add(decision.msg_id)
-        apply_fn(decision)
         stats.handled += 1
         if on_progress is not None:
             try:

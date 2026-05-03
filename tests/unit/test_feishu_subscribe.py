@@ -165,6 +165,45 @@ def test_progress_callback_failure_does_not_kill_loop():
     assert len(applied) == 3
 
 
+def test_apply_fn_failure_does_not_kill_loop_and_does_not_dedup_msg():
+    """REGRESSION (round-63): an unhandled exception out of apply_fn
+    used to kill the router daemon AND (worse) the seen-add happened
+    BEFORE apply, so a retry path (catchup, stream re-receive) would
+    silently dedup the failed-to-apply message. Now: apply_fn errors
+    are caught + counted as 'apply_error' drops; msg_id is NOT marked
+    seen so retry can re-process."""
+    apply_calls = []
+
+    def flaky_apply(decision):
+        apply_calls.append(decision.msg_id)
+        # Second event raises; first and third succeed
+        if len(apply_calls) == 2:
+            raise RuntimeError("transient adapter resolution failure")
+
+    stats = process_lines(
+        _ndjson(
+            _wrapped("om_a", "oc_team", "ou_user", "first"),
+            _wrapped("om_b", "oc_team", "ou_user", "second"),  # apply raises
+            _wrapped("om_c", "oc_team", "ou_user", "third"),
+        ),
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=flaky_apply,
+    )
+    # All 3 apply_fn invocations attempted
+    assert len(apply_calls) == 3
+    # Only the two that succeeded count as handled
+    assert stats.handled == 2
+    # The failure is recorded as a drop with reason "apply_error"
+    assert stats.dropped == 1
+    assert stats.drops_by_reason.get("apply_error") == 1
+    # Critical: failed msg_id NOT in seen → retry could re-process
+    assert "om_b" not in stats.seen_msg_ids
+    # Successful ones ARE in seen
+    assert "om_a" in stats.seen_msg_ids
+    assert "om_c" in stats.seen_msg_ids
+
+
 def test_progress_callback_invoked_per_handled_event():
     applied = []
     progress = []
