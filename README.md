@@ -160,6 +160,7 @@ See `tests/scenarios/docker_deploy.md` for the full playbook.
 ```
 bootstrap & ops
   claudeteam init [--session NAME] [--force]    write team.json + runtime_config.json
+  claudeteam version                            print installed package version
   claudeteam up                                 start + router + watchdog (idempotent)
   claudeteam down                               graceful inverse of up
   claudeteam health                             one-shot deployment-state check

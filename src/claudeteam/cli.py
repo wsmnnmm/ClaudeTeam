@@ -14,7 +14,7 @@ from claudeteam.commands import (
     init, send, inbox, read, status, log, team, workspace,
     start, hire, fire, up, down, reset, reidentify, switch,
     say, router, watchdog, task,
-    health, usage, install_hooks,
+    health, usage, install_hooks, version,
 )
 from claudeteam.util import error_exit
 
@@ -55,6 +55,7 @@ COMMANDS: dict[str, CommandHandler] = {
     "health": health.main,
     "usage": usage.main,
     "install-hooks": install_hooks.main,
+    "version": version.main,
 }
 
 
