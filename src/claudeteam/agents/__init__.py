@@ -8,15 +8,19 @@ from .claude_code import ClaudeCodeAdapter
 from .codex_cli import CodexCliAdapter
 from .gemini_cli import GeminiCliAdapter
 from .kimi_code import KimiCodeAdapter
+from .qwen_code import QwenCodeAdapter
 
 
 _kimi = KimiCodeAdapter()
+_qwen = QwenCodeAdapter()
 _REGISTRY: dict[str, CliAdapter] = {
     "claude-code": ClaudeCodeAdapter(),
     "codex-cli": CodexCliAdapter(),
     "gemini-cli": GeminiCliAdapter(),
     "kimi-code": _kimi,
     "kimi-cli": _kimi,  # alias: upstream package name
+    "qwen-code": _qwen,
+    "qwen-cli": _qwen,  # alias for symmetry with kimi
 }
 
 

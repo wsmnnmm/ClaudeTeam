@@ -11,10 +11,16 @@ from claudeteam.agents.kimi_code import KimiCodeAdapter
 # ── registry ──────────────────────────────────────────────────────
 
 
-def test_registry_lists_known_clis_plus_kimi_alias():
-    """Round-85 added gemini-cli; kimi-cli stays as alias for kimi-code."""
+def test_registry_lists_known_clis_plus_kimi_and_qwen_aliases():
+    """Round-85 added gemini-cli; round-101 added qwen-code (+qwen-cli
+    alias). kimi-cli + qwen-cli are aliases so both forms in team.json
+    work."""
     names = set(known_clis())
-    assert names == {"claude-code", "codex-cli", "gemini-cli", "kimi-code", "kimi-cli"}
+    assert names == {
+        "claude-code", "codex-cli", "gemini-cli",
+        "kimi-code", "kimi-cli",
+        "qwen-code", "qwen-cli",
+    }
 
 
 def test_get_adapter_returns_matching_concrete_type():
