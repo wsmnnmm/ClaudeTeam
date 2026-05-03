@@ -321,7 +321,7 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
         return ("用法: /recall <agent> [N] [--kind K]\n"
                 f"例: /recall manager 5 --kind decision\n"
                 f"默认 N={_RECALL_DEFAULT_LIMIT}, 最多 {_RECALL_MAX_LIMIT}; "
-                f"K 约定: {sorted(memory.KNOWN_KINDS)}")
+                f"K 约定: {memory.kinds_sorted()}")
 
     # Pull --kind out before positional parsing so order doesn't matter
     # (`--kind blocker worker_cc 5` and `worker_cc 5 --kind blocker`
@@ -348,7 +348,7 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
     if kind_filter and kind_filter not in memory.KNOWN_KINDS:
         # Soft inline note — render in the card subtitle so boss sees
         # the typo guard, but proceed with the filter (matches CLI behavior).
-        kind_warn = f" _(注: kind={kind_filter!r} 不在约定 {sorted(memory.KNOWN_KINDS)})_"
+        kind_warn = f" _(注: kind={kind_filter!r} 不在约定 {memory.kinds_sorted()})_"
     else:
         kind_warn = ""
 
@@ -402,7 +402,7 @@ def _handle_forget(args: str, ctx: SlashContext) -> str | dict:
     if not parts:
         return ("用法: /forget <agent> [--kind K] --yes\n"
                 f"例: /forget worker_cc --kind blocker --yes\n"
-                f"K 约定: {sorted(memory.KNOWN_KINDS)} (默认 = 全清)")
+                f"K 约定: {memory.kinds_sorted()} (默认 = 全清)")
 
     yes = "--yes" in parts
     if yes:
@@ -437,7 +437,7 @@ def _handle_forget(args: str, ctx: SlashContext) -> str | dict:
 
     if kind and kind not in memory.KNOWN_KINDS:
         kind_warn = (f"\n\n_(注: kind={kind!r} 不在约定 "
-                     f"{sorted(memory.KNOWN_KINDS)})_")
+                     f"{memory.kinds_sorted()})_")
     else:
         kind_warn = ""
 

@@ -194,6 +194,19 @@ def test_kinds_summary_renders_canonical_separator():
     assert " /  / " not in s
 
 
+def test_kinds_sorted_returns_alphabetical_list():
+    """Round-120: slash card display uses alphabetical order so boss
+    reading two cards (kind list in /recall help vs /forget warn) sees
+    the same sequence. KNOWN_KINDS itself is in author-priority order
+    (task_assigned first), but the slash UI prefers stable sort."""
+    s = memory.kinds_sorted()
+    assert s == sorted(memory.KNOWN_KINDS)
+    # All kinds present
+    assert set(s) == set(memory.KNOWN_KINDS)
+    # Returns a list (not tuple) so f-string repr renders as Python list literal
+    assert isinstance(s, list)
+
+
 def test_append_warns_on_unknown_kind_but_still_writes():
     """Soft validation: unknown kind prints a stderr warning but the
     entry IS persisted. Free-form is sometimes the right call (a

@@ -48,9 +48,18 @@ def kinds_summary() -> str:
     """`' / '`-joined list of KNOWN_KINDS — used by `claudeteam remember /
     recall / forget` USAGE strings. Round-119: extracted from the three
     CLI commands so the separator (and any future kinds) flows from one
-    place. Slash handlers prefer `sorted(KNOWN_KINDS)` for in-card
-    display so they're not affected."""
+    place."""
     return " / ".join(KNOWN_KINDS)
+
+
+def kinds_sorted() -> list[str]:
+    """Sorted list of KNOWN_KINDS — used by slash card handlers
+    (`/recall`, `/forget`) for in-card display. Round-120: 4 sites in
+    `feishu/slash.py` previously called `sorted(memory.KNOWN_KINDS)`
+    inline; centralising here keeps the alphabetical-display contract
+    in one place (Feishu boss reading two cards expects the same
+    order)."""
+    return sorted(KNOWN_KINDS)
 
 
 def _agent_dir(agent: str):
