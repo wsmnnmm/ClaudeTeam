@@ -67,6 +67,27 @@ def maybe_print_help(argv: list[str], usage: str) -> bool:
     return True
 
 
+def reject_extra_args(rest: list[str], usage: str) -> int | None:
+    """If `rest` still holds positional args after pop_flag/pop_bool_flag
+    consumed the recognised ones, print an `❌ unexpected args` error to
+    stderr (with the offending tokens AND the usage line) and return 1.
+    Otherwise return None so the caller continues.
+
+    Centralises the four-site pattern:
+
+        if rest:
+            return error_exit(f\"❌ unexpected args: {rest}\\n{USAGE}\")
+
+    Caller form:
+
+        if (rc := reject_extra_args(rest, USAGE)) is not None:
+            return rc
+    """
+    if not rest:
+        return None
+    return error_exit(f"❌ unexpected args: {rest}\n{usage}")
+
+
 def pop_flag(rest: list[str], flag: str) -> str | None:
     """Pop `flag <value>` out of `rest` and return value; or None if absent
     or value is missing. Mutates `rest`. Used by every command that does its

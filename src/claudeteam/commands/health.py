@@ -23,7 +23,7 @@ from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, env_str, error_exit, maybe_print_help, pop_bool_flag
+from claudeteam.util import ago_ms, env_str, maybe_print_help, pop_bool_flag, reject_extra_args
 
 
 _OK = "✅"
@@ -281,8 +281,8 @@ def main(argv: list[str]) -> int:
     if maybe_print_help(rest, "usage: claudeteam health [--json]"):
         return 0
     as_json = pop_bool_flag(rest, "--json")
-    if rest:
-        return error_exit(f"❌ unexpected args: {rest}\nusage: claudeteam health [--json]")
+    if (rc := reject_extra_args(rest, "usage: claudeteam health [--json]")) is not None:
+        return rc
 
     rep = _build_report()
     if as_json:

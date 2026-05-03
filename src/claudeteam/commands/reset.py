@@ -20,7 +20,7 @@ import sys
 
 from claudeteam.commands import down as _down
 from claudeteam.runtime import paths
-from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag
+from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag, reject_extra_args
 
 
 USAGE = "usage: claudeteam reset [--yes]"
@@ -41,8 +41,8 @@ def main(argv: list[str]) -> int:
     if maybe_print_help(rest, USAGE):
         return 0
     yes = pop_bool_flag(rest, "--yes")
-    if rest:
-        return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
+    if (rc := reject_extra_args(rest, USAGE)) is not None:
+        return rc
 
     sd = paths.state_dir()
     if not yes and not _confirm():

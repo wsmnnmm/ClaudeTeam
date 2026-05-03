@@ -21,7 +21,9 @@ import subprocess
 from typing import Callable
 
 from claudeteam.runtime import config
-from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag, pop_flag
+from claudeteam.util import (
+    error_exit, maybe_print_help, pop_bool_flag, pop_flag, reject_extra_args,
+)
 
 
 USAGE = ("usage: claudeteam usage [--view daily|monthly|session|blocks] "
@@ -115,8 +117,8 @@ def main(argv: list[str]) -> int:
     as_json = pop_bool_flag(rest, "--json")
     view = pop_flag(rest, "--view") or "daily"
     days = pop_flag(rest, "--days") or ""
-    if rest:
-        return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
+    if (rc := reject_extra_args(rest, USAGE)) is not None:
+        return rc
     if view not in _VIEWS:
         return error_exit(f"❌ unknown view: {view} (valid: {' / '.join(_VIEWS)})")
 

@@ -13,7 +13,7 @@ from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
     fmt_time_ms, help_requested, maybe_print_help, now_ms, pop_bool_flag,
-    pop_flag, read_json, usage_error, warn,
+    pop_flag, read_json, reject_extra_args, usage_error, warn,
 )
 
 
@@ -244,6 +244,30 @@ def test_maybe_print_help_short_form_also_works():
     with contextlib.redirect_stdout(out):
         assert maybe_print_help(["-h"], "USAGE_TEXT") is True
     assert "USAGE_TEXT" in out.getvalue()
+
+
+# ── reject_extra_args ───────────────────────────────────────────
+
+
+def test_reject_extra_args_returns_none_when_rest_empty():
+    """No leftover args → None so caller continues normally."""
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert reject_extra_args([], "usage: foo") is None
+    assert err.getvalue() == ""
+
+
+def test_reject_extra_args_returns_one_and_prints_when_leftover():
+    """Leftover args → stderr error containing the offending tokens AND
+    the usage line, return rc=1 (from error_exit)."""
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = reject_extra_args(["bogus", "extra"], "usage: foo bar")
+    assert rc == 1
+    msg = err.getvalue()
+    assert "unexpected args" in msg
+    assert "bogus" in msg
+    assert "usage: foo bar" in msg
 
 
 # ── pop_flag ────────────────────────────────────────────────────
