@@ -14,7 +14,7 @@ import time
 
 from claudeteam.commands import start as _start
 from claudeteam.runtime import config, tmux, watchdog
-from claudeteam.util import error_exit, help_requested
+from claudeteam.util import error_exit, maybe_print_help
 
 
 def _ensure_started() -> int:
@@ -52,8 +52,7 @@ def _ensure_daemon(spec: watchdog.ProcessSpec) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam up")
+    if maybe_print_help(argv, "usage: claudeteam up"):
         return 0
 
     rc = _ensure_started()

@@ -46,6 +46,27 @@ def help_requested(argv: list[str]) -> bool:
     return any(a in ("-h", "--help") for a in argv)
 
 
+def maybe_print_help(argv: list[str], usage: str) -> bool:
+    """If `argv` requested -h/--help, print `usage` to stdout and return True.
+    Otherwise return False without printing.
+
+    Lets a subcommand collapse the standard 3-line help-out pattern into
+    one branch:
+
+        def main(argv):
+            if maybe_print_help(argv, USAGE):
+                return 0
+            ...
+
+    Replaces the inline form (`if help_requested(argv): print(USAGE); return 0`)
+    that appeared in 7+ commands.
+    """
+    if not help_requested(argv):
+        return False
+    print(usage)
+    return True
+
+
 def pop_flag(rest: list[str], flag: str) -> str | None:
     """Pop `flag <value>` out of `rest` and return value; or None if absent
     or value is missing. Mutates `rest`. Used by every command that does its

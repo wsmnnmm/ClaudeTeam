@@ -12,8 +12,8 @@ from helpers import env_patch, tmux_patch
 from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
-    fmt_time_ms, help_requested, now_ms, pop_bool_flag, pop_flag, read_json,
-    usage_error, warn,
+    fmt_time_ms, help_requested, maybe_print_help, now_ms, pop_bool_flag,
+    pop_flag, read_json, usage_error, warn,
 )
 
 
@@ -216,6 +216,34 @@ def test_help_requested_false_for_unrelated_args():
     assert help_requested([]) is False
     assert help_requested(["foo", "bar"]) is False
     assert help_requested(["-help"]) is False  # not a recognised form
+
+
+# ── maybe_print_help ────────────────────────────────────────────
+
+
+def test_maybe_print_help_prints_and_returns_true_on_help_flag():
+    """Helper used by every subcommand main(): when the user passes
+    -h/--help, the usage gets printed to stdout and the helper returns
+    True so the caller can `return 0` immediately."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert maybe_print_help(["--help"], "usage: claudeteam X") is True
+    assert "usage: claudeteam X" in out.getvalue()
+
+
+def test_maybe_print_help_returns_false_without_help_flag():
+    """No -h/--help → no print, returns False so caller continues normal flow."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert maybe_print_help(["foo", "bar"], "usage: claudeteam X") is False
+    assert out.getvalue() == ""
+
+
+def test_maybe_print_help_short_form_also_works():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert maybe_print_help(["-h"], "USAGE_TEXT") is True
+    assert "USAGE_TEXT" in out.getvalue()
 
 
 # ── pop_flag ────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import subprocess
 from typing import Callable
 
 from claudeteam.runtime import config
-from claudeteam.util import error_exit, help_requested, pop_bool_flag, pop_flag
+from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag, pop_flag
 
 
 USAGE = ("usage: claudeteam usage [--view daily|monthly|session|blocks] "
@@ -109,8 +109,7 @@ def _emit_json(data: dict) -> None:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print(USAGE)
+    if maybe_print_help(rest, USAGE):
         return 0
 
     as_json = pop_bool_flag(rest, "--json")

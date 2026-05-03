@@ -20,7 +20,7 @@ import sys
 
 from claudeteam.commands import down as _down
 from claudeteam.runtime import paths
-from claudeteam.util import error_exit, help_requested, pop_bool_flag
+from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag
 
 
 USAGE = "usage: claudeteam reset [--yes]"
@@ -38,8 +38,7 @@ def _confirm() -> bool:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print(USAGE)
+    if maybe_print_help(rest, USAGE):
         return 0
     yes = pop_bool_flag(rest, "--yes")
     if rest:

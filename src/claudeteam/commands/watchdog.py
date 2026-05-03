@@ -13,15 +13,14 @@ import sys
 import time
 
 from claudeteam.runtime import paths, pidlock, watchdog
-from claudeteam.util import help_requested
+from claudeteam.util import maybe_print_help
 
 
 CHECK_INTERVAL_SECS = 30
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam watchdog")
+    if maybe_print_help(argv, "usage: claudeteam watchdog"):
         return 0
     pid_file = paths.watchdog_pid_file()
     if not pidlock.acquire(pid_file, name="watchdog"):

@@ -19,7 +19,7 @@ from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, wake
-from claudeteam.util import error_exit, help_requested, warn
+from claudeteam.util import error_exit, maybe_print_help, warn
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -108,8 +108,7 @@ def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event)
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam router")
+    if maybe_print_help(argv, "usage: claudeteam router"):
         return 0
 
     chat = config.chat_id()

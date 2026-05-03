@@ -9,7 +9,7 @@ Refuses to overwrite existing files unless --force is passed.
 from __future__ import annotations
 
 from claudeteam.runtime import config
-from claudeteam.util import error_exit, help_requested, pop_bool_flag, pop_flag, write_json
+from claudeteam.util import error_exit, maybe_print_help, pop_bool_flag, pop_flag, write_json
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -35,8 +35,7 @@ _DEFAULT_RUNTIME = {
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print(USAGE)
+    if maybe_print_help(rest, USAGE):
         return 0
     force = pop_bool_flag(rest, "--force")
     session = pop_flag(rest, "--session") or _DEFAULT_TEAM["session"]

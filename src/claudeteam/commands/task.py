@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from claudeteam.store import tasks
 from claudeteam.util import (
-    error_exit, fmt_time_ms, help_requested, pop_flag, usage_error,
+    error_exit, fmt_time_ms, maybe_print_help, pop_flag, usage_error,
 )
 
 
@@ -112,8 +112,7 @@ SUBCOMMANDS = {
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print(USAGE)
+    if maybe_print_help(argv, USAGE):
         return 0
     if not argv:
         # No subcommand: print usage to stdout (it IS the requested output)

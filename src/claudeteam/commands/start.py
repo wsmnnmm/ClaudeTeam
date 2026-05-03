@@ -6,12 +6,11 @@ window per agent, each running its configured CLI.
 from __future__ import annotations
 
 from claudeteam.runtime import config, lifecycle, tmux
-from claudeteam.util import error_exit, help_requested, warn
+from claudeteam.util import error_exit, maybe_print_help, warn
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam start")
+    if maybe_print_help(argv, "usage: claudeteam start"):
         return 0
 
     team = config.load_team()

@@ -23,7 +23,7 @@ from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, env_str, error_exit, help_requested, pop_bool_flag
+from claudeteam.util import ago_ms, env_str, error_exit, maybe_print_help, pop_bool_flag
 
 
 _OK = "✅"
@@ -278,8 +278,7 @@ def _emit_json(rep: HealthReport) -> None:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print("usage: claudeteam health [--json]")
+    if maybe_print_help(rest, "usage: claudeteam health [--json]"):
         return 0
     as_json = pop_bool_flag(rest, "--json")
     if rest:

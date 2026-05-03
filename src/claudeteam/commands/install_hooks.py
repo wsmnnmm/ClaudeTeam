@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from claudeteam.runtime import config, tmux
-from claudeteam.util import atomic_write_text, help_requested, usage_error, warn
+from claudeteam.util import atomic_write_text, maybe_print_help, usage_error, warn
 
 
 USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
@@ -96,8 +96,7 @@ def _write_command_files(target_dir: Path) -> tuple[int, int]:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print(USAGE)
+    if maybe_print_help(rest, USAGE):
         return 0
     if len(rest) > 1:
         return usage_error(USAGE)

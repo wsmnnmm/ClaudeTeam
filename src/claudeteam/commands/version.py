@@ -10,7 +10,7 @@ checkout they think they're testing.
 """
 from __future__ import annotations
 
-from claudeteam.util import help_requested
+from claudeteam.util import maybe_print_help
 
 
 def _read_version() -> str:
@@ -30,8 +30,7 @@ def _read_version() -> str:
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam version")
+    if maybe_print_help(argv, "usage: claudeteam version"):
         return 0
     print(_read_version())
     return 0

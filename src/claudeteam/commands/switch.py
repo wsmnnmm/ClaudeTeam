@@ -29,7 +29,7 @@ import shlex
 from pathlib import Path
 
 from claudeteam.runtime import config, paths
-from claudeteam.util import env_str, error_exit, help_requested
+from claudeteam.util import env_str, error_exit, maybe_print_help
 
 
 USAGE = (
@@ -70,8 +70,7 @@ def _emit_exports(team_dir: Path) -> int:
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
-    if help_requested(rest):
-        print(USAGE)
+    if maybe_print_help(rest, USAGE):
         return 0
     if len(rest) > 1:
         return error_exit(f"❌ too many args: {rest}\n{USAGE}")

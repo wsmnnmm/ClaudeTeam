@@ -15,7 +15,7 @@ import signal
 import time
 
 from claudeteam.runtime import config, pidlock, tmux, watchdog
-from claudeteam.util import error_exit, help_requested, warn
+from claudeteam.util import error_exit, maybe_print_help, warn
 
 
 def _kill_pid_file(name: str, pid_file) -> int:
@@ -50,8 +50,7 @@ def _kill_pid_file(name: str, pid_file) -> int:
 
 
 def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam down")
+    if maybe_print_help(argv, "usage: claudeteam down"):
         return 0
 
     rc = 0
