@@ -6,11 +6,7 @@ window per agent, each running its configured CLI.
 from __future__ import annotations
 
 from claudeteam.runtime import config, lifecycle, tmux
-from claudeteam.runtime.lifecycle import pane_env_prefix  # re-export
 from claudeteam.util import error_exit, help_requested, warn
-
-
-__all__ = ["main", "pane_env_prefix"]
 
 
 def main(argv: list[str]) -> int:
