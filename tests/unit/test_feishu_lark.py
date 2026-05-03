@@ -79,6 +79,56 @@ def test_run_returns_none_on_timeout():
     assert lark.call(["x"], run=fake) is None
 
 
+def test_run_returns_none_when_npx_not_on_path():
+    """REGRESSION: subprocess.run raising FileNotFoundError (npx not
+    installed) used to propagate as a top-level traceback through
+    every claudeteam say / router invocation. Now caught with a
+    one-liner pointing at Node.js install."""
+    import io
+    import contextlib
+
+    def fake(*a, **kw):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'npx'")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=fake)
+    assert result is None
+    assert "npx not found on PATH" in out.getvalue()
+
+
+def test_run_returns_none_on_other_oserror():
+    """OSError variants other than FileNotFoundError (permission denied
+    on fork, EAGAIN, etc.) also caught — same one-line warn pattern."""
+    import io
+    import contextlib
+
+    def fake(*a, **kw):
+        raise OSError("[Errno 13] Permission denied")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=fake)
+    assert result is None
+    assert "could not be launched" in out.getvalue()
+
+
+def test_run_logs_preview_when_stdout_is_not_json():
+    """REGRESSION: silent return None on JSONDecodeError used to make
+    debugging impossible. Now logs a one-line preview of the offending
+    output so the operator can see the kind of garbage they got back."""
+    import io
+    import contextlib
+    rec = _Recorder(FakeProc(stdout="<html>\n<body>auth required</body>\n</html>\n"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=rec)
+    assert result is None
+    log = out.getvalue()
+    assert "non-JSON" in log
+    assert "<html>" in log  # the preview line
+
+
 def test_run_default_timeout_is_90_seconds():
     rec = _Recorder(FakeProc(stdout="{}"))
     lark.call(["x"], run=rec)
@@ -168,3 +218,57 @@ def test_timeout_falls_back_to_90_when_env_is_garbage():
     with env_patch(CLAUDETEAM_LARK_TIMEOUT="not-a-number"):
         lark.call(["x"], run=rec)
     assert rec.calls[0]["kwargs"]["timeout"] == 90
+
+
+# ── Popen-time errors (npx missing, permission denied, ...) ────
+
+
+def test_run_returns_none_when_npx_not_on_path():
+    """REGRESSION: subprocess raising FileNotFoundError (npx not
+    installed) used to propagate as a top-level traceback through
+    every claudeteam say / chat invocation. Now caught with a
+    one-liner pointing at Node.js install."""
+    import io
+    import contextlib
+
+    def fake(*a, **kw):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'npx'")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=fake)
+    assert result is None
+    assert "npx not found on PATH" in out.getvalue()
+
+
+def test_run_returns_none_on_other_oserror():
+    """OSError variants other than FileNotFoundError (permission, EAGAIN,
+    fork failed) — same one-line warn pattern."""
+    import io
+    import contextlib
+
+    def fake(*a, **kw):
+        raise OSError("[Errno 13] Permission denied")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=fake)
+    assert result is None
+    assert "could not be launched" in out.getvalue()
+
+
+def test_run_logs_preview_when_stdout_is_not_json():
+    """REGRESSION: silent return None on JSONDecodeError used to make
+    debugging impossible. Now logs a one-line preview of the offending
+    output so the operator can see the kind of garbage they got back
+    (typically: HTML auth wall page, lark-cli banner text)."""
+    import io
+    import contextlib
+    rec = _Recorder(FakeProc(stdout="<html>\n<body>auth required</body>\n</html>\n"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=rec)
+    assert result is None
+    log = out.getvalue()
+    assert "non-JSON" in log
+    assert "<html>" in log

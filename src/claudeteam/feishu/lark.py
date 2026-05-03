@@ -75,6 +75,16 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
         elapsed = (time.monotonic() - t0)
         print(f"  ⚠️ lark-cli timeout ({timeout_s}s after {elapsed:.1f}s): {' '.join(args[:3])}")
         return None
+    except FileNotFoundError:
+        # npx itself isn't on PATH. claudeteam say / router / chat all hit
+        # this — better one-line warn than a top-level traceback.
+        print(f"  ⚠️ npx not found on PATH; install Node.js to enable lark-cli")
+        return None
+    except OSError as e:
+        # Other Popen-time OS failures (permission, fork failed, etc.).
+        # Caller will see None and propagate as "send failed".
+        print(f"  ⚠️ lark-cli could not be launched: {e}")
+        return None
     if r.returncode != 0:
         msg = (r.stderr or "").strip().splitlines()[-1:]
         print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {msg[0] if msg else ''}"[:200])
@@ -83,7 +93,14 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
         return {}
     try:
         full = json.loads(r.stdout)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        # Don't silently swallow — JSON corruption from lark-cli is rare
+        # but when it happens, the operator wants to know (typically means
+        # lark-cli printed banner text into stdout, or got proxied to an
+        # auth wall). One-line preview helps debugging without flooding
+        # the daemon log.
+        preview = r.stdout.strip().splitlines()[0][:120] if r.stdout.strip() else "(empty)"
+        print(f"  ⚠️ lark-cli returned non-JSON ({e}): {preview}")
         return None
     # lark-cli wraps results in {"ok": ..., "data": ...} or returns data directly.
     # `ok: false` means the API returned an error even though lark-cli exited 0.
