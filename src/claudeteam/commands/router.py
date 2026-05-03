@@ -12,6 +12,8 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 
 from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
@@ -64,6 +66,35 @@ def _on_progress(decision, stats):
     catchup.record_decision(decision)
 
 
+# How often the subscribe-watchdog thread checks whether the lark-cli
+# child is still alive. Short enough to detect a silent death in <30s,
+# long enough not to busy-loop.
+_SUBSCRIBE_WATCHDOG_PERIOD_S = 20.0
+
+
+def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event) -> None:
+    """Background thread: kill the daemon if the subscribe child dies.
+
+    `lark-cli event +subscribe` periodically dies silently — Round B Smoke
+    + round-52 smoke both saw the lark-cli grandchild vanish while npm-exec
+    parent stayed running. With npm-exec still holding stdout open, the
+    main thread's `process_lines(proc.stdout, ...)` would block forever
+    on readline, never noticing.
+
+    This thread polls proc.poll() every ~20s. When the npm parent exits
+    (which usually follows lark-cli's death within a few seconds), it
+    terminates the entire subscribe group + raises SIGTERM at the daemon
+    so the SIGTERM handler runs cleanup. Watchdog respawns from there.
+    """
+    while not stop_event.wait(_SUBSCRIBE_WATCHDOG_PERIOD_S):
+        if proc.poll() is not None:
+            print(f"  ⚠️ subscribe child exited (rc={proc.returncode}); router will exit so watchdog can respawn")
+            # Send SIGTERM to ourselves; the registered handler will
+            # reap the subscribe group and exit cleanly.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+
 def main(argv: list[str]) -> int:
     if help_requested(argv):
         print("usage: claudeteam router")
@@ -113,6 +144,16 @@ def main(argv: list[str]) -> int:
         sys.exit(0)
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    # Spawn the subscribe-health watchdog thread. It exits the daemon
+    # cleanly if lark-cli dies under us — without it, process_lines would
+    # block forever on stdout that npm-exec parent keeps open after the
+    # lark-cli grandchild vanishes.
+    stop_watchdog = threading.Event()
+    threading.Thread(
+        target=_watch_subscribe_health, args=(proc, stop_watchdog),
+        daemon=True,
+    ).start()
+
     try:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
@@ -144,5 +185,6 @@ def main(argv: list[str]) -> int:
     finally:
         # Reap the subscribe tree on EVERY exit path so we don't leak a
         # node + lark-cli pair per up/down cycle.
+        stop_watchdog.set()
         _terminate_subscribe_group(proc)
         pidlock.release(pid_file)
