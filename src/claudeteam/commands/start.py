@@ -35,7 +35,11 @@ def main(argv: list[str]) -> int:
         if agent != first and not tmux.new_window(target):
             warn(f"⚠️  failed to create window for {agent}, skipping")
             continue
-        cli = config.agent_config(agent).get("cli", "claude-code")
+        # R146: re-use the team dict loaded above; `config.agent_config`
+        # would re-read team.json from disk per agent (no-cache, by design
+        # — see config.py). lifecycle.provision_pane still reads on its
+        # own, separate fix.
+        cli = agents.get(agent, {}).get("cli", "claude-code")
         outcome = lifecycle.provision_pane(agent, target)
         if outcome == lifecycle.LAZY:
             print(f"  → {agent} ({cli}) lazy-pane ready")
