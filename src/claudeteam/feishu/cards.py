@@ -4,10 +4,13 @@ Slash handlers can return a dict matching the Feishu v1 card schema and
 `deliver._apply_slash` will send it via `chat.send_card` (`--msg-type
 interactive`) instead of plain text.
 
-Builders cover the common cases — all are pure: no I/O, no env reads.
-Two top-level constructors (`simple_card`, `kv_card`) plus two small
-helpers (`beijing_stamp`, `fenced_block`) shared across slash handlers
-that produce timestamped / monospace card bodies.
+Builders are pure: no I/O, no env reads. One constructor (`simple_card`)
+plus two helpers (`beijing_stamp`, `fenced_block`) shared across slash
+handlers that produce timestamped / monospace card bodies.
+
+(R79 also shipped `kv_card` for `**key**: value` listings; R137
+removed it — never had a production caller. Add back if a future
+handler genuinely needs the shape.)
 """
 from __future__ import annotations
 
@@ -46,22 +49,6 @@ def simple_card(title: str, body: str, *, color: str = "blue") -> dict:
             "text": {"tag": "lark_md", "content": body or " "},
         }],
     }
-
-
-def kv_card(title: str, rows: list[tuple[str, str]], *,
-            color: str = "blue") -> dict:
-    """Header + key/value list rendered as compact `**k**: v` lines.
-
-    `rows` is `[(key, value), ...]`. Empty list → a single placeholder line
-    so the card has at least one element (Feishu rejects elements: []).
-    Keys are bolded; values are plain. Both pass through lark_md so they
-    can themselves contain inline markdown / emoji glyphs.
-    """
-    if not rows:
-        body = "_(empty)_"
-    else:
-        body = "\n".join(f"**{k}**: {v}" for k, v in rows)
-    return simple_card(title, body, color=color)
 
 
 def beijing_stamp(now: Callable[[], datetime] = datetime.now) -> str:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from claudeteam.feishu.cards import (
-    beijing_stamp, fenced_block, kv_card, simple_card,
+    beijing_stamp, fenced_block, simple_card,
 )
 
 
@@ -35,27 +35,6 @@ def test_simple_card_empty_body_becomes_space():
     so the card schema still validates instead of failing the send."""
     card = simple_card("Title", "")
     assert card["elements"][0]["text"]["content"] == " "
-
-
-def test_kv_card_renders_bold_keys():
-    card = kv_card("Status", [("agent", "manager"), ("state", "idle")])
-    body = card["elements"][0]["text"]["content"]
-    assert "**agent**: manager" in body
-    assert "**state**: idle" in body
-    # row order preserved
-    assert body.index("**agent**") < body.index("**state**")
-
-
-def test_kv_card_handles_empty_rows():
-    """Empty rows list must still produce a valid card (Feishu rejects
-    elements: [])."""
-    card = kv_card("Empty", [])
-    assert card["elements"][0]["text"]["content"] == "_(empty)_"
-
-
-def test_kv_card_threads_color_through():
-    card = kv_card("X", [("a", "b")], color="red")
-    assert card["header"]["template"] == "red"
 
 
 # ── beijing_stamp helper (R117 / R136-relocated) ─────────────────
