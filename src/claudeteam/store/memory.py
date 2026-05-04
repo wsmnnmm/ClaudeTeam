@@ -143,6 +143,28 @@ def list_recent(agent: str, *, limit: int = 20) -> list[dict]:
     return read_jsonl(_memory_file(agent))[-limit:]
 
 
+def list_recent_filtered(agent: str, *,
+                         kind: str = "", limit: int = 20) -> list[dict]:
+    """Return up to `limit` most recent entries, oldest-first.
+
+    Round-141: when `kind` is set, scans the FULL memory window for
+    matches and slices to `limit` afterwards — so a hot agent with many
+    unrelated notes still surfaces rare kinds (e.g. one resolved
+    blocker among 100 task_completed rows). When `kind` is empty,
+    behaves identically to `list_recent` so callers can use this as
+    the single entry point regardless of whether they filter.
+
+    Extracted from `commands/recall.py` + `feishu/slash._handle_recall`,
+    which inlined the same fetch-then-filter dance and both reached
+    into the module-private `_MAX_PER_AGENT` to size the pre-filter
+    window.
+    """
+    if kind:
+        all_rows = list_recent(agent, limit=_MAX_PER_AGENT)
+        return [r for r in all_rows if r.get("kind") == kind][-limit:]
+    return list_recent(agent, limit=limit)
+
+
 def clear(agent: str) -> int:
     """Wipe an agent's memory file. Returns the number of dropped entries.
 

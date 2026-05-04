@@ -44,6 +44,61 @@ def test_list_recent_empty_when_agent_unknown():
         assert memory.list_recent("nobody") == []
 
 
+# ── Round-141: list_recent_filtered ─────────────────────────────
+
+
+def test_list_recent_filtered_no_kind_matches_list_recent():
+    """Without a kind filter, the helper is a thin pass-through to
+    list_recent — same rows, same order, same limit semantics."""
+    with isolated_env():
+        for i in range(8):
+            memory.append("worker", "note", f"row {i}")
+        plain = memory.list_recent("worker", limit=5)
+        filtered = memory.list_recent_filtered("worker", limit=5)
+        assert plain == filtered
+
+
+def test_list_recent_filtered_picks_only_matching_kind():
+    """With a kind filter, return only entries of that kind, oldest-first."""
+    with isolated_env():
+        memory.append("worker", "note", "n1")
+        memory.append("worker", "decision", "d1")
+        memory.append("worker", "note", "n2")
+        memory.append("worker", "decision", "d2")
+        decisions = memory.list_recent_filtered("worker", kind="decision")
+        assert [r["content"] for r in decisions] == ["d1", "d2"]
+        notes = memory.list_recent_filtered("worker", kind="note")
+        assert [r["content"] for r in notes] == ["n1", "n2"]
+
+
+def test_list_recent_filtered_scans_full_window_so_rare_kinds_surface():
+    """Round-141 contract: when filtering, scan the FULL backlog, then
+    trim to limit AFTER. A buried decision among many notes must not
+    get missed by limit's pre-filter pruning. This is the whole reason
+    the helper exists — `list_recent(agent, limit=N)` would have
+    pre-pruned the rare kind out of the window before the filter ran."""
+    with isolated_env():
+        # 30 notes, then 1 decision. With limit=5 + naive `list_recent
+        # then filter`, the decision is OUTSIDE the last 5 → 0 matches.
+        for i in range(30):
+            memory.append("worker", "note", f"note {i}")
+        memory.append("worker", "decision", "the rare one")
+        for i in range(10):
+            memory.append("worker", "note", f"after note {i}")
+        rows = memory.list_recent_filtered("worker", kind="decision", limit=5)
+        assert [r["content"] for r in rows] == ["the rare one"]
+
+
+def test_list_recent_filtered_respects_limit_among_matches():
+    """Limit caps matches, not pre-filter rows."""
+    with isolated_env():
+        for i in range(8):
+            memory.append("worker", "decision", f"d{i}")
+        rows = memory.list_recent_filtered("worker", kind="decision", limit=3)
+        # Last 3 (oldest-first within the trimmed window)
+        assert [r["content"] for r in rows] == ["d5", "d6", "d7"]
+
+
 def test_append_isolates_per_agent():
     """Two agents writing concurrently MUST NOT interleave; verify by
     cross-reading after sequential appends."""

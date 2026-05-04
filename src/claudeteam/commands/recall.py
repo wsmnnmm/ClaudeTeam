@@ -35,11 +35,6 @@ USAGE = (
 
 _DEFAULT_LIMIT = 20
 
-# When a kind filter doesn't match any KNOWN_KINDS entry, fetch enough
-# rows that the filter has a real chance of finding something even if
-# the agent has lots of unrelated entries (200 = full memory cap).
-_FILTERED_FETCH = memory._MAX_PER_AGENT
-
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
@@ -66,14 +61,7 @@ def main(argv: list[str]) -> int:
         warn(f"⚠️  --kind {kind_filter!r} not in known kinds "
              f"({sorted(memory.KNOWN_KINDS)}); proceeding anyway")
 
-    if kind_filter:
-        # Pull the full memory window so the kind filter has the entire
-        # backlog to scan; then trim to `limit` AFTER filtering, so the
-        # operator sees `limit` matches not `limit` total reads.
-        all_rows = memory.list_recent(agent, limit=_FILTERED_FETCH)
-        rows = [r for r in all_rows if r.get("kind") == kind_filter][-limit:]
-    else:
-        rows = memory.list_recent(agent, limit=limit)
+    rows = memory.list_recent_filtered(agent, kind=kind_filter, limit=limit)
 
     if as_json:
         print_json(rows)

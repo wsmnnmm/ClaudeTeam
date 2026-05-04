@@ -396,11 +396,7 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
     else:
         kind_warn = ""
 
-    if kind_filter:
-        all_rows = memory.list_recent(agent, limit=memory._MAX_PER_AGENT)
-        rows = [r for r in all_rows if r.get("kind") == kind_filter][-n:]
-    else:
-        rows = memory.list_recent(agent, limit=n)
+    rows = memory.list_recent_filtered(agent, kind=kind_filter, limit=n)
 
     stamp = beijing_stamp(ctx.now)
     title_filter = f" / kind={kind_filter}" if kind_filter else ""
