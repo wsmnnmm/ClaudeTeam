@@ -390,9 +390,14 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
         session=ctx.session,
     )
     elements = _build_server_load_elements(data)
-    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
-        "content": (f"采集 {beijing_stamp(ctx.now)} · 数据源 uptime/"
-                    f"free/df/docker stats/ps")}]})
+    # R166: v2 schema dropped the v1 `note` element ("cards of schema V2
+    # no longer support this capability; unsupported tag note"); use a
+    # grey-font markdown line instead so the footer still reads as
+    # subdued metadata.
+    elements.append({"tag": "markdown",
+                      "content": (f"<font color='grey'>采集 {beijing_stamp(ctx.now)}"
+                                   f" · 数据源 uptime/free/df/docker stats/ps"
+                                   f"</font>")})
     # Yellow when alarms exist, otherwise purple (matches main's branding).
     color = "yellow" if data.get("alarms") else "purple"
     return rich_card(

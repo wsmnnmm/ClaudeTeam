@@ -241,18 +241,20 @@ def test_health_card_falls_back_to_no_data_cells_when_host_empty():
     assert contents.count("无数据") >= 3  # CPU + 内存 + 磁盘 all blank
 
 
-def test_health_card_emits_v2_schema_with_note_footer():
-    """Footer note records collection time + data source list — useful
-    for debug "is this card stale?" questions."""
+def test_health_card_emits_v2_schema_with_grey_footer():
+    """Footer line records collection time + data source list — useful
+    for debug "is this card stale?" questions. v2 schema dropped the
+    v1 `note` tag, so we use a grey-font markdown line as the footer."""
     data = {"host": {"cpu": None, "mem": None, "disk": None},
             "containers": [], "agents": [], "alarms": []}
     with _stub_server_load(data):
         reply = slash.dispatch("/health", _ctx())
-    notes = [e for e in reply["body"]["elements"] if e.get("tag") == "note"]
-    assert len(notes) == 1
-    note_text = notes[0]["elements"][0]["content"]
-    assert "采集" in note_text
-    assert "uptime/free/df/docker stats/ps" in note_text
+    # The last element should carry the footer text in a grey font span.
+    last = reply["body"]["elements"][-1]
+    assert last["tag"] == "markdown"
+    assert "采集" in last["content"]
+    assert "uptime/free/df/docker stats/ps" in last["content"]
+    assert "color='grey'" in last["content"]
 
 
 # ── /usage ───────────────────────────────────────────────────────
