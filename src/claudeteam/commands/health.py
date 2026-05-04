@@ -75,18 +75,31 @@ def _check_state_dir(rep: HealthReport) -> None:
     rep.note(f"state_dir: {paths.state_dir()}  ({src})")
 
 
+def _read_json_or_fail(rep: HealthReport, path, label: str) -> dict | None:
+    """Read `path` as JSON or log a red check + return None.
+
+    R140: extracted from `_check_team` + `_check_runtime_config` which
+    each inlined the same exists-then-parse-explicitly dance. Why
+    explicit? `config.load_team` / `config.load_runtime_config` are
+    lenient — they return defaults + stderr-warn on corrupt JSON so
+    callers don't crash. Health intentionally trades that for
+    surfaces — boss wants a red check on corruption, not a silent
+    fallback to defaults that hides the misconfig.
+    """
+    if not path.exists():
+        rep.fail(f"{label} missing at {path}")
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        rep.fail(f"{label} parse error: {e}")
+        return None
+
+
 def _check_team(rep: HealthReport) -> None:
     tf = config.team_file()
-    if not tf.exists():
-        rep.fail(f"team.json missing at {tf}")
-        return
-    # config.load_team is lenient (returns default + stderr-warns on
-    # corrupt JSON) — health needs to do its own raw parse to surface
-    # the corruption as a red check.
-    try:
-        team = json.loads(tf.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        rep.fail(f"team.json parse error: {e}")
+    team = _read_json_or_fail(rep, tf, "team.json")
+    if team is None:
         return
     agents = team.get("agents", {})
     rep.ok(f"team.json: {len(agents)} agent(s) ({tf})")
@@ -96,15 +109,8 @@ def _check_team(rep: HealthReport) -> None:
 
 def _check_runtime_config(rep: HealthReport) -> None:
     rc = config.runtime_config_file()
-    if not rc.exists():
-        rep.fail(f"runtime_config.json missing at {rc}")
-        return
-    # Same parse-explicitly pattern as _check_team — surface corruption
-    # rather than silently using the lenient default.
-    try:
-        cfg = json.loads(rc.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        rep.fail(f"runtime_config.json parse error: {e}")
+    cfg = _read_json_or_fail(rep, rc, "runtime_config.json")
+    if cfg is None:
         return
     if chat := cfg.get("chat_id", ""):
         rep.ok(f"chat_id: {chat}")
