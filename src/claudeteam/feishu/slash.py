@@ -32,6 +32,19 @@ Card-building helpers all live in `feishu/cards.py` (R136 consolidation):
     beijing_stamp(now) -> str               R117: card-title timestamp suffix
                                             (callers pass `ctx.now`)
     fenced_block(text) -> str               R118: monospace lark_md fence
+
+Internal helpers worth knowing:
+    _pop_kind_arg(parts, cmd)               R138: shared `--kind K` extractor
+                                            for /recall + /forget — order-
+                                            agnostic, returns (parts, kind, err)
+    _handle_team's lazy probe               R144: one `load_team()` per /team
+                                            render (was N for N agents — each
+                                            agent_config call re-reads disk).
+
+Removed:
+    R137 — `kv_card` (never had a production caller)
+    R143 — `is_slash_command` (no production caller; router uses raw
+            `/`-prefix detection, dispatch surfaces unknown commands)
 """
 from __future__ import annotations
 
