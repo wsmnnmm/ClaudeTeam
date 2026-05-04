@@ -86,7 +86,7 @@ _MAX_TMUX_LINES = 2000
 _REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
 
 
-def _is_lazy(cfg, agent: str) -> bool:
+def _is_lazy(agent: str) -> bool:
     """Probe whether `agent` is configured `lazy: true` in team.json.
 
     Round-129: used by `_handle_team` to distinguish "agent's CLI down
@@ -94,9 +94,15 @@ def _is_lazy(cfg, agent: str) -> bool:
     "agent's CLI died unexpectedly" (alarm). Returns False on any
     config lookup error — a missing-from-team.json agent is "not lazy"
     by default, so it'll still flag as unhealthy if its pane is dead.
+
+    R142: dropped the cfg-as-parameter dance. The caller used to import
+    `runtime.config` at the slash-handler level just to pass it in;
+    closing over the import here lets `_handle_team` read the lazy
+    set as a one-liner with no awkward module-passing.
     """
     try:
-        return bool(cfg.agent_config(agent).get("lazy"))
+        from claudeteam.runtime import config
+        return bool(config.agent_config(agent).get("lazy"))
     except Exception:
         return False
 
@@ -185,16 +191,10 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     caught the wart: yellow team header for a worker that's just
     waiting for its first message looks like an alarm.
     """
-    # Pull team config once so we can tell which agents are intentionally
-    # lazy. Falls back gracefully if config raises (unknown agent in
-    # ctx.team_agents that isn't in team.json — shouldn't happen, but
-    # don't crash the card render).
-    try:
-        from claudeteam.runtime import config as _cfg
-        lazy_agents = {a for a in ctx.team_agents
-                       if _is_lazy(_cfg, a)}
-    except Exception:
-        lazy_agents = set()
+    # Lazy agents in team.json get the ⏸ glyph instead of 🛑 below. _is_lazy
+    # already swallows every error mode (missing team.json, unknown agent,
+    # import failures) so the comprehension can't raise.
+    lazy_agents = {a for a in ctx.team_agents if _is_lazy(a)}
 
     rows = []
     tally: Counter[str] = Counter()
