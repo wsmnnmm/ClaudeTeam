@@ -1,7 +1,7 @@
 """Tests for store/memory.py — per-agent durable memory."""
 from __future__ import annotations
 
-from helpers import isolated_env
+from helpers import captured_stderr, isolated_env
 from claudeteam.store import memory
 
 
@@ -267,18 +267,14 @@ def test_kinds_sorted_returns_alphabetical_list():
 
 def test_warn_unknown_kind_no_op_for_known():
     """Round-156 contract: known kind = silence, no stderr noise."""
-    import contextlib, io
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
+    with captured_stderr() as err:
         memory.warn_unknown_kind("decision")
     assert err.getvalue() == ""
 
 
 def test_warn_unknown_kind_no_op_for_empty():
     """Empty kind = "no filter intent" — pass-through, no warn."""
-    import contextlib, io
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
+    with captured_stderr() as err:
         memory.warn_unknown_kind("")
     assert err.getvalue() == ""
 
@@ -287,9 +283,7 @@ def test_warn_unknown_kind_nudges_for_unconventional():
     """Unconventional kind: stderr warn names the kind + lists the
     convention so a typo of a real kind is obvious. Doesn't reject —
     caller decides whether to proceed (CLI does, by design)."""
-    import contextlib, io
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
+    with captured_stderr() as err:
         memory.warn_unknown_kind("decsion")  # typo of "decision"
     msg = err.getvalue()
     assert "'decsion'" in msg
@@ -304,10 +298,8 @@ def test_append_warns_on_unknown_kind_but_still_writes():
     """Soft validation: unknown kind prints a stderr warning but the
     entry IS persisted. Free-form is sometimes the right call (a
     one-off `experiment_log`); we only nudge."""
-    import contextlib, io
     with isolated_env():
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        with captured_stderr() as err:
             memory.append("worker_cc", "fyi", "this is a note")
         # Warning visible
         assert "unknown kind 'fyi'" in err.getvalue()
@@ -320,10 +312,8 @@ def test_append_warns_on_unknown_kind_but_still_writes():
 def test_append_silent_for_known_kinds():
     """No noise when the kind is in the convention — only unknown
     kinds nudge, otherwise stderr would flood on every memory write."""
-    import contextlib, io
     with isolated_env():
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        with captured_stderr() as err:
             for k in memory.KNOWN_KINDS:
                 memory.append("manager", k, f"{k} content")
         assert err.getvalue() == ""
@@ -333,9 +323,7 @@ def test_append_empty_kind_does_not_warn():
     """Empty `kind` (some integration callers might pass it) — don't
     warn. Validate only when something IS supplied that misses the
     vocabulary."""
-    import contextlib, io
     with isolated_env():
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        with captured_stderr() as err:
             memory.append("manager", "", "anonymous note")
         assert err.getvalue() == ""

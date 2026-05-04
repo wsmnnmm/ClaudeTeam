@@ -148,3 +148,22 @@ def tmux_patch(**stubs):
             ...
     """
     return attr_patch(_tmux, **stubs)
+
+
+@contextlib.contextmanager
+def captured_stderr():
+    """Yield a StringIO bound to `sys.stderr` for the with-block.
+
+    R157: extracted from test_store_memory.py where 6 tests duplicated
+    `import contextlib, io; err = io.StringIO(); with
+    contextlib.redirect_stderr(err): ...`. Use when testing a function
+    that writes to stderr directly (vs a CLI command — for those use
+    `run_cli` which already returns stderr).
+
+        with captured_stderr() as err:
+            memory.warn_unknown_kind("decsion")
+        assert "'decsion'" in err.getvalue()
+    """
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        yield err
