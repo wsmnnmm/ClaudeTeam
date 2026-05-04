@@ -2,9 +2,10 @@
 
 ## 场景
 
-把 ClaudeTeam 跑在容器里，state + lark-cli OAuth profile 通过 volume
-持久化。容器本身不带任何 agent CLI（claude / codex / kimi）—— 这些
-都需要单独 auth + licence；这一层由调用方派生镜像或 bind-mount 进来。
+把 ClaudeTeam 跑在容器里，state + 多种 OAuth credentials 通过 volume
+持久化。R168/R170 起，基础镜像 **预装** claude-code / codex / kimi-cli
+（避免每个派生镜像都得装一遍）；OAuth tokens 走 host bind-mount，从
+keychain 取出后直接挂进容器，不需要在容器内重新登录。
 
 ## 范围
 
@@ -25,24 +26,38 @@
 
 ## When
 
-```bash
-# 1. Build 基础镜像
-docker compose build
+R172.b: a Makefile bundles the deploy flow so operators don't have to
+remember the steps or worry about expired OAuth tokens.
 
-# 2. 把 host 的 team-data 链给容器（只 init 一次）
+```bash
+# One-time: prepare team-data/ + .env (FEISHU_APP_ID + FEISHU_APP_SECRET)
 mkdir -p team-data
 cp ~/teams/projectA/team.json ~/teams/projectA/runtime_config.json team-data/
 
-# 3. 起容器（detached）
-docker compose up -d
+# Per-deploy: refresh tokens + rebuild (only if Dockerfile changed) + recreate
+make deploy
+# → security find-generic-password 取 keychain 最新 claude OAuth
+# → docker compose build (no-op if Dockerfile unchanged)
+# → docker compose down && up -d
+# → claudeteam reset --yes && claudeteam up
 
-# 4. 进容器把 team 拉起来
-docker compose exec claudeteam claudeteam install-hooks
+# Code-only tweaks (Python edits in src/) hot-reload via bind-mount;
+# no rebuild needed — just bounce the daemons:
+make reset
+
+# Live smoke check (5 read-only slash) — eyeball the cards in chat:
+make smoke
+```
+
+Manual flow (if you don't want to use the Makefile):
+
+```bash
+docker compose build
+docker compose up -d
+docker compose exec claudeteam claudeteam install-hooks   # writes .claude/commands/*.md
 docker compose exec claudeteam claudeteam up
 docker compose exec claudeteam claudeteam health
-
-# 5. 容器内 attach tmux 看 panes
-docker compose exec claudeteam tmux attach -t ClaudeTeam
+docker compose exec claudeteam tmux attach -t ContainerA  # eyeball panes
 ```
 
 ## Then
@@ -61,34 +76,44 @@ docker compose exec claudeteam tmux attach -t ClaudeTeam
 
 ## Why this is here
 
-CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。两条原则：
+CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。Now (R172.b):
 
-1. **基础镜像不带 agent CLI** — claude / codex / kimi 各有 auth +
-   licence + 体积考虑，硬塞进基础镜像就把 ClaudeTeam 绑死在某条
-   provider 流水线上。派生镜像里 add 自己想跑的就行。
+1. **基础镜像装好 claude / codex / kimi**（R168/R170）— derived images
+   could still skip the install but baseline ergonomics matter more.
 
-2. **CMD 是 sleep infinity，不是 `claudeteam up`** — `up` 让 tmux 起
+2. **OAuth bind-mounts not in-container login** — keychain reach broken
+   on macOS, so the deploy flow extracts OAuth via `security
+   find-generic-password` on the host and mounts the resulting file
+   read-write into the container. Each `make deploy` refreshes.
+
+3. **Per-agent HOME=/data/agent-home/<agent>** (R172.b) — multiple
+   panes sharing one ~/.claude.json corrupted on concurrent writes.
+   Each agent now owns its own copy, seeded once from the host's
+   ~/.claude.json (mounted RO at /root/host-claude.json).
+
+4. **CMD 是 sleep infinity，不是 `claudeteam up`** — `up` 让 tmux 起
    detached 后立刻退出 host 进程，容器会因为 PID 1 退出而停掉。改成
-   sleep 让容器活着，`docker compose exec` 每次手动驱动 lifecycle
-   命令；这跟 host 上的操作 pattern 一致（user 自己 `claudeteam up`），
-   减少行为分叉。
+   sleep 让容器活着，`docker compose exec` 驱动 lifecycle 命令。
 
 ## Known caveats
 
-- **macOS host: lark-cli auth doesn't carry into container** — round-59
-  smoke caught this. lark-cli stores app secrets + user OAuth tokens
-  in the macOS keychain (`source: keychain` in config.json). The
-  container can mount `~/.lark-cli/config.json` but CANNOT reach the
-  host's macOS keychain. Result: `lark-cli ... --as user` fails with
-  `Error: need_user_authorization`; `--as bot` fails with
-  `Error: TAT API error: [10003] invalid param`. Workaround:
-    1. Run claudeteam on a Linux host (keychain doesn't apply, secrets
-       go in `~/.lark-cli/config.json` directly).
-    2. Or run an interactive `lark-cli login` *inside* the container
-       once at first boot, persisting tokens via the `/root/.lark-cli`
-       volume.
-  Not a blocker for non-Feishu-touching tests (`claudeteam health`,
-  `claudeteam team`, local inbox flow).
+- **macOS keychain → container reach**: lark-cli + claude-code both
+  store OAuth in keychain. R161 added a `_fetch_tenant_token`
+  fallback for lark-cli (env-driven app_id/secret bootstrap into a
+  cached tenant_access_token). R172.b's `make deploy` extracts
+  claude's `Claude Code-credentials` keychain entry into
+  `~/.claude/.credentials.json` (RW bind-mounted into container) so
+  the in-container claude sees the same tokens.
+- **Token expiry**: claude tokens expire ~12h; refreshToken auto-renew
+  works AS LONG AS the credentials file has a non-empty refreshToken
+  AND can be written. R172.b mounts RW so claude can refresh in-place
+  and the host keychain stays in sync (... mostly; if the host's
+  active claude session also rotates, run `make creds` to re-extract).
+- **First-launch dialogs**: claude pops up to 3 onboarding dialogs
+  (theme picker / auth-method picker / bypass-permissions confirm)
+  on a fresh ~/.claude.json. R172.b auto-Enters them in the
+  `wait_until_ready` poll loop; `theme: "dark"` baked into
+  /root/.claude/settings.json suppresses the picker on most runs.
 
 ## Out of scope
 
