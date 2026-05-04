@@ -549,14 +549,6 @@ def _split_cmd(text: str) -> tuple[str, str]:
     return parts[0], parts[1] if len(parts) > 1 else ""
 
 
-def is_slash_command(text: str) -> bool:
-    """True if `text`'s leading token is a recognised slash command."""
-    if not text or not text.lstrip().startswith("/"):
-        return False
-    cmd, _ = _split_cmd(text)
-    return cmd in _HANDLERS
-
-
 def dispatch(text: str, ctx: SlashContext) -> str | dict:
     """Route `text` to its handler, return the reply.
 

@@ -25,33 +25,6 @@ def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
     )
 
 
-# ── is_slash_command (pure) ──────────────────────────────────────
-
-
-def test_is_slash_command_recognises_known_commands():
-    for ok in ("/help", "/team", "/health", "/usage", "/usage daily",
-               "/tmux manager", "/tmux manager 50",
-               "/send manager hello", "/compact", "/compact manager",
-               "/stop manager", "/clear manager"):
-        assert slash.is_slash_command(ok), f"should match: {ok}"
-
-
-def test_is_slash_command_rejects_non_slash_or_unknown():
-    for bad in ("", "no slash here", "/unknown", "/", "  /team  ",  # leading-ws OK
-                "regular text"):
-        if bad.strip().startswith("/") and any(
-                bad.strip().startswith(p) for p in
-                ("/help", "/team", "/health", "/usage", "/tmux",
-                 "/send", "/compact", "/stop", "/clear")):
-            continue
-        assert not slash.is_slash_command(bad), f"should NOT match: {bad!r}"
-
-
-def test_is_slash_command_handles_leading_whitespace():
-    # The classifier uses `text.startswith("/")` after strip; whitespace OK.
-    assert slash.is_slash_command("  /team  ") is True
-
-
 # ── /help ────────────────────────────────────────────────────────
 
 
