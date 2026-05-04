@@ -22,6 +22,16 @@ services:
     volumes:
       - ./team-data:/data
       - ${HOME}/.lark-cli:/root/.lark-cli:ro
+    # FEISHU_APP_SECRET / LARKSUITE_CLI_APP_SECRET — supplied via the
+    # `.env` file (gitignored) so the container's lark-cli can
+    # authenticate without reaching the host's macOS keychain. Both
+    # names work; setting both is harmless and forward-compat with
+    # whichever lark-cli build the image bundles.
+    environment:
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - LARKSUITE_CLI_APP_SECRET=${LARKSUITE_CLI_APP_SECRET:-}
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - LARKSUITE_CLI_APP_ID=${LARKSUITE_CLI_APP_ID:-}
     network_mode: host
     tty: true
     stdin_open: true

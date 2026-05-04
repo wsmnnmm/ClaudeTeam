@@ -413,3 +413,159 @@ def test_run_logs_preview_when_stdout_is_not_json():
     log = out.getvalue()
     assert "non-JSON" in log
     assert "<html>" in log
+
+
+# ── R161: tenant_access_token bootstrap (container path) ─────────
+
+
+def _cache_path(tmp_dir):
+    """Return a temp cache file path under the given TemporaryDirectory."""
+    from pathlib import Path
+    return str(Path(tmp_dir) / "tok.json")
+
+
+class _FetchRec:
+    """Two-positional-arg fake for `_fetch_tenant_token(app_id, app_secret)`.
+
+    `CallRecorder` from helpers takes a single positional, so it can't
+    record this signature. Local fake keeps the test code obvious without
+    changing the shared helper.
+    """
+    def __init__(self, result):
+        self.calls: list[dict] = []
+        self.result = result
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
+        return self.result
+
+
+def test_ensure_tenant_token_returns_existing_env_unchanged():
+    """If LARKSUITE_CLI_TENANT_ACCESS_TOKEN is already set, don't fetch.
+    Host operators sometimes pre-export a hand-crafted token; respect it."""
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-preset"):
+            token = lark._ensure_tenant_token(cache_path=cache)
+        assert token == "t-preset"
+        # No cache file written — env path doesn't touch disk
+        assert not os.path.exists(cache)
+
+
+def test_ensure_tenant_token_uses_fresh_cache_when_present():
+    """A cached token whose `expire_at` is in the future should be
+    returned without hitting the network — that's the whole point of
+    caching across calls within the 77-min token window."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"token": "t-cached", "expire_at": 9999999999}))
+        fetch = _FetchRec(result=None)
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, cache_path=cache)
+        assert token == "t-cached"
+        assert fetch.calls == []  # cache hit, no fetch
+
+
+def test_ensure_tenant_token_refetches_when_cache_expired():
+    """A cached entry whose expire_at <= now is stale and forces a
+    refetch. Validates the refresh-buffer logic that keeps the cache
+    flipping over before the wire deadline."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"token": "t-stale", "expire_at": 100}))
+        fetch = _FetchRec(result={"token": "t-fresh", "expire_at": 9999999999})
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, now=lambda: 200,
+                                              cache_path=cache)
+        assert token == "t-fresh"
+        assert len(fetch.calls) == 1
+        assert fetch.calls[0]["args"] == ["cli_x", "s"]
+        # Cache file rewritten with the fresh token
+        with open(cache, "r", encoding="utf-8") as fh:
+            rewritten = json.loads(fh.read())
+        assert rewritten["token"] == "t-fresh"
+
+
+def test_ensure_tenant_token_fetches_when_no_cache():
+    """No env token, no cache file, but app_id+app_secret in env → fetch
+    fresh + write cache. This is the cold-start container path."""
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        fetch = _FetchRec(result={"token": "t-cold", "expire_at": 1700001000})
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, now=lambda: 1700000000,
+                                              cache_path=cache)
+        assert token == "t-cold"
+        assert os.path.exists(cache)
+
+
+def test_ensure_tenant_token_returns_none_without_env():
+    """No env token, no cache, no app_id/secret → None. Caller falls
+    back to lark-cli's own keychain path (host case)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        fetch = _FetchRec(result=None)
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                       LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
+            token = lark._ensure_tenant_token(fetch=fetch, cache_path=cache)
+        assert token is None
+        assert fetch.calls == []  # no fetch when no app creds
+
+
+def test_ensure_tenant_token_returns_none_when_fetch_fails():
+    """Network / API failure on cold start → None, don't cache empties."""
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        fetch = _FetchRec(result=None)  # simulate network error
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, cache_path=cache)
+        assert token is None
+        assert not os.path.exists(cache)
+
+
+def test_subprocess_env_injects_token_when_available():
+    """End-to-end: subprocess_env feeds the token into the lark-cli env
+    so every `call()` and the long-running subscribe both pick it up
+    without caller wiring."""
+    import json
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"token": "t-via-env", "expire_at": 9999999999}))
+        # Stub the cache path module-level for the duration of the test
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+             env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            env = lark.subprocess_env()
+        assert env.get("LARKSUITE_CLI_TENANT_ACCESS_TOKEN") == "t-via-env"
+
+
+def test_subprocess_env_skips_token_injection_when_unavailable():
+    """Host without env app_id/secret + no cache → env stays clean,
+    macOS keychain path takes over downstream. Don't litter the env
+    with empty strings."""
+    with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                   FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                   LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
+        env = lark.subprocess_env()
+    assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env

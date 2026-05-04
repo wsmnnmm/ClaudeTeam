@@ -19,3 +19,8 @@ dist/
 .claude/scheduled_tasks.lock
 team.json
 runtime_config.json
+
+# docker compose env (contains secrets)
+.env
+/team-data/
+/docker-compose.override.yml

@@ -31,17 +31,119 @@ from claudeteam.util import env_str
 
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 
+# R161: container-deploy token bootstrap. lark-cli on macOS host pulls
+# app secrets from the keychain; in a Linux container that path doesn't
+# work and lark-cli answers "no access token available for bot" even
+# when FEISHU_APP_SECRET / FEISHU_APP_ID are set in env. Auto-fetching
+# `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` from app_id+app_secret here means
+# every `lark.call()` and the long-running `event +subscribe` daemon
+# both pick up a fresh token without an entrypoint script.
+_TENANT_TOKEN_URL = (
+    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+_TENANT_TOKEN_CACHE = "/tmp/claudeteam_tenant_token.json"
+_TENANT_TOKEN_REFRESH_BUFFER_S = 60   # refetch when within 60s of expiry
+
+
+def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
+    """POST app_id+app_secret → Feishu tenant_access_token endpoint.
+
+    Returns `{"token": str, "expire_at": <epoch_seconds>}` on success
+    (with the buffer subtracted so the cache flips before the wire
+    expiry hits) or None on any network / parse / API failure.
+    """
+    import json as _json
+    import time as _time
+    import urllib.error
+    import urllib.request
+    body = _json.dumps({"app_id": app_id, "app_secret": app_secret}).encode()
+    req = urllib.request.Request(
+        _TENANT_TOKEN_URL, data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except (urllib.error.URLError, OSError, _json.JSONDecodeError):
+        return None
+    token = data.get("tenant_access_token")
+    expire = int(data.get("expire", 0) or 0)
+    if not token:
+        return None
+    return {
+        "token": str(token),
+        "expire_at": int(_time.time()) + max(0, expire - _TENANT_TOKEN_REFRESH_BUFFER_S),
+    }
+
+
+def _ensure_tenant_token(*, fetch: Callable | None = None,
+                         now: Callable | None = None,
+                         cache_path: str | None = None) -> str | None:
+    """Return a usable tenant_access_token from env / cache / live fetch.
+
+    Resolution order:
+      1. `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` already in env — use as-is.
+      2. Cache file at `cache_path` with `expire_at > now` — use it.
+      3. `FEISHU_APP_ID` + `FEISHU_APP_SECRET` (or `LARKSUITE_CLI_*`
+         aliases) in env — fetch a fresh token, write to cache, return.
+      4. None of the above — return None and let lark-cli's own auth
+         path try (works on macOS host with keychain).
+
+    `fetch` and `now` are injectable for tests so we don't hit the
+    network during unit tests.
+    """
+    import json as _json
+    import time as _time
+    # R161: resolve cache_path at call time so attr_patch on the
+    # module-level _TENANT_TOKEN_CACHE constant takes effect in tests.
+    # Default args bind at function-definition time, which would have
+    # frozen the original /tmp path before any test patch could land.
+    if cache_path is None:
+        cache_path = _TENANT_TOKEN_CACHE
+    existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
+    if existing:
+        return existing
+    now_fn = now or _time.time
+    now_t = int(now_fn())
+    try:
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            cached = _json.loads(fh.read())
+        if int(cached.get("expire_at", 0)) > now_t and cached.get("token"):
+            return str(cached["token"])
+    except (OSError, _json.JSONDecodeError, ValueError):
+        pass
+    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
+    app_secret = (env_str("FEISHU_APP_SECRET")
+                  or env_str("LARKSUITE_CLI_APP_SECRET"))
+    if not (app_id and app_secret):
+        return None
+    fresh = (fetch or _fetch_tenant_token)(app_id, app_secret)
+    if not fresh or not fresh.get("token"):
+        return None
+    try:
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            fh.write(_json.dumps(fresh))
+    except OSError:
+        pass  # cache write best-effort; the in-memory return is the load-bearing path
+    return str(fresh["token"])
+
 
 def subprocess_env() -> dict[str, str]:
     """Build the env to hand to any lark-cli subprocess (one-shot `call` or
     long-running `event +subscribe`). Strips HTTP/HTTPS proxy vars when
     LARK_CLI_NO_PROXY is truthy, since lark-cli doesn't honor that variable
     itself — it's a wrapper-side flag.
+
+    R161: also injects `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` when env vars
+    supply app_id+app_secret but lark-cli has no keychain access (the
+    Linux container case). No-op on macOS host where the token is empty
+    and lark-cli's keychain path takes over.
     """
     env = os.environ.copy()
     if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
         for key in _PROXY_KEYS:
             env.pop(key, None)
+    token = _ensure_tenant_token()
+    if token:
+        env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
     return env
 
 
