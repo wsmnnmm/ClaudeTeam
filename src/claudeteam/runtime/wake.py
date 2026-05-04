@@ -49,16 +49,43 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
     return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
+# Onboarding dialogs claude pops on fresh ~/.claude.json (which is now
+# ephemeral per-container in R172.b — we dropped the host bind-mount
+# because concurrent writes corrupted it). Each dialog blocks the
+# `bypass permissions on` ready marker, so we auto-dismiss them by
+# sending Enter (accepts default highlighted choice). Settings.json
+# silent-launch flags suppress most onboarding paths but the syntax
+# theme dialog ("Choose the text style") still surfaces because its
+# state lives in ~/.claude.json which is fresh per spawn.
+_FIRST_LAUNCH_DIALOG_MARKERS = (
+    "Choose the text style",      # syntax theme dialog
+    "Yes, I accept",              # bypass-permissions confirmation
+    "Bypass Permissions mode",    # bypass-permissions banner
+)
+
+
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
                       capture: Callable, sleep: Callable, now: Callable) -> bool:
     """Loop `is_ready` checks until a ready marker shows up or `timeout_s`
-    elapses. Pure poll — no spawn, no side effects, no defaulting (caller
-    fills in collaborators)."""
+    elapses. R172.b: when the pane shows a claude first-launch dialog
+    (theme picker / bypass-permissions confirm), auto-press Enter to
+    accept the default highlighted choice. Without this, the dialog
+    blocks the ready marker → wait_until_ready times out → identity
+    init never injects → /team reports agents as "awaiting permission"
+    indefinitely. Same capture is reused for ready scan and dialog
+    scan so no extra tmux capture-pane call."""
+    ready_markers = adapter.ready_markers()
     deadline = now() + timeout_s
+    dismissed = False
     while now() < deadline:
-        if is_ready(target, adapter, capture=capture):
+        text = capture(target, lines=80)
+        if any(m in text for m in ready_markers):
             return True
+        if (not dismissed
+                and any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS)):
+            tmux.send_keys(target, "Enter")
+            dismissed = True
         sleep(poll_interval_s)
     return False
 

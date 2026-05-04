@@ -24,9 +24,7 @@ creds:
 	@mkdir -p $(HOME)/.claude
 	@security find-generic-password -s "Claude Code-credentials" -w \
 		> $(HOME)/.claude/.credentials.json
-	@python3 -c 'import json, time; \
-d=json.load(open("$(HOME)/.claude/.credentials.json"))["claudeAiOauth"]; \
-print(f"  ok · expires {time.strftime(\"%Y-%m-%d %H:%M\", time.localtime(d[\"expiresAt\"]/1000))}, refreshToken={\"set\" if d[\"refreshToken\"] else \"empty\"}")'
+	@python3 bin/show_cred_expiry.py $(HOME)/.claude/.credentials.json
 
 build:
 	docker compose build claudeteam

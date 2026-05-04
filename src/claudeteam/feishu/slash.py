@@ -414,10 +414,10 @@ def _summarise_ccusage_error(output: str) -> str:
     where the binary crashed without an Error: line.
 
     Was a single-pass hint walk; that picked the SOURCE-CODE line of
-    the Node stack trace (e.g. `if (paths.length === 0) throw new
-    Error(\`No valid...\`)`) before the actual Error message line,
-    which rendered as a backtick-truncated red blob in the /usage
-    card (R170 saw this in the test_a chat).
+    the Node stack trace (the line containing the offending
+    backtick literal inside `throw new Error(...)`) before the
+    actual Error message line, which rendered as a backtick-truncated
+    red blob in the /usage card (R170 saw this in the test_a chat).
     """
     if not output:
         return "ccusage 无输出"
