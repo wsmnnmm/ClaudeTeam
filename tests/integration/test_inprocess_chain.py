@@ -149,7 +149,11 @@ def test_human_message_lands_in_manager_inbox_and_pane():
         # manager pane received an inject
         manager_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:manager"]
         assert len(manager_inj) == 1
-        assert manager_inj[0]["text"] == "please help"
+        # R172.b: deliver wraps chat messages with a routing hint so the
+        # agent posts replies via `claudeteam say` instead of answering
+        # in pane. The original message body still appears verbatim.
+        assert "please help" in manager_inj[0]["text"]
+        assert "claudeteam say manager" in manager_inj[0]["text"]
         # ClaudeCodeAdapter uses the default ["Enter", "C-m", "C-j"]
         assert manager_inj[0]["submit_keys"] == ["Enter", "C-m", "C-j"]
 

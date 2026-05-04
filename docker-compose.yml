@@ -20,6 +20,15 @@ services:
     build: .
     image: claudeteam:dev
     volumes:
+      # R172.b: bind-mount source RW so Python edits hot-reload without
+      # `docker compose build`. The image's `pip install -e ./src` made
+      # the install editable; with the host src/ replacing the image's
+      # baked-in copy, every claudeteam invocation inside the container
+      # picks up the latest host code. Boss-flagged 2026-05-05: only
+      # rebuild for Dockerfile / dep changes, never for code-only
+      # tweaks. RW (not :ro) because pip's `*.egg-info` writes go into
+      # src/ on first install.
+      - ./src:/app/src
       - ./team-data:/data
       # lark-cli's `event +subscribe` fcntl-locks
       # /root/.lark-cli/locks/subscribe_<app_id>.lock; under :ro the

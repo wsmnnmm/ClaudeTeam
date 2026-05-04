@@ -92,9 +92,37 @@ def _build_wake_args(agent: str, adapter) -> dict:
     }
 
 
+def _compose_inject_text(agent: str, decision: Decision) -> str:
+    """Prepend a short routing-context header to the chat message before
+    injecting it into the agent's pane.
+
+    R172.b: claude in the pane treats raw injected text as a regular
+    user prompt and answers IN PANE — boss-flagged 2026-05-05 because
+    `@worker_cc 写一句总结` got a clean text answer in the pane but no
+    `claudeteam say` callback to chat. Wrapping the message with an
+    explicit "this is a chat message; reply via `claudeteam say`"
+    nudge primes the agent to use the right channel. For peer-to-peer
+    (sender is a known agent), the appropriate reply is `claudeteam
+    send <sender> {agent}` so we tailor the hint accordingly. Boss /
+    user messages get the chat-side hint; agent-to-agent gets the
+    send-side hint."""
+    sender = decision.sender or "user"
+    if sender == "user" or not sender:
+        hint = (f"[来自群聊 · 发送者=user] 处理后请用 "
+                f"`claudeteam say {agent} \"<回复>\"` 回到群里，"
+                f"而不是直接回 pane。")
+    else:
+        hint = (f"[来自 {sender} · 同事消息] 处理后请用 "
+                f"`claudeteam send {sender} {agent} \"<回复>\"` 回 {sender}，"
+                f"或 `claudeteam say {agent} ...` 公告到群。")
+    return f"{hint}\n\n{decision.text}"
+
+
 def _inject_to_pane(agent: str, decision: Decision,
                     deps: _Deps, wake_fn: Callable | None) -> str:
-    """Deliver `decision.text` to the agent's pane.
+    """Deliver `decision.text` to the agent's pane (wrapped with a
+    routing-context hint so the agent posts replies via `claudeteam
+    say` instead of answering in pane).
 
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
     'rate_limited'.
@@ -105,18 +133,11 @@ def _inject_to_pane(agent: str, decision: Decision,
         if wake.is_rate_limited(target, adapter):
             print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
             return "rate_limited"
-        # R149: pre-check is_ready so we can skip _build_wake_args when
-        # the pane is already awake (the common case after first wake).
-        # `**_build_wake_args(...)` is evaluated at call time and pulls
-        # `config.agent_model` (disk read) + `identity.init_prompt`
-        # (memory file read) — both wasted when wake_fn would just
-        # early-return True. wake_if_dormant still does its own is_ready
-        # check internally, which is a redundant capture only on the
-        # cold path; the happy path saves the two reads.
         if wake_fn is not None and not wake.is_ready(target, adapter):
             if not wake_fn(target, adapter, **_build_wake_args(agent, adapter)):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
-        ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
+        text = _compose_inject_text(agent, decision)
+        ok = deps.tmux_inject(target, text, submit_keys=adapter.submit_keys())
     except Exception as e:
         print(f"  ⚠️ inject error for {agent}: {e}")
         return "failed_inject"
