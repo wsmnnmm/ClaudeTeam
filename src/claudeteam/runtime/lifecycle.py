@@ -28,7 +28,7 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from claudeteam.agents import adapter_for_agent, identity
+from claudeteam.agents import get_adapter, identity
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
 from claudeteam.runtime import config, paths, tmux, wake
 from claudeteam.store import local_facts
@@ -97,15 +97,26 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
                         missing adapter); caller should warn + continue
                         with the rest of the team, NOT kill the whole start.
     """
-    cfg = config.agent_config(agent)
+    # R154: load team.json once. Previously called `config.agent_config`,
+    # `adapter_for_agent`, and `config.agent_model` separately — each
+    # triggered its own load_team() bounce, so this helper paid 3-4
+    # team.json parses per call. start.py loops over N agents → 3-4N
+    # reads. Now: 1 read here, derive cfg / cli / model from cached team.
+    team = config.load_team()
+    cfg = team.get("agents", {}).get(agent)
+    if cfg is None:
+        import sys
+        print(f"  ⚠️ {agent}: agent {agent!r} not in team.json", file=sys.stderr)
+        return CONFIG_ERROR
     identity.write(agent)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY
-    if cfg.get("cli", "claude-code") == "codex-cli":
+    cli = cfg.get("cli", "claude-code")
+    if cli == "codex-cli":
         ensure_workdir_trusted(Path.cwd())
     try:
-        adapter = adapter_for_agent(agent)
+        adapter = get_adapter(cli)
     except KeyError as e:
         # Bad `cli` value in team.json — typo, dropped adapter, etc. One
         # bad agent shouldn't kill `claudeteam start` for the rest of
@@ -113,7 +124,13 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
+    # Inline agent_model resolution: per-agent override → env var →
+    # team default → "opus". Mirrors `config.agent_model` but uses the
+    # already-loaded `team` dict for the default_model fallback.
+    model = (cfg.get("model")
+             or env_str("CLAUDETEAM_DEFAULT_MODEL")
+             or team.get("default_model", "opus"))
+    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
     if wake.wait_until_ready(target, adapter, timeout_s=20):
