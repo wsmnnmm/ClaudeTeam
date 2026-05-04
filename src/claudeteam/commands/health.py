@@ -133,6 +133,13 @@ def _check_session(rep: HealthReport, session: str) -> bool:
 def _check_agents(rep: HealthReport, session: str, agents: list[str],
                   session_alive: bool) -> None:
     heartbeats = local_facts.all_heartbeats()
+    # R145: hoist team load out of the loop. Each `config.agent_cli` /
+    # `config.agent_config` call internally re-reads team.json from disk;
+    # the previous shape paid 2-3 disk reads per agent in this loop. One
+    # `load_team()` here, bare-dict probes inside the loop. Same defensive
+    # behavior — agents_dict.get(agent, {}) returns {} for an unknown
+    # agent (matches the empty `cli` / no `lazy` defaults below).
+    agents_dict = config.load_team().get("agents", {})
     for agent in agents:
         target = tmux.Target(session, agent)
         hb = heartbeats.get(agent)
@@ -143,12 +150,14 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
         if not tmux.has_window(target):
             rep.fail(f"  {agent}: no tmux window{hb_suffix}")
             continue
+        cfg = agents_dict.get(agent, {})
+        cli = cfg.get("cli", "claude-code")
         try:
             adapter = adapter_for_agent(agent)
             text = tmux.capture_pane(target, lines=80)
             if any(m in text for m in adapter.ready_markers()):
-                rep.ok(f"  {agent}: pane ready ({config.agent_cli(agent)}){hb_suffix}")
-            elif config.agent_config(agent).get("lazy"):
+                rep.ok(f"  {agent}: pane ready ({cli}){hb_suffix}")
+            elif cfg.get("lazy"):
                 rep.ok(f"  {agent}: lazy pane (CLI starts on first message){hb_suffix}")
             else:
                 rep.yellow(f"  {agent}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}")
