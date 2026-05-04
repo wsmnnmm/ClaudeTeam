@@ -1,27 +1,27 @@
 # Slash matrix (rebuild/minimal)
 
 Canonical slash-command coverage for smoke runs on this branch. Mirrors
-the structure of `origin/feat/messaging-fixes-block1:tests/smoke/slash_matrix.md`
-but reflects rebuild's actual 11-command set, the v2 card schema (R159),
-and the env-driven tenant token bootstrap (R161) that makes container
-deploys work without macOS keychain.
+`main`'s 9-command surface (R172.b dropped /recall and /forget after
+boss-flagged "not in main, not requested"), with rebuild's per-CLI
+/usage card (R170) and column-less rendering (R172.b — current Feishu
+collapses column_set anyway).
 
 A real Feishu user message in the bound chat is the canonical trigger.
 **Slash commands must start at the very first character** of the user
-message — `@bot /team` does NOT trigger; just `/team`. Fake `subscribe.process_lines`
-events are acceptable for handler coverage but must be labeled that way
-in the run log; they don't prove the lark-cli +subscribe long-poll path.
+message — `@bot /team` does NOT trigger; just `/team`. Fake
+`subscribe.process_lines` events are acceptable for handler coverage
+but must be labeled that way in the run log; they don't prove the
+lark-cli +subscribe long-poll path.
 
 ## Read-only commands
 
 | Command | Expected group result | Pass criteria | Fail criteria |
 | --- | --- | --- | --- |
-| `/help` | Card listing every supported `/<cmd>` | Lists all 11: /help /team /health /usage /tmux /send /compact /recall /forget /stop /clear | Missing command, plain text instead of card |
+| `/help` | Card listing every supported `/<cmd>` | Lists all 9: /help /team /health /usage /tmux /send /compact /stop /clear | Missing command, plain text instead of card |
 | `/team` | Card with `<emoji> **<agent>**: <brief>` per agent + tally | Each team agent rendered with one of (💤 idle / 🔄 working / ⏸ lazy / ⚠ awaiting / 🛑 down / 🔘 unknown). Header green if all healthy, yellow if any ⚠/🛑/❌. Lazy agents show ⏸ not 🛑. | Missing agent, wrong session, lazy agent shown as 🛑 (R129/R144 regression) |
-| `/health` | Card wrapping `claudeteam health` text in fenced code block | v2 markdown renders the fence as a real grey-bg code block (R159). Header green when output has no ❌/⚠️, yellow otherwise. | Triple backticks visible as text (R159 regression), missing sections |
-| `/usage [view]` | Card wrapping `claudeteam usage` (default `daily`) | ccusage table for claude-code agents, plus per-CLI note for codex/kimi/qwen. v2 markdown preserves table alignment. | Empty body, npx-not-found error swallowed |
-| `/tmux [agent] [N]` | Card with last N (default 10, max 2000) lines of the agent's pane | Body is a real code block — monospace, indentation preserved. Defaults to manager when no agent. | Triple backticks as literal text (R159 regression), wrong pane, truncation past N |
-| `/recall <agent> [N] [--kind K]` | Card listing agent's recent memory entries oldest-first | Each row `[ts] [kind] content (ref=...)`. With `--kind`, scans full window and trims to N matches (R141). Unknown kind → soft warn in card subtitle. | Empty when entries exist, kind filter returns 0 for valid known kinds, fenced/list rendering broken |
+| `/health` | Rich card with 🖥️ 主机总览 + 👤 员工细分 sections | CPU/内存/磁盘 lines populated (procps inside container, /proc-direct fallback for macOS host). Per-agent CPU% + RSS shown via ps walk of pane PID subtree. Header purple no-alarm; yellow on alarms. | "无数据" cells when ps/uptime are present (procps-missing regression); agent CPU 0/0 (pane-pid lookup broken) |
+| `/usage [view]` | Card with three sections: Claude Code (ccusage) / Codex (JWT) / Kimi (api.kimi.com) | Each metric renders as `**label**：value` single-line markdown row (column_set was broken, dropped R172.b). Codex section reads ~/.codex/auth.json id_token; Kimi reads ~/.kimi/credentials/kimi-code.json + hits HTTPS. | Section missing, "对齐都做不好" stacked label/value pairs (column_set regression) |
+| `/tmux [agent] [N]` | Card with last N (default 10, max 2000) lines of the agent's pane | Body is a fenced code block — monospace, indentation preserved. Defaults to manager when no agent. | Triple backticks as literal text, wrong pane, truncation past N |
 
 ## State-mutating commands
 
@@ -34,7 +34,6 @@ before/after pane state.
 | `/compact [agent]` | `/compact` injection then 45s-deferred identity reinject | Long-running CLI compact in target pane | One compact request lands, identity reread fires after settle |
 | `/stop <agent>` | `C-c` to the agent pane | Interrupts active work | Probe interrupted, pane usable |
 | `/clear <agent>` | `/clear` then re-init prompt (rehire shape) | Loses CLI conversation context | One /clear + one init message, no shell pollution |
-| `/forget <agent> [--kind K] --yes` | Deletes memory file (or kind slice) | Loses durable memory; `--yes` gated (R112) | Without --yes → grey card with reissue hint; with --yes → row count + red header |
 
 ## Message routing (in-band, no slash)
 

@@ -72,7 +72,8 @@ are independently green via the boss-extended push (R79-R101):
   identity v2 reidentify confirm
 - inbox / status pipe: R83-R84 memory tests + R96 forget per-agent
   isolation
-- `/team` / `/recall` / cards: R80, R95 host-live cards landed
+- `/team` / cards: R80 host-live cards landed (`/recall` slash retired
+  R172.b; CLI form `claudeteam recall` still works inside agent panes)
 - watchdog daemon stability: R98 cooldown alert smoke
 - lark-cli speed: R86 73s → 0.6s
 

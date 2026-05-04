@@ -291,10 +291,11 @@ self-compacting; slash-command interceptors via
 rate-limit detection (adapter `rate_limit_markers()` +
 deliver-skips-when-rate-limited); zero-LLM router-level slash
 dispatch (`/help /team /tmux /send /compact /stop /clear /usage
-/health /recall /forget`); broadcast routing (`@team` / `@all` /
-`全体X`); per-agent durable memory with `claudeteam remember /
-recall / forget` (CRUD slice, `--kind K` filter, `KNOWN_KINDS` soft
-validation); manager-from-pane fast paths (`claudeteam peek <agent>`,
+/health` — main's 9-command surface, R172.b dropped /recall and
+/forget); broadcast routing (`@team` / `@all` / `全体X`); per-agent
+durable memory with `claudeteam remember / recall / forget` (CRUD
+slice, `--kind K` filter, `KNOWN_KINDS` soft validation; CLI only
+post-R172.b); manager-from-pane fast paths (`claudeteam peek <agent>`,
 `claudeteam reidentify --all`, `say --card`); 5/5 CLI adapter parity
 (claude-code / codex-cli / gemini-cli / kimi-code / qwen-code).
 

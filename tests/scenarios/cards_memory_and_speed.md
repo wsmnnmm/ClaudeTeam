@@ -9,10 +9,11 @@ behaviours but kept the same scenario shape, hence the rolled-up doc.
 The push delivered these operator-visible behaviours on top of the
 existing rebuild:
 
-1. Slash replies (/help, /team, /health, /recall) post Feishu
+1. Slash replies (/help, /team, /health, /usage, /tmux) post Feishu
    **interactive cards** with health-aware header colours instead of
    plain text blobs. Watchdog cooldown alerts also card-formatted (R98,
-   red header).
+   red header). R172.b: /recall + /forget slashes dropped (not in main,
+   not requested by boss); the CLI commands still ship for in-pane use.
 
 2. Watchdog **posts to Feishu chat** when a supervised daemon enters
    cooldown (max_retries failed respawns), now as a red card with
@@ -23,14 +24,10 @@ existing rebuild:
    Memory auto-injects into the identity init prompt on next wake.
 
 4. **Memory CRUD slice trio** (R87/R92/R96/R107/R108/R111/R112), CLI
-   and slash on both surfaces:
+   only after R172.b (slash form dropped):
    - `claudeteam remember <agent> <kind> "<content>" [--ref X]` — write
    - `claudeteam recall <agent> [--limit N] [--kind K] [--json]` — read
    - `claudeteam forget <agent> [--kind K] --yes` — drop
-   - `/recall <agent> [N] [--kind K]` — boss-from-chat read (card)
-   - `/forget <agent> [--kind K] --yes` — boss-from-chat drop
-     (`--yes` gated; without it returns a grey CONFIRM card showing
-     the exact reissue string)
 
    Convention: `KNOWN_KINDS = (task_assigned, task_completed, learning,
    blocker, decision, note)`. Unknown kinds soft-warn but write

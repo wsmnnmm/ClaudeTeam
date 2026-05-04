@@ -155,7 +155,7 @@ fixture instead of a real subprocess.
 21. (done) Feishu interactive cards for `/help` `/team` `/health` slash replies, with health-aware header colour
 22. (done) Watchdog → Feishu chat alert when a daemon enters cooldown
 23. (done) Per-agent durable memory (`store/memory.py`, `facts/<agent>/memory.jsonl`) with auto-injection into identity init prompt on wake
-24. (done) Memory CRUD CLI: `claudeteam remember` / `recall` / `forget` (matching `/recall <agent> [N]` router-level slash for boss-from-chat)
+24. (done) Memory CRUD CLI: `claudeteam remember` / `recall` / `forget` — R172.b retired the matching `/recall` and `/forget` slash dispatch (boss-flagged not-in-main); CLI form stays for agent-pane use
 25. (done) `gemini-cli` adapter; manager identity v2 ported management discipline rules from main (角色边界 / 集合指令必须 dispatch / 巡视核实 / 沟通格式)
 26. (done) Lark perf — bypass `npx`'s package-lookup overhead (`feishu/lark._resolve_cli_prefix`); 73s → 0.6s on macOS host
 27. (done) Structured `--help` output grouped by `[bootstrap]` / `[team lifecycle]` / `[durable agent memory]` etc.
