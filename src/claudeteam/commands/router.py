@@ -80,8 +80,31 @@ def _build_subscribe_cmd(profile: str, *,
     ]
 
 
+def _build_agent_adapters(agents_dict: dict) -> dict:
+    """Resolve every team-known agent to its CliAdapter once.
+
+    R153: ROUTE/BROADCAST events go through `_inject_to_pane` which
+    calls `deps.adapter_for_agent(agent)` per target — without this
+    map, each call goes `agent_cli → agent_config → load_team()` and
+    pays a disk read. Pre-building keeps the per-target inject path
+    disk-read-free for cached agents. Adapters whose `cli` value is
+    bogus get skipped (no entry); the apply call falls back to the
+    config-driven lookup which surfaces the KeyError as a per-agent
+    warning instead of a build-time abort.
+    """
+    from claudeteam.agents import get_adapter
+    adapters: dict = {}
+    for name, cfg in agents_dict.items():
+        cli = cfg.get("cli", "claude-code")
+        try:
+            adapters[name] = get_adapter(cli)
+        except KeyError:
+            continue
+    return adapters
+
+
 def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
-                          team_agents: list[str]):
+                          team_agents: list[str], agent_adapters: dict):
     """Build the per-event deliver wrapper with hot-path config pre-bound.
 
     R147: chat_id / lark_profile / session / agent_names are deployment-
@@ -93,6 +116,13 @@ def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
     that's 4 disk reads per message; for a hot SLASH command rebroadcast
     it compounds across `_apply_slash`'s own getters.
 
+    R153: also threads a pre-built `agent → CliAdapter` map through the
+    `adapter_for_agent` injection point, so per-target adapter resolution
+    in `_inject_to_pane` skips the same load_team() bounce on every
+    inbound message. Unknown agents (not in the cached map) fall back to
+    `_default_adapter_for_agent` which surfaces the typo as a per-agent
+    warning instead of dropping the whole event.
+
     Closing over the values bound at daemon startup matches reality:
     operator changes to runtime_config.json or team.json don't propagate
     into a running daemon today anyway (subscribe is bound to the
@@ -100,10 +130,18 @@ def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
     new config). If those values change, operator runs
     `claudeteam down + up`.
     """
+    def lookup_adapter(agent: str):
+        cached = agent_adapters.get(agent)
+        if cached is not None:
+            return cached
+        from claudeteam.agents import adapter_for_agent
+        return adapter_for_agent(agent)
+
     def _apply_with_wake(decision):
         return _deliver_apply(decision, wake_fn=wake.wake_if_dormant,
                               session=session, chat_id=chat_id,
-                              profile=profile, team_agents=team_agents)
+                              profile=profile, team_agents=team_agents,
+                              adapter_for_agent=lookup_adapter)
     return _apply_with_wake
 
 
@@ -226,15 +264,19 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
 
-        # R147: bind the deployment-stable config values into apply_fn at
-        # daemon startup. session_name reads team.json the same way `chat`
-        # / `agents` already did; doing it once here removes 1-4 disk
-        # reads per inbound event from the deliver.apply hot path.
+        # R147 + R153: bind deployment-stable config values into apply_fn
+        # at daemon startup. session_name reads team.json the same way
+        # `chat` / `agents` already did; one extra read here removes 1-4
+        # disk reads per inbound event from deliver.apply's hot path.
+        # R153 also pre-builds the agent→adapter map so per-target inject
+        # skips the same `load_team()` bounce.
+        team_data = config.load_team()
         apply_fn = _make_apply_with_wake(
-            session=config.session_name(),
+            session=team_data.get("session", "ClaudeTeam"),
             chat_id=chat,
             profile=profile,
             team_agents=agents,
+            agent_adapters=_build_agent_adapters(team_data.get("agents", {})),
         )
 
         loop_kwargs = dict(
