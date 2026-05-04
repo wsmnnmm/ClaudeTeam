@@ -179,10 +179,18 @@ def _check_binaries(rep: HealthReport, agents: list[str]) -> None:
     """For each unique CLI process_name (claude/codex/kimi/...), verify the
     binary is on PATH. Missing binaries don't crash claudeteam, but every
     pane spawn will fail to launch its CLI."""
+    # R150: hoist team.json read out of the loop. `adapter_for_agent`
+    # internally calls `config.agent_cli(agent) → config.agent_config →
+    # load_team()`, so the previous shape paid one disk read per agent
+    # to discover its `cli` string. One read here, then `get_adapter`
+    # by cli string skips the redundant config bounce.
+    from claudeteam.agents import get_adapter
+    agents_dict = config.load_team().get("agents", {})
     seen: dict[str, list[str]] = {}
     for agent in agents:
+        cli = agents_dict.get(agent, {}).get("cli", "claude-code")
         try:
-            name = adapter_for_agent(agent).process_name()
+            name = get_adapter(cli).process_name()
         except Exception:
             continue
         seen.setdefault(name, []).append(agent)
