@@ -47,6 +47,31 @@ def test_send_missing_args_returns_one_with_usage_to_stderr():
     assert "usage: claudeteam send" in err
 
 
+def test_send_no_inject_flag_skips_pane_inject_after_R168():
+    """R168: `--no-inject` opts out of the new auto-inject behaviour
+    so audit-only writes (caller is parking context for later, not
+    expecting recipient to act NOW) stay silent. Inbox row still
+    written; recipient won't be pinged."""
+    with isolated_env():
+        rc, out, _ = run_cli(["send", "worker", "manager", "x", "--no-inject"])
+        assert rc == 0
+        assert "inbox: worker ← manager" in out
+        rows = local_facts.list_messages("worker")
+        assert len(rows) == 1
+
+
+def test_send_default_inject_best_effort_when_no_tmux():
+    """Without a live tmux session, the inject step is best-effort —
+    `has_window` returns False (or the wrapper raises) and the command
+    still returns 0 with the inbox row landed. No noisy stderr."""
+    with isolated_env():
+        rc, out, err = run_cli(["send", "worker", "manager", "x"])
+        assert rc == 0
+        assert "inbox: worker ← manager" in out
+        rows = local_facts.list_messages("worker")
+        assert len(rows) == 1
+
+
 def test_inbox_lists_unread_with_local_id_and_returns_zero():
     with isolated_env():
         run_cli(["send", "w", "m", "first"])

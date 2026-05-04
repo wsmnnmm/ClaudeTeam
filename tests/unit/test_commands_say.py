@@ -9,8 +9,17 @@ from claudeteam.store import local_facts
 
 
 def _isolated(chat_id: str = "oc_test", profile: str = ""):
+    # R169: team config now carries role + emoji + color so the card
+    # title renders as `{emoji} {agent} · {role}` (mirrors main's
+    # `_agent_card_title`). Tests pin the new shape; older fixtures
+    # had bare `{}` configs which now fall through to default emoji
+    # + role="系统" — covered by a separate test.
     return isolated_env(
-        team={"agents": {"manager": {}}},
+        team={"agents": {
+            "manager": {"role": "团队主管", "emoji": "🎯", "color": "blue"},
+            "worker_cc": {"role": "Claude Code 员工", "emoji": "💎",
+                          "color": "purple"},
+        }},
         runtime_config={"chat_id": chat_id, "lark_profile": profile},
     )
 
@@ -141,28 +150,31 @@ def _fake_send_card():
 
 
 def test_say_card_flag_sends_card_not_text():
-    """`--card` routes through send_card; send_text isn't touched."""
+    """`--card` routes through send_card; send_text isn't touched.
+    R169: title now `{emoji} {agent} · {role}` (no more bare `[agent]`)."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "重要决策已落地", "--card"])
     assert rc == 0
     assert len(st["card_calls"]) == 1
     assert st["text_calls"] == []
     card = st["card_calls"][0]["card"]
-    # Title carries the [agent] attribution that the text path did inline
-    assert card["header"]["title"]["content"] == "[manager]"
+    # R169: title is "{emoji} {agent} · {role}" pulled from team.json
+    assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
     body = card["body"]["elements"][0]["content"]
     assert "重要决策已落地" in body
-    # manager → blue template per _color_for
+    # team.json `color: blue` → blue template
     assert card["header"]["template"] == "blue"
 
 
-def test_say_card_for_worker_uses_green_template():
-    """Workers (worker_*) get green by convention (status updates),
-    manager gets blue."""
+def test_say_card_for_worker_uses_team_json_color_after_R169():
+    """team.json's per-agent `color` field wins over the hard-coded
+    worker_*→green default. Test fixture sets worker_cc → purple,
+    matches main's worker_cc shade."""
     with _isolated(), _fake_send_card() as st:
         run_cli(["say", "worker_cc", "step 1 done", "--card"])
     card = st["card_calls"][0]["card"]
-    assert card["header"]["template"] == "green"
+    assert card["header"]["template"] == "purple"
+    assert card["header"]["title"]["content"] == "💎 worker_cc · Claude Code 员工"
 
 
 def test_say_card_with_reply_warns_and_sends_card_anyway():
@@ -185,16 +197,39 @@ def test_say_default_now_sends_card_after_R168():
     card (colored header per role), not plain text. Boss-flagged
     convention for the test_a deploy: agent messages must look like
     structured updates in chat, not raw text. Plain text path opts
-    in via the new `--no-card` flag (test below)."""
+    in via the new `--no-card` flag (test below).
+
+    R169: title format updated to `{emoji} {agent} · {role}`."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "plain text msg"])
     assert rc == 0
     assert len(st["card_calls"]) == 1
     assert st["text_calls"] == []
     card = st["card_calls"][0]["card"]
-    assert card["header"]["title"]["content"] == "[manager]"
+    assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
     body = card["body"]["elements"][0]["content"]
     assert "plain text msg" in body
+
+
+def test_say_card_falls_back_to_default_emoji_when_team_json_missing_emoji():
+    """team.json may not specify `emoji` — fall back to the per-agent
+    default emoji table; missing-from-table agents get the system ⚙️
+    glyph rather than crashing or rendering an empty space."""
+    bare = isolated_env(
+        team={"agents": {"manager": {"role": "管理"},
+                          "worker_unknown": {"role": "未知员工"}}},
+        runtime_config={"chat_id": "oc_test", "lark_profile": ""},
+    )
+    with bare, _fake_send_card() as st:
+        run_cli(["say", "manager", "x"])
+        # manager has a default-table emoji
+        assert st["card_calls"][0]["card"]["header"]["title"]["content"] == \
+            "🎯 manager · 管理"
+        st["card_calls"].clear()
+        run_cli(["say", "worker_unknown", "x"])
+        # not in default table → ⚙️ system glyph
+        assert st["card_calls"][0]["card"]["header"]["title"]["content"] == \
+            "⚙️ worker_unknown · 未知员工"
 
 
 def test_say_no_card_opts_back_to_plain_text():

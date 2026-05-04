@@ -37,13 +37,48 @@ _AGENT_CARD_COLORS = {
     "manager": "blue",
 }
 
+# R169: default emoji per role keyword. Used when team.json doesn't
+# provide an explicit `emoji` field for the agent. Mirrors `main`'s
+# AGENTS dict shape (each role gets a glyph) so the card sender header
+# at-a-glance signals who's talking.
+_DEFAULT_AGENT_EMOJI = {
+    "manager": "🎯",
+    "worker_cc": "💎",
+    "worker_codex": "🟦",
+    "worker_kimi": "🟧",
+    "worker_gemini": "🟩",
+    "worker_qwen": "🟪",
+}
 
-def _color_for(agent: str) -> str:
+
+def _color_for(agent: str, cfg_color: str | None = None) -> str:
+    """Resolve card header color. Per-agent `color` field in team.json
+    wins; else manager → blue, worker_* → green, fallback blue."""
+    if cfg_color:
+        return cfg_color
     if agent in _AGENT_CARD_COLORS:
         return _AGENT_CARD_COLORS[agent]
     if agent.startswith("worker"):
         return "green"
     return "blue"
+
+
+def _emoji_for(agent: str, cfg_emoji: str | None = None) -> str:
+    """Resolve sender emoji. team.json `emoji` field wins, otherwise
+    fall back to `_DEFAULT_AGENT_EMOJI`, otherwise ⚙️ (system)."""
+    if cfg_emoji:
+        return cfg_emoji
+    return _DEFAULT_AGENT_EMOJI.get(agent, "⚙️")
+
+
+def _agent_card_title(agent: str, cfg: dict) -> str:
+    """Card title format ported from `main`'s `_agent_card_title`:
+    `{emoji} {agent} · {role}` — English agent id + Chinese role at a
+    glance, no more bare `[agent]` brackets that boss flagged as too
+    bland."""
+    emoji = _emoji_for(agent, cfg.get("emoji"))
+    role = cfg.get("role") or "系统"
+    return f"{emoji} {agent} · {role}"
 
 
 @dataclass(frozen=True)
@@ -116,10 +151,21 @@ def main(argv: list[str]) -> int:
             print(f"  ⚠️ audit log write failed for {args.agent}: {e}",
                   file=sys.stderr)
 
+    # Resolve agent's role + emoji + color from team.json — used for
+    # the card title (R169 mirrors main's `{emoji} {agent} · {role}`
+    # shape) and for color override. Missing config falls back to
+    # the per-agent default tables above.
+    try:
+        agent_cfg = config.agent_config(args.agent)
+    except KeyError:
+        agent_cfg = {}
+
     if args.as_card:
         # Round-99: --card wraps the message in a Feishu interactive card.
-        # Title carries `[<agent>]` so attribution is still visible (the
-        # plain-text path's `[<agent>] <body>` prefix is the equivalent).
+        # R168: card became the default. R169: title now uses the
+        # `{emoji} {agent} · {role}` shape ported from main —
+        # English agent id + Chinese role at a glance — so the boss
+        # reads who's talking from the header without scanning the body.
         # reply_to does NOT thread for cards (Feishu interactive cards
         # don't support thread-reply); print a one-line warning if the
         # caller passed --reply with --card so the threading silently
@@ -127,8 +173,9 @@ def main(argv: list[str]) -> int:
         if args.reply_to:
             print(f"  ⚠️ --card ignores --reply (Feishu cards don't thread)",
                   file=sys.stderr)
-        card = simple_card(f"[{args.agent}]", args.message,
-                            color=_color_for(args.agent))
+        title = _agent_card_title(args.agent, agent_cfg)
+        card = simple_card(title, args.message,
+                            color=_color_for(args.agent, agent_cfg.get("color")))
         result = feishu_chat.send_card(
             chat, card,
             profile=profile,

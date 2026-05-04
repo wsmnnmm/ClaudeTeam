@@ -1,25 +1,63 @@
-"""`claudeteam send <to> <from> <message> [priority]`
+"""`claudeteam send <to> <from> <message> [priority] [--no-inject]`
 
-Append a message to the local inbox.  Pure local — no Feishu, no tmux.
+Append a message to the local inbox AND poke the recipient's tmux
+pane so they know to read it.
 
-This does NOT inject into the recipient's tmux pane; only the Feishu
-router can do that.  See README "Two transports" section.
+R168: previously inbox-only with the doc claim "only the Feishu
+router can do tmux inject". That broke peer messaging end-to-end —
+manager sending to worker_cc wrote a row, but worker_cc had no way
+to know unless it polled. Boss-flagged after the 全员报道 e2e where
+manager.send → worker_cc went into a dead drop.
+
+Now mirrors the router's apply pattern: append_message + tmux.inject
+into the recipient's pane. Recipient's claude (or other CLI) sees a
+prompt-style notification and processes inbox proactively. Pass
+`--no-inject` to keep the old "silent dead-drop" behaviour for
+audit-only writes (caller is putting context for later, not
+expecting recipient to read NOW).
 """
 from __future__ import annotations
 
+from claudeteam.agents import adapter_for_agent
+from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
-from claudeteam.util import usage_error
+from claudeteam.util import pop_bool_flag, usage_error
 
 
-USAGE = "usage: claudeteam send <to> <from> <message> [priority]"
+USAGE = (
+    "usage: claudeteam send <to> <from> <message> [priority] "
+    "[--no-inject]"
+)
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3:
+    rest = list(argv)
+    no_inject = pop_bool_flag(rest, "--no-inject")
+    if len(rest) < 3:
         return usage_error(USAGE)
-    to, frm, message = argv[0], argv[1], argv[2]
-    priority = argv[3] if len(argv) > 3 else "中"
+    to, frm, message = rest[0], rest[1], rest[2]
+    priority = rest[3] if len(rest) > 3 else "中"
     local_facts.touch_heartbeat(frm)
     local_id = local_facts.append_message(to, frm, message, priority=priority)
     print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]")
+    if no_inject:
+        return 0
+    # Best-effort tmux inject so the recipient's pane sees a nudge to
+    # read inbox. Failures here (no session, no pane, unknown adapter)
+    # don't fail the command — the inbox row is still the canonical
+    # record the recipient will pick up next time they re-init or
+    # /clear and re-read identity.
+    try:
+        session = config.session_name()
+        target = tmux.Target(session, to)
+        if not tmux.has_window(target):
+            return 0
+        adapter = adapter_for_agent(to)
+        nudge = (f"📥 收到 {frm} 的消息（local_id={local_id}）。"
+                 f"立即执行：claudeteam inbox {to} 查看，按 R168 contract "
+                 f"处理：执行请求 + 必要时 claudeteam say {to} \"...\" 在群里"
+                 f"汇报 + claudeteam read {local_id} 标读。")
+        tmux.inject(target, nudge, submit_keys=adapter.submit_keys())
+    except Exception as e:
+        print(f"  ⚠️ tmux inject best-effort failed for {to}: {e}")
     return 0
