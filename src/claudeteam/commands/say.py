@@ -23,8 +23,7 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 USAGE = (
     "usage: claudeteam say <agent> <message> "
-    "[--reply <message_id>] [--as user|bot] [--no-local] "
-    "[--no-card | --card]"
+    "[--reply <message_id>] [--as user|bot] [--no-local]"
 )
 
 
@@ -88,22 +87,18 @@ class _Args:
     reply_to: str = ""
     as_user: bool = False
     local: bool = True
-    # R168: default flipped to True. Boss-flagged convention — every
-    # agent message in chat should be a colored-header card so the
-    # group reads as structured updates, not "raw chat-like text".
-    # `--no-card` opts back to plain text for one-line acks.
-    as_card: bool = True
 
 
 def _parse(argv: list[str]) -> _Args | None:
     if len(argv) < 2:
         return None
     rest = list(argv)
-    # `--card` is now a no-op (kept for backward compat); `--no-card`
-    # flips to plain text. Both consume the flag.
+    # R169: `--card` and `--no-card` are now no-ops — boss-flagged
+    # convention is "all agent chat messages are cards, no escape hatch".
+    # Consuming both flags keeps backwards-compat with operators /
+    # docs that still pass them; the actual behaviour is always card.
     pop_bool_flag(rest, "--card")
-    no_card = pop_bool_flag(rest, "--no-card")
-    as_card = not no_card
+    pop_bool_flag(rest, "--no-card")
     no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
     as_explicit = pop_flag(rest, "--as")
@@ -124,7 +119,6 @@ def _parse(argv: list[str]) -> _Args | None:
         reply_to=reply_to,
         as_user=(as_value == "user"),
         local=not no_local,
-        as_card=as_card,
     )
 
 
@@ -160,34 +154,22 @@ def main(argv: list[str]) -> int:
     except KeyError:
         agent_cfg = {}
 
-    if args.as_card:
-        # Round-99: --card wraps the message in a Feishu interactive card.
-        # R168: card became the default. R169: title now uses the
-        # `{emoji} {agent} · {role}` shape ported from main —
-        # English agent id + Chinese role at a glance — so the boss
-        # reads who's talking from the header without scanning the body.
-        # reply_to does NOT thread for cards (Feishu interactive cards
-        # don't support thread-reply); print a one-line warning if the
-        # caller passed --reply with --card so the threading silently
-        # going away doesn't surprise them.
-        if args.reply_to:
-            print(f"  ⚠️ --card ignores --reply (Feishu cards don't thread)",
-                  file=sys.stderr)
-        title = _agent_card_title(args.agent, agent_cfg)
-        card = simple_card(title, args.message,
-                            color=_color_for(args.agent, agent_cfg.get("color")))
-        result = feishu_chat.send_card(
-            chat, card,
-            profile=profile,
-            as_user=args.as_user,
-        )
-    else:
-        result = feishu_chat.send_text(
-            chat, f"[{args.agent}] {args.message}",
-            profile=profile,
-            as_user=args.as_user,
-            reply_to=args.reply_to,
-        )
+    # R169: card-only — every `claudeteam say` sends a v2 card with
+    # `{emoji} {agent} · {role}` title (ported from main). No more
+    # plain-text path; boss-flagged convention is "all agent chat is
+    # cards, no escape hatch". reply_to is silently ignored (cards
+    # don't thread).
+    if args.reply_to:
+        print(f"  ⚠️ --reply ignored (Feishu cards don't thread)",
+              file=sys.stderr)
+    title = _agent_card_title(args.agent, agent_cfg)
+    card = simple_card(title, args.message,
+                        color=_color_for(args.agent, agent_cfg.get("color")))
+    result = feishu_chat.send_card(
+        chat, card,
+        profile=profile,
+        as_user=args.as_user,
+    )
     if result is None:
         return error_exit(f"❌ Feishu send failed for {args.agent}")
 

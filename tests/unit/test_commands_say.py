@@ -26,17 +26,47 @@ def _isolated(chat_id: str = "oc_test", profile: str = ""):
 
 @contextlib.contextmanager
 def _fake_send():
-    """Replace feishu_chat.send_text with a recorder."""
+    """Replace feishu_chat.send_card with a recorder.
+
+    R169: `claudeteam say` is card-only; the old text path is dead.
+    Tests still keyed on `state['calls']` (legacy text-test ergonomics)
+    but the recorder now captures send_card kwargs and synthesises
+    a `text` field from the card body so existing assertions on
+    `call['text']` keep working without rewrites. Send_text is still
+    stubbed (no-op) in case some path accidentally falls back."""
     state = {"calls": [], "result": {"message_id": "om_fake"}}
 
-    def fake(chat_id, text, *, profile="", as_user=False, reply_to="", lark_run=None):
+    def fake_card(chat_id, card, *, profile="", as_user=False,
+                  lark_run=None):
+        # Synthesise the legacy `[<agent>] <body>` text shape from the
+        # card title + body so older tests' text-string assertions
+        # continue to make sense post-R169.
+        title = card.get("header", {}).get("title", {}).get("content", "")
+        body = ""
+        try:
+            body = card["body"]["elements"][0]["content"]
+        except (KeyError, IndexError, TypeError):
+            pass
+        # Synthesised legacy shape: `[<agent>] <body>`. Title format
+        # is `{emoji} {agent} · {role}` so we extract the agent slug.
+        agent_slug = ""
+        for tok in title.split():
+            if tok and not tok.startswith(("🎯", "💎", "🟦", "🟧", "🟩",
+                                            "🟪", "⚙️")) and tok != "·":
+                agent_slug = tok
+                break
+        synth_text = f"[{agent_slug}] {body}" if agent_slug else body
         state["calls"].append({
-            "chat_id": chat_id, "text": text,
-            "profile": profile, "as_user": as_user, "reply_to": reply_to,
+            "chat_id": chat_id, "card": card, "text": synth_text,
+            "profile": profile, "as_user": as_user, "reply_to": "",
         })
         return state["result"]
 
-    with attr_patch(feishu_chat, send_text=fake):
+    def fake_text(*a, **kw):
+        # No-op; should not be called post-R169 but keep for safety.
+        return state["result"]
+
+    with attr_patch(feishu_chat, send_card=fake_card, send_text=fake_text):
         yield state
 
 
@@ -86,10 +116,15 @@ def test_say_explicit_flag_overrides_env_var():
         assert send["calls"][0]["as_user"] is False
 
 
-def test_say_reply_flag_threads_through():
+def test_say_reply_flag_silently_dropped_post_R169():
+    """R169: cards don't thread; --reply is consumed but silently
+    dropped. say still succeeds (rc=0) and emits a card; only a
+    one-line stderr warning surfaces the dropped threading."""
     with _isolated(), _fake_send() as send:
-        run_cli(["say", "manager", "hi", "--no-card", "--reply", "om_parent"])
-        assert send["calls"][0]["reply_to"] == "om_parent"
+        rc, _, err = run_cli(["say", "manager", "hi", "--reply", "om_parent"])
+        assert rc == 0
+        assert len(send["calls"]) == 1
+        assert "ignored" in err or "thread" in err
 
 
 def test_say_no_local_skips_log_write():
@@ -177,19 +212,17 @@ def test_say_card_for_worker_uses_team_json_color_after_R169():
     assert card["header"]["title"]["content"] == "💎 worker_cc · Claude Code 员工"
 
 
-def test_say_card_with_reply_warns_and_sends_card_anyway():
-    """Cards don't thread; --card + --reply prints a stderr warning
-    but still sends the card (rather than failing). Threading is a
-    text-only Feishu feature so silently dropping reply_to is the
-    least surprising behaviour."""
+def test_say_with_reply_warns_and_sends_card_anyway():
+    """Cards don't thread; `--reply` prints a stderr warning but
+    still sends the card. R169: the warn message is generic
+    "--reply ignored (Feishu cards don't thread)" since there's
+    no longer a --card vs --no-card distinction."""
     with _isolated(), _fake_send_card() as st:
-        rc, _, err = run_cli(["say", "manager", "msg", "--card",
+        rc, _, err = run_cli(["say", "manager", "msg",
                               "--reply", "om_xx"])
     assert rc == 0
-    assert "--card ignores --reply" in err
-    # Card sent, reply_to NOT in the kwargs passed to send_card
+    assert "ignored" in err and "thread" in err
     assert len(st["card_calls"]) == 1
-    assert "reply_to" not in st["card_calls"][0]
 
 
 def test_say_default_now_sends_card_after_R168():
@@ -232,15 +265,19 @@ def test_say_card_falls_back_to_default_emoji_when_team_json_missing_emoji():
             "⚙️ worker_unknown · 未知员工"
 
 
-def test_say_no_card_opts_back_to_plain_text():
-    """`--no-card` is the explicit escape hatch — short acks like
-    `收到` / `开始处理` can stay as plain text via this flag."""
+def test_say_no_card_flag_is_a_no_op_post_R169():
+    """R169: `--no-card` removed as escape hatch — every chat message
+    is a card. Flag is consumed for backwards-compat but does not
+    change behaviour. Boss-flagged convention: no plain-text agent
+    chat in test_a deploy."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "收到", "--no-card"])
     assert rc == 0
-    assert len(st["text_calls"]) == 1
-    assert st["card_calls"] == []
-    assert st["text_calls"][0]["text"] == "[manager] 收到"
+    # All sends now go through send_card path; send_text is dead
+    assert len(st["card_calls"]) == 1
+    assert st["text_calls"] == []
+    title = st["card_calls"][0]["card"]["header"]["title"]["content"]
+    assert title == "🎯 manager · 团队主管"
 
 
 def test_say_audit_log_failure_does_not_block_chat_send():

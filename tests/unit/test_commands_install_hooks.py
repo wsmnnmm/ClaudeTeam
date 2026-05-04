@@ -57,22 +57,20 @@ def test_install_hooks_remember_md_documents_kind_vocabulary():
         assert "claudeteam remember" in body
 
 
-def test_install_hooks_say_md_documents_card_default_after_R168():
-    """R168: card became the default. /say hook now teaches that
-    every `claudeteam say` is a card by default (manager → blue,
-    worker_* → green) and `--no-card` is the explicit escape hatch
-    for one-line acks."""
+def test_install_hooks_say_md_documents_card_only_after_R169():
+    """R169: removed --no-card escape hatch — every chat message is a
+    card. The hook doc no longer mentions any plain-text path so claude
+    agents don't try to opt out."""
     with tempfile.TemporaryDirectory() as tmp:
         run_cli(["install-hooks", tmp])
         body = (Path(tmp) / ".claude" / "commands" / "say.md").read_text(
             encoding="utf-8")
-        # Card-by-default messaging surfaced
+        # Card-only messaging surfaced
         assert "v2 card" in body
-        assert "--no-card" in body
-        # Invocation form still documented
+        assert "--no-card" not in body  # R169: escape hatch gone
+        # Invocation form documented
         assert "claudeteam say <your-name>" in body
-        # Threading caveat surfaced so agents don't combine --card + --reply
-        # and silently lose the threading
+        # Threading caveat surfaced
         assert "thread" in body.lower() or "ignored" in body.lower()
 
 
