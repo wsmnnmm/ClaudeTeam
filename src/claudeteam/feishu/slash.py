@@ -84,6 +84,13 @@ class SlashContext:
     they only touch what's in here, easy to fake in tests."""
     team_agents: list[str]
     session: str
+    # R158: pre-computed at daemon startup so /team's lazy-pane probe
+    # doesn't have to call `config.load_team()` per chat event. Empty
+    # default keeps tests + cold-path callers (they construct their
+    # own SlashContext in fakes) working without churn — the only
+    # consequence of an empty set is that lazy agents render as 🛑
+    # instead of ⏸, which is the pre-R129 behavior.
+    lazy_agents: frozenset[str] = frozenset()
     run: Callable = subprocess.run         # for shell-out (`claudeteam <cmd>`)
     sleep: Callable = time.sleep           # for /clear's settle delay
     now: Callable = datetime.now           # injectable clock for header timestamps
@@ -183,20 +190,12 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     caught the wart: yellow team header for a worker that's just
     waiting for its first message looks like an alarm.
     """
-    # Lazy agents in team.json get the ⏸ glyph instead of 🛑 below.
-    # R144: one team.json read for the whole card. The earlier
-    # `_is_lazy(agent)` helper called `config.agent_config(agent)` per
-    # agent, which re-read team.json from disk N times for an N-agent
-    # team. Bare-dict probe here lets the lazy set come from a single
-    # `load_team()` call; the broad except still catches missing /
-    # corrupt team.json so a card render can't fail open.
-    try:
-        from claudeteam.runtime import config as _cfg
-        agents_dict = _cfg.load_team().get("agents", {})
-        lazy_agents = {a for a in ctx.team_agents
-                       if agents_dict.get(a, {}).get("lazy")}
-    except Exception:
-        lazy_agents = set()
+    # R158: lazy agents now come from ctx.lazy_agents, pre-computed at
+    # daemon startup. Was R144: one `load_team()` per /team event.
+    # Now: zero — every chat-side /team card render hits the disk
+    # exactly 0 times for config (capture_pane is the only per-agent
+    # I/O left, and that's a tmux subprocess, not a config read).
+    lazy_agents = ctx.lazy_agents
 
     rows = []
     tally: Counter[str] = Counter()

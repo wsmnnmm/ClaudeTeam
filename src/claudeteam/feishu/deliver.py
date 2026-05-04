@@ -130,6 +130,7 @@ def apply(decision: Decision, *,
           wake_fn: Callable | None = None,
           session: str | None = None,
           team_agents: list[str] | None = None,
+          lazy_agents: frozenset[str] | None = None,
           slash_dispatch: Callable | None = None,
           chat_send: Callable | None = None,
           chat_send_card: Callable | None = None,
@@ -154,6 +155,7 @@ def apply(decision: Decision, *,
     if decision.action is Action.SLASH:
         return _apply_slash(decision, deps,
                             team_agents=team_agents,
+                            lazy_agents=lazy_agents,
                             slash_dispatch=slash_dispatch,
                             chat_send=chat_send,
                             chat_send_card=chat_send_card,
@@ -172,6 +174,7 @@ def apply(decision: Decision, *,
 
 def _apply_slash(decision: Decision, deps: _Deps, *,
                  team_agents: list[str] | None,
+                 lazy_agents: frozenset[str] | None,
                  slash_dispatch: Callable | None,
                  chat_send: Callable | None,
                  chat_send_card: Callable | None,
@@ -188,6 +191,7 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
     ctx = _slash.SlashContext(
         team_agents=team_agents or config.agent_names(),
         session=deps.session,
+        lazy_agents=lazy_agents if lazy_agents is not None else frozenset(),
     )
     reply = dispatch(decision.text, ctx)
 

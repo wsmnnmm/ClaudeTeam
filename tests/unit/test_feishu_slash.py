@@ -7,7 +7,8 @@ from claudeteam.runtime import tmux
 
 
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
-         session="ClaudeTeam", run=None, sleep=None, background=None):
+         session="ClaudeTeam", run=None, sleep=None, background=None,
+         lazy_agents=()):
     """Build a SlashContext for tests with sane stubs by default."""
     fake_run = run or (lambda *a, **kw: type("R", (), {
         "returncode": 0, "stdout": "ok\n", "stderr": ""})())
@@ -19,6 +20,7 @@ def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
     return slash.SlashContext(
         team_agents=list(agents),
         session=session,
+        lazy_agents=frozenset(lazy_agents),
         run=fake_run,
         sleep=fake_sleep,
         background=fake_background,
@@ -93,8 +95,13 @@ def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
         "worker_lazy": {"cli": "kimi-code", "lazy": True},
     }}
     with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        # R158: lazy_agents now flows in via SlashContext (the closure
+        # in commands/router.py pre-computes the set at daemon startup
+        # so /team's hot path doesn't read team.json). Tests pass it
+        # explicitly to mirror that production wiring.
         reply = slash.dispatch("/team",
-                               _ctx(agents=("manager", "worker_lazy")))
+                               _ctx(agents=("manager", "worker_lazy"),
+                                    lazy_agents={"worker_lazy"}))
     assert reply["header"]["template"] == "green"
     body = reply["elements"][0]["text"]["content"]
     # Lazy worker shown with ⏸ glyph (not 🛑) and a "lazy" hint

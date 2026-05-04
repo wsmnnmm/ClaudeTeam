@@ -104,7 +104,8 @@ def _build_agent_adapters(agents_dict: dict) -> dict:
 
 
 def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
-                          team_agents: list[str], agent_adapters: dict):
+                          team_agents: list[str], agent_adapters: dict,
+                          lazy_agents: frozenset):
     """Build the per-event deliver wrapper with hot-path config pre-bound.
 
     R147: chat_id / lark_profile / session / agent_names are deployment-
@@ -141,6 +142,7 @@ def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
         return _deliver_apply(decision, wake_fn=wake.wake_if_dormant,
                               session=session, chat_id=chat_id,
                               profile=profile, team_agents=team_agents,
+                              lazy_agents=lazy_agents,
                               adapter_for_agent=lookup_adapter)
     return _apply_with_wake
 
@@ -264,19 +266,23 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
 
-        # R147 + R153: bind deployment-stable config values into apply_fn
-        # at daemon startup. session_name reads team.json the same way
-        # `chat` / `agents` already did; one extra read here removes 1-4
-        # disk reads per inbound event from deliver.apply's hot path.
-        # R153 also pre-builds the agent→adapter map so per-target inject
-        # skips the same `load_team()` bounce.
+        # R147 + R153 + R158: bind deployment-stable config values into
+        # apply_fn at daemon startup. session_name reads team.json the
+        # same way `chat` / `agents` already did; one extra read here
+        # removes 1-4 disk reads per inbound event from deliver.apply's
+        # hot path. R153 pre-builds the agent→adapter map. R158
+        # pre-computes the lazy-agents set so /team's card render does
+        # zero disk reads (was 1 per /team event for lazy detection).
         team_data = config.load_team()
+        agents_dict = team_data.get("agents", {})
         apply_fn = _make_apply_with_wake(
             session=team_data.get("session", "ClaudeTeam"),
             chat_id=chat,
             profile=profile,
             team_agents=agents,
-            agent_adapters=_build_agent_adapters(team_data.get("agents", {})),
+            agent_adapters=_build_agent_adapters(agents_dict),
+            lazy_agents=frozenset(name for name, cfg in agents_dict.items()
+                                  if cfg.get("lazy")),
         )
 
         loop_kwargs = dict(
