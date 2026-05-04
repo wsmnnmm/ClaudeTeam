@@ -472,20 +472,81 @@ def _summarise_ccusage_error(output: str) -> str:
     return output.splitlines()[0].strip()[:200] if output.strip() else "(空)"
 
 
+def _remaining_color(remaining_pct: float) -> str:
+    """R170: traffic-light header tint for kimi remaining%.
+    ≤20 red / ≤50 orange / else green — mirrors main's
+    `_remaining_pct_color`."""
+    if remaining_pct <= 20:
+        return "red"
+    if remaining_pct <= 50:
+        return "orange"
+    return "green"
+
+
+def _codex_section(cx: dict) -> list:
+    """Render Codex section rows for `/usage` card.
+
+    R170: Codex has no public live-usage endpoint, so we surface the
+    plan + subscription window decoded from `~/.codex/auth.json`
+    id_token JWT. That tells the boss "ChatGPT Pro valid until X" at a
+    glance — not real-time percent, but enough to flag an expired
+    seat. ok=False renders a single red font line so the failure mode
+    matches the ccusage error path."""
+    rows: list = [{"tag": "markdown", "content": "**🟦 Codex (ChatGPT OAuth)**"}]
+    if not cx.get("ok"):
+        rows.append(column_set_2(
+            "**Status**",
+            f"<font color='red'>Codex 状态读取失败</font> · {cx.get('note', '')}"))
+        return rows
+    plan = cx.get("plan") or "Unknown"
+    valid_until = cx.get("valid_until") or "未知"
+    email = cx.get("email") or ""
+    rows.append(column_set_2(
+        "**Plan**",
+        f"<font color='blue'>**{plan}**</font>" + (f" · {email}" if email else "")))
+    rows.append(column_set_2(
+        "**Valid until**", f"<font color='grey'>{valid_until}</font>"))
+    return rows
+
+
+def _kimi_section(km: dict) -> list:
+    """Render Kimi section rows for `/usage` card.
+
+    R170: queries `api.kimi.com/coding/v1/usages` — returns weekly +
+    sliding-window quotas. Each metric becomes a column_set 2 row
+    `label / <font color>剩余 X%</font> · 已用 Y%/Z` so traffic-light
+    color matches the underlying remaining percentage."""
+    rows: list = [{"tag": "markdown", "content": "**🟧 Kimi (api.kimi.com)**"}]
+    if not km.get("ok"):
+        rows.append(column_set_2(
+            "**Status**",
+            f"<font color='red'>Kimi API 失败</font> · {km.get('note', '')}"))
+        return rows
+    for m in km.get("metrics", []) or []:
+        color = _remaining_color(m["remaining_pct"])
+        rows.append(column_set_2(
+            f"**{m['label']}**",
+            (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
+             f"· 已用 {m['used_pct']}% ({m['used']}/{m['limit']}) "
+             f"· 重置 {m.get('reset_iso', '')}")))
+    return rows
+
+
 def _handle_usage(args: str, ctx: SlashContext) -> dict:
     """`/usage [view]` — token / credit consumption snapshot card.
 
-    R167: ports `feat/messaging-fixes-block1` / `main` shape — purple
-    header, **📊 Claude Code (ccusage)** section with column_set 2
-    (label / colored metric), **📦 其他 CLI** section listing
-    codex/kimi/qwen/gemini per-cli notes (since rebuild has no usage
-    adapter for those — main's `inspect_cli` lives outside this
-    branch). ccusage failures are condensed to a one-line red font
-    summary instead of dumping 30 lines of npm WARN.
+    R170: per-CLI sections — Claude Code via ccusage, Codex via decoded
+    `~/.codex/auth.json` JWT (plan + window), Kimi via `api.kimi.com/
+    coding/v1/usages`. Each section is `**heading**` + column_set 2
+    rows + hr separator. Mirrors `main`'s `build_usage_card` layout
+    but stripped of the `inspect_cli` preflight machinery (rebuild
+    keeps a leaner status surface — actual per-CLI failure lives in
+    `commands/usage.py`'s probe functions and surfaces here as the
+    section's red `Status` line).
 
-    Was R164: plain text dump of `claudeteam usage` shell-out — boss
-    flagged as "破衣服" vs /health's "西装"; this matches the latter
-    so they look consistent in chat.
+    R167: ports `feat/messaging-fixes-block1` / `main` shape — purple
+    header, ccusage failures condensed to one line.
+    R164→R167 history: plain text → ccusage-only card → multi-CLI card.
     """
     view_arg = args.strip().split()[0] if args.strip() else ""
     argv = ["claudeteam", "usage", "--json"]
@@ -497,7 +558,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
         import json as _json
         data = _json.loads(raw)
     except (ValueError, TypeError):
-        data = {"view": view, "claude_code": None, "other_clis": []}
+        data = {"view": view}
 
     elements: list = []
     cc = data.get("claude_code")
@@ -522,6 +583,16 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
                 f"<font color='red'>ccusage 失败</font> · {err_brief}"))
         elements.append({"tag": "hr"})
 
+    cx = data.get("codex")
+    if cx is not None:
+        elements.extend(_codex_section(cx))
+        elements.append({"tag": "hr"})
+
+    km = data.get("kimi")
+    if km is not None:
+        elements.extend(_kimi_section(km))
+        elements.append({"tag": "hr"})
+
     other = data.get("other_clis") or []
     if other:
         elements.append({"tag": "markdown",
@@ -532,7 +603,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
                 f"<font color='grey'>{row['note']}</font>"))
         elements.append({"tag": "hr"})
 
-    if not cc and not other:
+    if not (cc or cx or km or other):
         elements.append({"tag": "markdown",
                           "content": "<font color='grey'>(无数据)</font>"})
 
@@ -545,7 +616,10 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
                                    f"data source `claudeteam usage --json`"
                                    f"</font>")})
 
-    color = "red" if (cc and not cc.get("ok")) else "purple"
+    cc_failed = cc and not cc.get("ok")
+    cx_failed = cx and not cx.get("ok")
+    km_failed = km and not km.get("ok")
+    color = "red" if (cc_failed or cx_failed or km_failed) else "purple"
     return rich_card(
         f"📊 /usage ({view}) — 额度快照 {beijing_stamp(ctx.now)}",
         elements,

@@ -41,6 +41,16 @@ services:
       # host. Same OAuth account works for both host and container.
       - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
       - ${HOME}/.claude.json:/root/.claude.json
+      # R170: bind-mount codex + kimi auth dirs so /usage queries can
+      # call those CLIs (and the underlying providers) without an
+      # interactive re-login. Codex stores ChatGPT OAuth tokens at
+      # ~/.codex/auth.json; Kimi stores `access_token` per-cli profile
+      # at ~/.kimi/credentials/<cli-name>.json plus the device id /
+      # session state directly under ~/.kimi. RW so token refreshes
+      # written by the in-container CLI persist back to host (matches
+      # the claude-creds pattern above).
+      - ${HOME}/.codex:/root/.codex
+      - ${HOME}/.kimi:/root/.kimi
     # FEISHU_APP_SECRET / LARKSUITE_CLI_APP_SECRET — supplied via the
     # `.env` file (gitignored) so the container's lark-cli can
     # authenticate without reaching the host's macOS keychain. Both

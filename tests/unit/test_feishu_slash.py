@@ -372,6 +372,56 @@ def test_usage_card_renders_no_data_when_both_sections_empty():
     assert "(无数据)" in contents
 
 
+def test_usage_card_renders_codex_section_with_plan():
+    """R170: codex section surfaces plan + valid_until via column_set 2
+    rows. Heading is `🟦 Codex (ChatGPT OAuth)`."""
+    payload = ('{"view":"daily","claude_code":null,'
+               '"codex":{"ok":true,"plan":"Pro",'
+               '"email":"x@example.com",'
+               '"valid_until":"2026-05-20T18:44:16+00:00"},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "🟦 Codex" in contents
+    col_sets = [e for e in reply["body"]["elements"]
+                if e.get("tag") == "column_set"]
+    rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
+    assert any("Pro" in r for r in rights)
+    assert any("2026-05-20" in r for r in rights)
+
+
+def test_usage_card_renders_kimi_section_with_quota_metrics():
+    """R170: each kimi metric becomes a column_set 2 row with a
+    traffic-light remaining-percent on the right column."""
+    payload = ('{"view":"daily","claude_code":null,'
+               '"kimi":{"ok":true,"metrics":[{'
+               '"label":"Weekly limit","used":2,"limit":10,'
+               '"used_pct":20,"remaining_pct":80,'
+               '"reset_iso":"2026-05-08T00:00:00Z"}]},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "🟧 Kimi" in contents
+    col_sets = [e for e in reply["body"]["elements"]
+                if e.get("tag") == "column_set"]
+    rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
+    weekly_row = next(r for r in rights if "剩余 80%" in r)
+    # 80% remaining → green
+    assert "color='green'" in weekly_row
+
+
+def test_usage_card_marks_header_red_when_codex_or_kimi_failed():
+    """R170: any of the per-CLI probes failing flips header to red so
+    the boss spots a broken cred from the chat title."""
+    payload = ('{"view":"daily","claude_code":null,'
+               '"codex":{"ok":false,"note":"auth.json not found"},'
+               '"kimi":null,"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    assert reply["header"]["template"] == "red"
+
+
 def test_usage_card_handles_invalid_json_gracefully():
     """Shell-out returned non-JSON (e.g. claudeteam usage crashed) →
     fall back to empty data; render the no-data placeholder + footer

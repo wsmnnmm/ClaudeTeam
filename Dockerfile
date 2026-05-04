@@ -62,6 +62,23 @@ RUN npm install --silent --global @larksuite/cli@latest \
 RUN npm install --silent --global @anthropic-ai/claude-code \
     && claude --version
 
+# R170: install Codex CLI (OpenAI) + Kimi CLI (Moonshot AI). Same
+# pattern as claude-code: install the binaries here, mount host's
+# auth state at runtime via docker-compose volumes so container
+# reuses an already-logged-in session without re-OAuth.
+#
+# - codex: `npm install -g @openai/codex` ships the node wrapper +
+#   platform binary; auth state lives in $HOME/.codex/auth.json
+#   (ChatGPT OAuth tokens). Same mount pattern as claude.
+# - kimi: Python tool. Use `pip install kimi-cli`; auth state in
+#   $HOME/.kimi/credentials/. Mount host's ~/.kimi for credential reuse.
+#   (uv would be cleaner but the slim image doesn't ship it; pip is
+#   already there from the python:3.11-slim base.)
+RUN npm install --silent --global @openai/codex \
+    && codex --version
+RUN pip install --no-cache-dir kimi-cli \
+    && kimi --version
+
 WORKDIR /app
 
 # Copy only what's needed to install the package — pyproject + src.
