@@ -88,15 +88,20 @@ RUN mkdir -p /root/.claude \
        '{' \
        '  "skipDangerousModePermissionPrompt": true,' \
        '  "hasCompletedOnboarding": true,' \
+       '  "theme": "dark",' \
        '  "permissions": {' \
        '    "allow": ["Bash", "Edit", "Read", "Write"]' \
        '  }' \
        '}' > /root/.claude/settings.json
-# claude rejects `"Write()"` (empty parens) at startup with a Settings
-# Warning dialog — boss-provided recipe used the empty-parens form but
-# the current claude version requires either a bare verb (`"Write"`)
-# or a pattern (`"Write(<glob>)"`). Bare verbs allow ALL paths, which
-# is what the sandbox container wants anyway.
+# - claude rejects `"Write()"` (empty parens); current claude needs a
+#   bare verb or `"Write(<glob>)"`.
+# - `"theme": "dark"` pre-picks the syntax theme so the "Choose the
+#   text style" dialog never pops on fresh container starts (boss saw
+#   this 2026-05-04). Container has no persistent ~/.claude.json now
+#   that we dropped its bind-mount, so the theme dialog would otherwise
+#   appear on every restart.
+# - `hasCompletedOnboarding: true` suppresses the rest of the
+#   onboarding flow.
 
 # R170: install Codex CLI (OpenAI) + Kimi CLI (Moonshot AI). Same
 # pattern as claude-code: install the binaries here, mount host's
