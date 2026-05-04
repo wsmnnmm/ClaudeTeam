@@ -153,43 +153,106 @@ def test_team_card_color_yellow_when_any_agent_unhealthy():
     assert reply["header"]["template"] == "yellow"
 
 
-# ── /health ──────────────────────────────────────────────────────
+# ── /health (R166: server-load card with column_set 3 grid) ──────
 
 
-def test_health_shells_to_claudeteam_health_and_returns_card():
-    captured = {}
+def _stub_server_load(monkey_data: dict):
+    """Patch `runtime.server_metrics.collect_server_load` for the
+    duration of the test so /health's data comes from `monkey_data`
+    instead of host shell-outs."""
+    from helpers import attr_patch
+    from claudeteam.runtime import server_metrics
+    return attr_patch(server_metrics,
+                      collect_server_load=lambda agent_set=None, session=None,
+                      run=None: monkey_data)
 
-    def fake_run(argv, **kwargs):
-        captured["argv"] = list(argv)
-        return type("R", (), {"returncode": 0, "stdout": "✅ all green", "stderr": ""})()
 
-    reply = slash.dispatch("/health", _ctx(run=fake_run))
-    assert captured["argv"] == ["claudeteam", "health"]
+def test_health_card_renders_host_section_with_column_set():
+    """R166: /health card has 🖥️ 主机总览 + column_set 3 (CPU/内存/磁盘)
+    + colored percentage spans. No more text dump."""
+    data = {
+        "host": {
+            "cpu": {"load": (1.2, 0.8, 0.5), "cores": 8, "pct": 15},
+            "mem": {"total": 16 * 1024**3, "used": 8 * 1024**3,
+                    "available": 7 * 1024**3, "pct": 50,
+                    "swap": {"total": 0, "used": 0}},
+            "disk": {"mount": "/", "used": 100 * 1024**3,
+                     "total": 500 * 1024**3, "pct": 20},
+        },
+        "containers": [], "agents": [], "alarms": [],
+    }
+    with _stub_server_load(data):
+        reply = slash.dispatch("/health", _ctx())
     assert isinstance(reply, dict)
-    assert "/health" in reply["header"]["title"]["content"]
-    body = reply["body"]["elements"][0]["content"]
-    assert "✅ all green" in body
-    # No ❌ in the output → green template
-    assert reply["header"]["template"] == "green"
+    assert reply["schema"] == "2.0"
+    assert reply["header"]["template"] == "purple"  # default no-alarm
+    title = reply["header"]["title"]["content"]
+    assert "/health" in title and "服务器负载" in title
+    # First element is the section heading, second is the column_set grid
+    elements = reply["body"]["elements"]
+    headings = [e for e in elements if e.get("tag") == "markdown"
+                and "**🖥" in e.get("content", "")]
+    assert headings, "missing 🖥️ 主机总览 heading"
+    col_sets = [e for e in elements if e.get("tag") == "column_set"]
+    assert col_sets, "missing column_set rows"
+    # First grid has 3 columns matching (CPU/内存/磁盘)
+    first_grid = col_sets[0]
+    assert len(first_grid["columns"]) == 3
+    # Each cell has a markdown element
+    for col in first_grid["columns"]:
+        assert col["elements"][0]["tag"] == "markdown"
 
 
-def test_health_card_is_yellow_when_output_contains_red_or_warn_glyph():
-    """The health command emits ❌ for hard fails and ⚠️ for warnings.
-    Either flips the card off green so the boss notices."""
-    def fake_run_bad(argv, **kwargs):
-        return type("R", (), {"returncode": 0,
-                              "stdout": "✅ tmux session\n❌ router pid file missing",
-                              "stderr": ""})()
-    reply = slash.dispatch("/health", _ctx(run=fake_run_bad))
+def test_health_card_includes_alarm_section_when_alarms_present():
+    """Alarms in the data dict surface as a 🚨 section AND flip header
+    to yellow so the boss notices something's wrong at a glance."""
+    data = {
+        "host": {"cpu": None, "mem": None, "disk": None},
+        "containers": [],
+        "agents": [],
+        "alarms": ["主机内存 **92%**", "磁盘 `/var` **85%**"],
+    }
+    with _stub_server_load(data):
+        reply = slash.dispatch("/health", _ctx())
     assert reply["header"]["template"] == "yellow"
-    assert "❌" in reply["body"]["elements"][0]["content"]
+    contents = " ".join(e.get("content", "")
+                        for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "🚨" in contents
+    assert "主机内存" in contents
+    assert "85%" in contents
 
-    def fake_run_warn(argv, **kwargs):
-        return type("R", (), {"returncode": 0,
-                              "stdout": "✅ team.json: 4 agents\n⚠️  lark_profile blank",
-                              "stderr": ""})()
-    reply = slash.dispatch("/health", _ctx(run=fake_run_warn))
-    assert reply["header"]["template"] == "yellow"
+
+def test_health_card_falls_back_to_no_data_cells_when_host_empty():
+    """When uptime/free/df all returned None (Docker Desktop on macOS
+    can hit this), the host section still renders with 无数据 cells
+    instead of crashing or showing an empty grid."""
+    data = {
+        "host": {"cpu": None, "mem": None, "disk": None},
+        "containers": [], "agents": [], "alarms": [],
+    }
+    with _stub_server_load(data):
+        reply = slash.dispatch("/health", _ctx())
+    contents = " ".join(e.get("content", "")
+                        for col_set in reply["body"]["elements"]
+                        if col_set.get("tag") == "column_set"
+                        for col in col_set["columns"]
+                        for e in col["elements"])
+    assert contents.count("无数据") >= 3  # CPU + 内存 + 磁盘 all blank
+
+
+def test_health_card_emits_v2_schema_with_note_footer():
+    """Footer note records collection time + data source list — useful
+    for debug "is this card stale?" questions."""
+    data = {"host": {"cpu": None, "mem": None, "disk": None},
+            "containers": [], "agents": [], "alarms": []}
+    with _stub_server_load(data):
+        reply = slash.dispatch("/health", _ctx())
+    notes = [e for e in reply["body"]["elements"] if e.get("tag") == "note"]
+    assert len(notes) == 1
+    note_text = notes[0]["elements"][0]["content"]
+    assert "采集" in note_text
+    assert "uptime/free/df/docker stats/ps" in note_text
 
 
 # ── /usage ───────────────────────────────────────────────────────

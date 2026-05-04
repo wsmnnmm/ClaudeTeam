@@ -28,8 +28,12 @@ def test_simple_card_accepts_color_override():
 
 
 def test_simple_card_falls_back_to_blue_on_unknown_color():
-    """Defensive — a typo or future palette change shouldn't bork rendering."""
-    assert simple_card("X", "y", color="orange")["header"]["template"] == "blue"
+    """Defensive — a typo or future palette change shouldn't bork rendering.
+
+    R166 expanded the palette to include `purple` / `orange` / `turquoise`
+    (used by /health server-load card), so use a genuinely-invalid name
+    here to keep this test honest."""
+    assert simple_card("X", "y", color="magenta")["header"]["template"] == "blue"
     assert simple_card("X", "y", color="")["header"]["template"] == "blue"
 
 
@@ -75,3 +79,79 @@ def test_fenced_block_wraps_text_in_triple_backticks():
     # element content; an empty fence renders as a 1-line empty code
     # block, harmless)
     assert fenced_block("") == "```\n\n```"
+
+
+# ── R166: rich card primitives (column_set + colored fonts) ─────
+
+
+def test_col_cell_wraps_content_in_weighted_column():
+    from claudeteam.feishu.cards import col_cell
+    cell = col_cell("**hi**", weight=2)
+    assert cell["tag"] == "column"
+    assert cell["width"] == "weighted"
+    assert cell["weight"] == 2
+    assert cell["elements"][0]["tag"] == "markdown"
+    assert cell["elements"][0]["content"] == "**hi**"
+
+
+def test_column_set_3_pads_to_three_cells():
+    from claudeteam.feishu.cards import column_set_3
+    grid = column_set_3(["a"])
+    assert grid["tag"] == "column_set"
+    assert grid["flex_mode"] == "none"
+    assert len(grid["columns"]) == 3
+    # Padded cells contain a single space
+    assert grid["columns"][1]["elements"][0]["content"] == " "
+    assert grid["columns"][2]["elements"][0]["content"] == " "
+
+
+def test_column_set_2_uses_2_3_weight_by_default():
+    from claudeteam.feishu.cards import column_set_2
+    row = column_set_2("**label**", "value")
+    assert len(row["columns"]) == 2
+    assert row["columns"][0]["weight"] == 2
+    assert row["columns"][1]["weight"] == 3
+
+
+def test_load_color_thresholds():
+    from claudeteam.feishu.cards import load_color
+    # red ≥80, orange ≥50, green <50
+    assert load_color(85) == "red"
+    assert load_color(80) == "red"
+    assert load_color(60) == "orange"
+    assert load_color(50) == "orange"
+    assert load_color(49) == "green"
+    assert load_color(0) == "green"
+
+
+def test_remaining_color_inverse_thresholds():
+    from claudeteam.feishu.cards import remaining_color
+    # red ≤20, orange ≤50, green >50
+    assert remaining_color(15) == "red"
+    assert remaining_color(20) == "red"
+    assert remaining_color(35) == "orange"
+    assert remaining_color(50) == "orange"
+    assert remaining_color(75) == "green"
+
+
+def test_rich_card_emits_v2_schema_with_body_elements():
+    from claudeteam.feishu.cards import rich_card
+    elements = [{"tag": "markdown", "content": "hi"}]
+    card = rich_card("Title", elements, color="purple")
+    assert card["schema"] == "2.0"
+    assert card["header"]["template"] == "purple"
+    assert card["header"]["title"]["content"] == "Title"
+    assert card["body"]["elements"] == elements
+
+
+def test_rich_card_falls_back_to_placeholder_when_elements_empty():
+    from claudeteam.feishu.cards import rich_card
+    card = rich_card("Title", [], color="blue")
+    assert card["body"]["elements"][0]["content"] == "(无内容)"
+
+
+def test_simple_card_accepts_purple_after_R166():
+    """R166 added purple to _VALID_COLORS for /health card. Sanity:
+    simple_card propagates purple through _normalised_color."""
+    from claudeteam.feishu.cards import simple_card
+    assert simple_card("X", "y", color="purple")["header"]["template"] == "purple"

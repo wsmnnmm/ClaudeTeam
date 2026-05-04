@@ -30,7 +30,8 @@ from typing import Callable
 # Lark template colors that Feishu's web/mobile app actually renders. These
 # are the only ones tested; others (orange, turquoise, etc.) work but
 # render varies across mobile/desktop versions.
-_VALID_COLORS = ("blue", "green", "red", "yellow", "grey")
+_VALID_COLORS = ("blue", "green", "red", "yellow", "grey", "purple",
+                 "orange", "turquoise")
 
 
 def _normalised_color(color: str) -> str:
@@ -85,3 +86,82 @@ def fenced_block(text: str) -> str:
     reject the card.
     """
     return f"```\n{text}\n```"
+
+
+# ── R166: rich card primitives (column_set + colored fonts) ──────
+
+
+def col_cell(content: str, weight: int = 1) -> dict:
+    """Single column cell containing one markdown element.
+
+    Wraps `content` in `{tag:column, width:weighted, weight:N, elements:
+    [{tag:markdown, content}]}` — the v2-compatible column shape used
+    by `column_set_3` and `column_set_2` to build grid layouts.
+    """
+    return {"tag": "column", "width": "weighted", "weight": weight,
+            "elements": [{"tag": "markdown", "content": content}]}
+
+
+def column_set_3(cells: list[str]) -> dict:
+    """3-column grid row. Pads with empty cells when fewer than 3 strings
+    are passed so the visual grid stays even (matches `feat/messaging-
+    fixes-block1`'s `_col_set_3`)."""
+    cols = [col_cell(c) for c in cells]
+    while len(cols) < 3:
+        cols.append(col_cell(" "))
+    return {"tag": "column_set", "flex_mode": "none",
+            "background_style": "default", "columns": cols}
+
+
+def column_set_2(left: str, right: str, *,
+                 left_weight: int = 2, right_weight: int = 3) -> dict:
+    """2-column row, weighted 2:3 by default (label : detail layout used
+    by main's /usage card). Left typically a `**bold label**`, right
+    the colored metric string."""
+    return {"tag": "column_set", "flex_mode": "none",
+            "background_style": "default", "columns": [
+                col_cell(left, weight=left_weight),
+                col_cell(right, weight=right_weight),
+            ]}
+
+
+def load_color(pct: int) -> str:
+    """Traffic-light color for a load percentage. red≥80, orange≥50,
+    green<50. Used for CPU / memory / disk percentages."""
+    if pct >= 80:
+        return "red"
+    if pct >= 50:
+        return "orange"
+    return "green"
+
+
+def remaining_color(pct: float) -> str:
+    """Inverse of `load_color` — for `<remaining>%` displays where low
+    is bad. red≤20, orange≤50, green>50."""
+    if pct <= 20:
+        return "red"
+    if pct <= 50:
+        return "orange"
+    return "green"
+
+
+def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
+    """Card v2 with a pre-built `body.elements` list — for handlers that
+    need column_set / hr / multi-section layouts the single-element
+    `simple_card` can't express.
+
+    R166: introduced for `/health` server-load card port from
+    `feat/messaging-fixes-block1` / `main` — section headings as
+    bold markdown, column_set rows for grid layouts, hr separators.
+    `<font color='red|orange|green|grey'>` HTML works inline in v2's
+    `tag:"markdown"` element (verified live in chat).
+    """
+    return {
+        "schema": "2.0",
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": _normalised_color(color),
+        },
+        "body": {"elements": elements or [
+            {"tag": "markdown", "content": "(无内容)"}]},
+    }

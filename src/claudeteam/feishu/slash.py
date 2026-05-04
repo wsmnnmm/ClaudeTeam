@@ -59,7 +59,10 @@ from typing import Callable
 
 from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
-from claudeteam.feishu.cards import beijing_stamp, fenced_block, simple_card
+from claudeteam.feishu.cards import (
+    beijing_stamp, column_set_3, fenced_block, load_color, rich_card,
+    simple_card,
+)
 from claudeteam.runtime import tmux
 from claudeteam.store import memory
 from claudeteam.util import fmt_time_ms
@@ -241,87 +244,160 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     )
 
 
-_HEALTH_SECTION_EMOJI = {
-    "paths": "🗂",
-    "config": "⚙️",
-    "binaries": "📦",
-    "env": "🌐",
-    "tmux": "🖥",
-    "daemons": "🛡",
-    "router state": "📡",
-    "memory": "🧠",
-}
+def _fmt_mem(b: int) -> str:
+    """Bytes → GB/MB/KB string. Local mirror of server_metrics._fmt_mem
+    so card builders don't have to import the runtime collector for
+    formatting alone."""
+    if b >= 1024**3:
+        return f"{b/1024**3:.2f} GB"
+    if b >= 1024**2:
+        return f"{b/1024**2:.0f} MB"
+    if b >= 1024:
+        return f"{b/1024:.0f} KB"
+    return f"{b} B"
 
 
-def _format_health_card_body(raw: str) -> str:
-    """Turn the raw `claudeteam health` text output into structured v2
-    markdown for the card body. Sections are detected by lines with no
-    leading space ending in `:` (matches `HealthReport.section()`); each
-    section gets a bold `**emoji name**` heading; rows below it become
-    bullet lines; sections separated by `---` horizontal rules.
+def _agent_emoji(cpu: float) -> str:
+    if cpu >= 80:
+        return "🔥"
+    if cpu >= 30:
+        return "🔄"
+    if cpu >= 5:
+        return "⚙️"
+    return "💤"
 
-    R165: replaces the prior plain-text dump with a layout closer to
-    `feat/messaging-fixes-block1`'s rich card. Doesn't yet collect host
-    CPU / container / agent metrics (no underlying data source on this
-    branch), but the section split alone gives boss the "easier to scan
-    in chat" rendering they asked for.
 
-    Falls back to the raw output for any line that doesn't fit the
-    expected shape so we don't lose information.
+def _build_server_load_elements(data: dict) -> list:
+    """Render the server-load data dict into v2 card elements.
+
+    R166 ports `feat/messaging-fixes-block1:slash/health.build_server_
+    load_card`'s layout: 🖥️ 主机总览 (CPU / 内存 / 磁盘 column_set) →
+    📦 容器总量 → 👤 员工细分 Top N (per-row column_set) → 🚨 异常告警 →
+    note footer. Each section ends with an `hr` divider; final `hr` is
+    pruned before the note.
     """
-    if not raw:
-        return " "
-    sections: list[tuple[str, list[str]]] = []
-    current: tuple[str, list[str]] | None = None
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Section heading: top-level, ends with ':' (e.g. "tmux:")
-        if not line.startswith(" ") and line.rstrip().endswith(":"):
-            name = line.rstrip()[:-1]
-            current = (name, [])
-            sections.append(current)
-            continue
-        # Body row inside a section
-        if current is None:
-            current = ("", [])
-            sections.append(current)
-        current[1].append(stripped)
-    out_lines: list[str] = []
-    for i, (name, rows) in enumerate(sections):
-        if i:
-            out_lines.append("---")
-        if name:
-            emoji = _HEALTH_SECTION_EMOJI.get(name, "▫")
-            out_lines.append(f"**{emoji} {name}**")
-        for row in rows:
-            out_lines.append(f"- {row}")
-    return "\n".join(out_lines) if out_lines else " "
+    host = data.get("host") or {}
+    cpu = host.get("cpu")
+    mem = host.get("mem")
+    disk = host.get("disk")
+    containers = data.get("containers") or []
+    agents = data.get("agents") or []
+    alarms = data.get("alarms") or []
+
+    elements: list = []
+
+    # 🖥️ 主机总览 — CPU / 内存 / 磁盘
+    cpu_cell = ("**CPU**\n<font color='grey'>无数据</font>" if not cpu else
+                f"**CPU**\n<font color='{load_color(cpu['pct'])}'>"
+                f"**{cpu['load'][0]:.2f} / {cpu['cores']} 核 ({cpu['pct']}%)**"
+                f"</font>\n<font color='grey'>5m {cpu['load'][1]:.2f} · "
+                f"15m {cpu['load'][2]:.2f}</font>")
+    mem_cell = ("**内存**\n<font color='grey'>无数据</font>" if not mem else
+                f"**内存**\n<font color='{load_color(mem['pct'])}'>"
+                f"**{_fmt_mem(mem['used'])} / {_fmt_mem(mem['total'])}"
+                f" ({mem['pct']}%)**</font>\n<font color='grey'>"
+                f"可用 {_fmt_mem(mem['available'])} · Swap "
+                f"{_fmt_mem(mem['swap']['used'])}/{_fmt_mem(mem['swap']['total'])}"
+                f"</font>")
+    disk_cell = ("**磁盘**\n<font color='grey'>无数据</font>" if not disk else
+                 f"**磁盘** `{disk['mount']}`\n"
+                 f"<font color='{load_color(disk['pct'])}'>"
+                 f"**{_fmt_mem(disk['used'])} / {_fmt_mem(disk['total'])}"
+                 f" ({disk['pct']}%)**</font>")
+    elements.append({"tag": "markdown", "content": "**🖥️ 主机总览**"})
+    elements.append(column_set_3([cpu_cell, mem_cell, disk_cell]))
+    elements.append({"tag": "hr"})
+
+    # 📦 团队容器总量
+    if containers:
+        running = sum(1 for c in containers if c["status"])
+        total_cpu = sum(c["cpu_pct"] for c in containers)
+        total_mem = sum(c["mem_used"] for c in containers)
+        peak = max(containers, key=lambda c: c["mem_pct"])
+        name_preview = " · ".join(c["short"] for c in containers[:3])
+        if len(containers) > 3:
+            name_preview += " …"
+        elements.append({"tag": "markdown",
+                          "content": "**📦 团队容器总量**"})
+        elements.append(column_set_3([
+            f"**容器数**\n**{running} / {len(containers)}** 运行中\n"
+            f"<font color='grey'>{name_preview}</font>",
+            f"**容器 CPU 合计**\n<font color='{load_color(int(total_cpu))}'>"
+            f"**{total_cpu:.1f}%**</font>\n<font color='grey'>"
+            f"跨 {len(containers)} 容器加总</font>",
+            f"**容器内存合计**\n**{_fmt_mem(total_mem)}**\n"
+            f"<font color='{load_color(int(peak['mem_pct']))}'>"
+            f"峰值 `{peak['short']}` {peak['mem_pct']:.1f}%</font>",
+        ]))
+        elements.append({"tag": "hr"})
+
+    # 👤 员工细分 Top N
+    if agents:
+        topn = agents[:9]
+        elements.append({"tag": "markdown",
+                          "content": (f"**👤 员工细分 Top {len(topn)}"
+                                       f" / 共 {len(agents)}**"
+                                       f"（按 CPU 降序）")})
+        for i in range(0, len(topn), 3):
+            row_cells = [
+                f"{_agent_emoji(a['cpu'])} **{a['agent']}**\n"
+                f"CPU `{a['cpu']:.1f}%` · Mem `{_fmt_mem(a['mem'])}`\n"
+                f"<font color='grey'>{a['location']}</font>"
+                for a in topn[i:i + 3]
+            ]
+            elements.append(column_set_3(row_cells))
+        if len(agents) > 9:
+            elements.append({"tag": "markdown",
+                              "content": (f"<font color='grey'>… 另有 "
+                                           f"{len(agents) - 9} 个员工未显示"
+                                           f"</font>")})
+        elements.append({"tag": "hr"})
+
+    # 🚨 异常告警
+    if alarms:
+        body = "\n".join(f"- <font color='red'>⚠️ {a}</font>" for a in alarms)
+        elements.append({"tag": "markdown",
+                          "content": f"**🚨 异常告警**\n{body}"})
+        elements.append({"tag": "hr"})
+
+    # Drop the trailing hr before the note footer
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    return elements
 
 
 def _handle_health(args: str, ctx: SlashContext) -> dict:
-    """Run `claudeteam health` and wrap its text output in a card.
+    """Server-load snapshot card.
 
-    Round-81: was a plain text reply; now a card. Color signals overall
-    state — `green` when no `❌` glyph appears in the output (the health
-    report's `_BAD` marker is `❌`), `yellow` when one or more `❌` lines
-    are present.
+    R166: completely re-shaped per boss-flagged "card 完全不行" feedback.
+    Was a plain-text dump of `claudeteam health`'s deploy-checks; now
+    matches `feat/messaging-fixes-block1` / `main` shape — host
+    CPU/mem/disk + docker containers + per-agent process subtree
+    rendered in column_set 3 grids with red/orange/green percentages
+    and emoji section headings. Data comes from
+    `runtime/server_metrics.collect_server_load`. Header template
+    stays purple per the older branch.
 
-    R165: body is now structured — each `claudeteam health` section
-    becomes a bold heading with an emoji, rows become bullet items,
-    `---` between sections. Closer in feel to `feat/messaging-fixes-
-    block1`'s rich /health card without porting that branch's full
-    host-metrics collector (separate work).
+    Falls back to a "无数据" cell per metric when the underlying
+    `uptime` / `free` / `df` / `docker stats` / `ps` shell-out
+    returns nothing — common inside the container on macOS Docker
+    Desktop where some host commands aren't visible.
     """
-    out = _shell(ctx, ["claudeteam", "health"], timeout=60)
-    # Health uses ❌ for hard fails and ⚠️ for warnings (see health.py
-    # _BAD / _WARN). Either should flip the card off green so the boss
-    # notices something's off without reading the body.
-    color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
-    return simple_card(
-        f"🩺 /health — 部署快照 {beijing_stamp(ctx.now)}",
-        _format_health_card_body(out),
+    from claudeteam.runtime import server_metrics
+    data = server_metrics.collect_server_load(
+        agent_set=frozenset(ctx.team_agents),
+        session=ctx.session,
+    )
+    elements = _build_server_load_elements(data)
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+        "content": (f"采集 {beijing_stamp(ctx.now)} · 数据源 uptime/"
+                    f"free/df/docker stats/ps")}]})
+    # Yellow when alarms exist, otherwise purple (matches main's branding).
+    color = "yellow" if data.get("alarms") else "purple"
+    return rich_card(
+        f"🩺 /health — 服务器负载 [{ctx.session}] {beijing_stamp(ctx.now)}",
+        elements,
         color=color,
     )
 
