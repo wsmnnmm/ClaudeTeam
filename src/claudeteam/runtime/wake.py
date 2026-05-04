@@ -49,18 +49,18 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
     return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
-# Onboarding dialogs claude pops on fresh ~/.claude.json (which is now
-# ephemeral per-container in R172.b — we dropped the host bind-mount
-# because concurrent writes corrupted it). Each dialog blocks the
-# `bypass permissions on` ready marker, so we auto-dismiss them by
-# sending Enter (accepts default highlighted choice). Settings.json
-# silent-launch flags suppress most onboarding paths but the syntax
-# theme dialog ("Choose the text style") still surfaces because its
-# state lives in ~/.claude.json which is fresh per spawn.
+# Onboarding dialogs claude pops on fresh ~/.claude.json (ephemeral
+# per-container since R172.b dropped the host bind-mount). Each dialog
+# blocks the `bypass permissions on` ready marker, so we auto-press
+# Enter to accept the default highlighted choice. Settings.json
+# silent-launch flags suppress most onboarding paths, but a few
+# dialogs ALWAYS show on a fresh state file regardless of settings.
 _FIRST_LAUNCH_DIALOG_MARKERS = (
-    "Choose the text style",      # syntax theme dialog
-    "Yes, I accept",              # bypass-permissions confirmation
-    "Bypass Permissions mode",    # bypass-permissions banner
+    "Choose the text style",                  # syntax theme picker
+    "Claude account with subscription",       # auth method picker
+    "Yes, I accept",                          # bypass-perms confirmation
+    "Bypass Permissions mode",                # bypass-perms banner
+    "Choose an option:",                      # generic onboarding prompt
 )
 
 
@@ -68,24 +68,25 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
                       capture: Callable, sleep: Callable, now: Callable) -> bool:
     """Loop `is_ready` checks until a ready marker shows up or `timeout_s`
-    elapses. R172.b: when the pane shows a claude first-launch dialog
-    (theme picker / bypass-permissions confirm), auto-press Enter to
-    accept the default highlighted choice. Without this, the dialog
-    blocks the ready marker → wait_until_ready times out → identity
-    init never injects → /team reports agents as "awaiting permission"
-    indefinitely. Same capture is reused for ready scan and dialog
-    scan so no extra tmux capture-pane call."""
+    elapses. R172.b: claude pops a chain of first-launch dialogs (theme
+    picker, auth-method picker, bypass-perms confirm). Each dialog
+    blocks the next, so we auto-press Enter every time we see ANY
+    known dialog marker, throttled to once per second so we don't
+    spam-press during a single dialog. Default-highlighted choice
+    gets accepted; the next dialog appears; we Enter again until the
+    bypass-permissions ready marker shows."""
     ready_markers = adapter.ready_markers()
     deadline = now() + timeout_s
-    dismissed = False
+    last_dismiss_at = 0.0
     while now() < deadline:
         text = capture(target, lines=80)
         if any(m in text for m in ready_markers):
             return True
-        if (not dismissed
-                and any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS)):
-            tmux.send_keys(target, "Enter")
-            dismissed = True
+        if any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                tmux.send_keys(target, "Enter")
+                last_dismiss_at = t
         sleep(poll_interval_s)
     return False
 

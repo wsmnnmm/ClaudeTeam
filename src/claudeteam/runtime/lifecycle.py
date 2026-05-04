@@ -138,7 +138,12 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
-    if wake.wait_until_ready(target, adapter, timeout_s=20):
+    # R172.b: 20s → 60s. Fresh container claude panes go through up to
+    # 3 first-launch dialogs (theme picker / auth-method picker /
+    # bypass-permissions confirm) before the ready marker appears. The
+    # poll loop auto-Enters each dialog at ~1Hz, so a 3-dialog chain
+    # plus claude's own boot time can run 30-40s. 60s gives headroom.
+    if wake.wait_until_ready(target, adapter, timeout_s=60):
         tmux.inject(target, identity.init_prompt(agent),
                     submit_keys=adapter.submit_keys())
         outcome = READY
