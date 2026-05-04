@@ -89,14 +89,18 @@ Send `/help` in the Feishu group from any account. Within ~1 second
 
 - A Feishu **interactive card**, NOT a plain message
 - Header in **blue**, title `🆘 ClaudeTeam 自定义斜杠命令`
-- Body listing every `/<cmd>` with description (lark_md formatted)
+- Body listing every `/<cmd>` with description (v2 markdown element —
+  R159 migrated from v1 `lark_md` text tag, which silently dropped
+  fenced code blocks + nested lists)
 
 `/team` → green card if all agents are 💤 idle / 🔄 working, yellow
 if any show ⚠️/🛑/❌; body has `<emoji> **<agent>**: <brief>` lines.
 
 `/health` → green card if `claudeteam health` output has no ❌/⚠️ glyph,
-yellow otherwise. Body fenced in code-block so glyph alignment carries
-through Feishu's lark_md.
+yellow otherwise. Body wrapped in a fenced code block (` ``` … ``` `)
+which v2's markdown element renders as a real grey-background code
+block — pre-R159 the lark_md text tag showed the literal triple
+backticks instead.
 
 ## When — watchdog cooldown alert
 
