@@ -24,19 +24,29 @@ from claudeteam.util import error_exit, pop_bool_flag, usage_error
 USAGE = "usage: claudeteam reidentify <agent>  |  claudeteam reidentify --all"
 
 
-def _reidentify_one(agent: str, session: str) -> bool:
+def _reidentify_one(agent: str, session: str, *,
+                    cli: str = "") -> bool:
     """Inject init prompt into one pane. Returns True on success.
 
     Per-agent failures (no pane, inject failed, unknown adapter) print
     a one-line warning and return False so the caller can tally and
     decide overall rc.
+
+    R151: optional `cli` lets the --all caller resolve adapters from a
+    single pre-loaded team.json instead of paying one disk read per
+    agent inside `adapter_for_agent`. Empty cli falls back to the
+    config-driven lookup so the single-agent error contract stays.
     """
     target = tmux.Target(session, agent)
     if not tmux.has_window(target):
         print(f"  ⏭  {agent}: no pane in session {session}")
         return False
     try:
-        adapter = adapter_for_agent(agent)
+        if cli:
+            from claudeteam.agents import get_adapter
+            adapter = get_adapter(cli)
+        else:
+            adapter = adapter_for_agent(agent)
     except KeyError as e:
         print(f"  ⚠️ {agent}: {e}")
         return False
@@ -55,10 +65,15 @@ def main(argv: list[str]) -> int:
     # Argv validation first so existing single-agent error contracts hold:
     # `reidentify` (no arg) → usage_error; `reidentify ghost` → unknown agent.
     # Round-91 swap: --all skips arg validation but still hits team.json.
+    # R151: --all path pre-loads team.json so the per-agent adapter
+    # resolution doesn't re-read it N times. Single-agent path keeps
+    # the config-driven lookup so the error contract stays.
+    agents_dict: dict = {}
     if do_all:
-        agents = config.agent_names()
-        if not agents:
+        agents_dict = config.load_team().get("agents", {})
+        if not agents_dict:
             return error_exit("❌ team.json has no agents")
+        agents = sorted(agents_dict)
     else:
         if len(rest) < 1:
             return usage_error(USAGE)
@@ -76,7 +91,10 @@ def main(argv: list[str]) -> int:
 
     if do_all:
         print(f"🔁 reidentify all ({len(agents)} agents in {session}):")
-        ok = sum(1 for a in agents if _reidentify_one(a, session))
+        ok = sum(1 for a in agents
+                 if _reidentify_one(
+                     a, session,
+                     cli=agents_dict.get(a, {}).get("cli", "claude-code")))
         print(f"reidentified {ok}/{len(agents)} agents")
         return 0 if ok == len(agents) else 1
 
