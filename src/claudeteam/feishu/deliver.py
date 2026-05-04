@@ -64,14 +64,18 @@ def _resolve_deps(adapter_lookup, tmux_inject, append_message, session) -> _Deps
 
 
 def _write_inbox(agent: str, sender: str, decision: Decision,
-                 deps: _Deps, report: DeliveryReport) -> bool:
+                 deps: _Deps, report: DeliveryReport) -> str:
+    """Returns the local_id on success, "" on failure (failure is also
+    logged to the report). R172.b: caller threads the local_id into
+    the pane-inject wrapper so the agent knows which row to mark
+    `claudeteam read` after replying."""
     try:
-        deps.append_message(agent, sender, decision.text)
+        local_id = deps.append_message(agent, sender, decision.text)
     except Exception as e:
         print(f"  ⚠️ inbox write failed for {agent}: {e}")
-        return False
+        return ""
     report.written.append(agent)
-    return True
+    return local_id or ""
 
 
 def _build_wake_args(agent: str, adapter) -> dict:
@@ -92,37 +96,44 @@ def _build_wake_args(agent: str, adapter) -> dict:
     }
 
 
-def _compose_inject_text(agent: str, decision: Decision) -> str:
+def _compose_inject_text(agent: str, decision: Decision,
+                         local_id: str = "") -> str:
     """Prepend a short routing-context header to the chat message before
     injecting it into the agent's pane.
 
     R172.b: claude in the pane treats raw injected text as a regular
     user prompt and answers IN PANE — boss-flagged 2026-05-05 because
     `@worker_cc 写一句总结` got a clean text answer in the pane but no
-    `claudeteam say` callback to chat. Wrapping the message with an
-    explicit "this is a chat message; reply via `claudeteam say`"
-    nudge primes the agent to use the right channel. For peer-to-peer
-    (sender is a known agent), the appropriate reply is `claudeteam
-    send <sender> {agent}` so we tailor the hint accordingly. Boss /
-    user messages get the chat-side hint; agent-to-agent gets the
-    send-side hint."""
+    `claudeteam say` callback to chat. The hint primes the agent to:
+      1. Reply via the correct channel (`claudeteam say` for chat-
+         originated; `claudeteam send` for peer messages).
+      2. Mark the inbox row `read` afterward (deliver knows the
+         local_id since it just appended the row) — keeps the inbox
+         from accumulating unread rows for messages that have been
+         processed."""
     sender = decision.sender or "user"
+    read_hint = (f" 完成后用 `claudeteam read {local_id}` 销 inbox。"
+                 if local_id else "")
     if sender == "user" or not sender:
         hint = (f"[来自群聊 · 发送者=user] 处理后请用 "
                 f"`claudeteam say {agent} \"<回复>\"` 回到群里，"
-                f"而不是直接回 pane。")
+                f"而不是直接回 pane。"
+                f"{read_hint}")
     else:
         hint = (f"[来自 {sender} · 同事消息] 处理后请用 "
                 f"`claudeteam send {sender} {agent} \"<回复>\"` 回 {sender}，"
-                f"或 `claudeteam say {agent} ...` 公告到群。")
+                f"或 `claudeteam say {agent} ...` 公告到群。"
+                f"{read_hint}")
     return f"{hint}\n\n{decision.text}"
 
 
 def _inject_to_pane(agent: str, decision: Decision,
-                    deps: _Deps, wake_fn: Callable | None) -> str:
+                    deps: _Deps, wake_fn: Callable | None,
+                    local_id: str = "") -> str:
     """Deliver `decision.text` to the agent's pane (wrapped with a
     routing-context hint so the agent posts replies via `claudeteam
-    say` instead of answering in pane).
+    say` instead of answering in pane). `local_id` is appended to the
+    hint so the agent knows which inbox row to mark read.
 
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
     'rate_limited'.
@@ -136,7 +147,7 @@ def _inject_to_pane(agent: str, decision: Decision,
         if wake_fn is not None and not wake.is_ready(target, adapter):
             if not wake_fn(target, adapter, **_build_wake_args(agent, adapter)):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
-        text = _compose_inject_text(agent, decision)
+        text = _compose_inject_text(agent, decision, local_id=local_id)
         ok = deps.tmux_inject(target, text, submit_keys=adapter.submit_keys())
     except Exception as e:
         print(f"  ⚠️ inject error for {agent}: {e}")
@@ -186,9 +197,11 @@ def apply(decision: Decision, *,
     sender = decision.sender or "user"
     report = DeliveryReport()
     for agent in decision.targets:
-        if not _write_inbox(agent, sender, decision, deps, report):
+        local_id = _write_inbox(agent, sender, decision, deps, report)
+        if not local_id:
             continue
-        outcome = _inject_to_pane(agent, decision, deps, wake_fn)
+        outcome = _inject_to_pane(agent, decision, deps, wake_fn,
+                                   local_id=local_id)
         getattr(report, outcome).append(agent)
     return report
 
