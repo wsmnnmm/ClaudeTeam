@@ -417,6 +417,44 @@ def test_usage_json_includes_codex_and_kimi_keys_for_those_clis():
         assert "kimi-code" not in other_names
 
 
+def test_usage_probes_codex_kimi_when_team_has_no_matching_agent():
+    """R170: even when no team agent declares cli=codex-cli/kimi-code,
+    `_build_data` opportunistically probes if the host has the cred
+    files — so a single-claude-code deployment still surfaces whether
+    Codex Pro / Kimi auth is alive."""
+    payload = {
+        "email": "x@y.z",
+        "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"},
+    }
+
+    def fake_opener(req, timeout):
+        raise OSError("no net in tests")
+
+    with _fake_home(
+            codex_auth={"tokens": {"id_token": _fake_jwt(payload)}},
+            kimi_cred={"access_token": "tok"}) as home:
+        data = _usage_mod._build_data(
+            "daily", "", {"claude-code"}, home=home, opener=fake_opener)
+    # Codex probed despite team only having claude-code
+    assert data["codex"]["ok"] is True
+    assert data["codex"]["plan"] == "Pro"
+    # Kimi probed too; opener throws so ok=False, but the section IS rendered
+    assert data["kimi"] is not None
+    assert data["kimi"]["ok"] is False
+
+
+def test_usage_skips_codex_kimi_when_no_creds_no_matching_agent():
+    """Mirror of the test above — without cred files AND without a
+    matching team agent, the sections stay null. Avoids drive-by
+    probes when there's nothing useful to query."""
+    with _fake_home() as home:
+        data = _usage_mod._build_data(
+            "daily", "", {"claude-code"}, home=home,
+            opener=lambda *a, **k: None)
+    assert data["codex"] is None
+    assert data["kimi"] is None
+
+
 def test_usage_text_renders_codex_and_kimi_sections():
     team = {"agents": {
         "manager":      {"cli": "claude-code"},

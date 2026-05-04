@@ -11,7 +11,7 @@ handlers that produce timestamped / monospace card bodies.
 R159: migrated from card v1 (`elements: [{tag:"div", text:{tag:"lark_md",
 content:...}}]`) to card v2 (`body: {elements: [{tag:"markdown",
 content:...}]}`). The v1 `lark_md` text tag did NOT render fenced code
-blocks (`\`\`\`...\`\`\``) — three-backticks showed up as literal text.
+blocks (triple-backtick fences) — three-backticks showed up as literal text.
 v2's dedicated `markdown` element renders the full GFM subset including
 fenced blocks AND nested lists, validated live in the test_a chat
 (message D `om_x100b50b5131ed13cb229d7c5f1c16b0` for fenced, E

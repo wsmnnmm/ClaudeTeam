@@ -17,7 +17,10 @@
 #   but expect the slower lark-cli round-trips noted in CLAUDE.md
 #   (project_lark_cli_slow.md memory).
 
-FROM python:3.11-slim
+# R170: bumped from 3.11 to 3.12 because kimi-cli ≥1.0 requires Python
+# ≥3.12 (older 0.34 still on 3.11 but lacks the slash-command surface
+# we need). pyproject's `requires-python = ">=3.10"` stays compatible.
+FROM python:3.12-slim
 
 # Pin apt index once; install in one layer to keep the image lean.
 # `curl` is required by @larksuite/cli's postinstall script (downloads

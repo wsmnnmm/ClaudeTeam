@@ -207,7 +207,15 @@ def _build_data(view: str, days: str, clis: set[str],
                 opener: Callable = _opener_default) -> dict:
     """Run each CLI's usage probe and return a structured record.
     Used by both the text renderer (formatted lines) and the --json
-    renderer (slash._handle_usage card)."""
+    renderer (slash._handle_usage card).
+
+    R170: codex + kimi sections render whenever EITHER
+    (a) a team agent declares `cli: codex-cli|kimi-code|kimi-cli`, OR
+    (b) the corresponding host cred file is present (~/.codex/auth.json
+    or ~/.kimi/credentials/kimi-code.json). The cred-file fallback is
+    so the `/usage` card surfaces "is my Codex Pro seat still valid"
+    even before a worker_codex pane is wired up — useful in single-CLI
+    deployments like the test_a container."""
     data: dict[str, Any] = {
         "view": view,
         "days": days or None,
@@ -225,9 +233,12 @@ def _build_data(view: str, days: str, clis: set[str],
             "output": out,
             "lines": (out or "").splitlines(),
         }
-    if "codex-cli" in clis or "codex" in clis:
+    home_dir = home or Path.home()
+    if ("codex-cli" in clis or "codex" in clis
+            or (home_dir / ".codex" / "auth.json").exists()):
         data["codex"] = _query_codex_usage(home)
-    if "kimi-code" in clis or "kimi-cli" in clis:
+    if ("kimi-code" in clis or "kimi-cli" in clis
+            or (home_dir / ".kimi" / "credentials" / "kimi-code.json").exists()):
         data["kimi"] = _query_kimi_usage(home, opener=opener)
     handled = {"claude-code", "codex-cli", "codex", "kimi-code", "kimi-cli"}
     for cli in sorted(clis):
