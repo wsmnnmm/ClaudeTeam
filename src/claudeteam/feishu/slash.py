@@ -57,7 +57,7 @@ from claudeteam.feishu.cards import (
     rich_card, simple_card,
 )
 from claudeteam.runtime import tmux
-from claudeteam.util import fmt_bytes, fmt_time_ms
+from claudeteam.util import fmt_bytes
 
 
 def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
