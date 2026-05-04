@@ -89,9 +89,14 @@ RUN mkdir -p /root/.claude \
        '  "skipDangerousModePermissionPrompt": true,' \
        '  "hasCompletedOnboarding": true,' \
        '  "permissions": {' \
-       '    "allow": ["Bash()", "Edit()", "Read()", "Write()", "Edit(.claude/)", "Write(.claude/)"]' \
+       '    "allow": ["Bash", "Edit", "Read", "Write"]' \
        '  }' \
        '}' > /root/.claude/settings.json
+# claude rejects `"Write()"` (empty parens) at startup with a Settings
+# Warning dialog — boss-provided recipe used the empty-parens form but
+# the current claude version requires either a bare verb (`"Write"`)
+# or a pattern (`"Write(<glob>)"`). Bare verbs allow ALL paths, which
+# is what the sandbox container wants anyway.
 
 # R170: install Codex CLI (OpenAI) + Kimi CLI (Moonshot AI). Same
 # pattern as claude-code: install the binaries here, mount host's
