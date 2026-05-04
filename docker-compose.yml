@@ -27,16 +27,35 @@ services:
       # instance running". RW mount needed so subscribe can claim
       # the per-app lock inside the container.
       - ${HOME}/.lark-cli:/root/.lark-cli
+      # R168: bind-mount host's claude OAuth so container reuses it
+      # without an interactive login. Mirrors `feat/messaging-fixes-
+      # block1` / `main`'s pattern (their docker-compose.yml mounts
+      # `.credentials.json` + `.claude.json` directly).
+      #
+      # On macOS host, `.credentials.json` actually lives in keychain
+      # under service `Claude Code-credentials`. The deploy step
+      # `security find-generic-password -s "Claude Code-credentials"
+      # -w > ~/.claude/.credentials.json` materialises it as a file
+      # the bind mount can pick up. Token gets refreshed by claude
+      # itself on use; volume is RW so the refresh persists back to
+      # host. Same OAuth account works for both host and container.
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
+      - ${HOME}/.claude.json:/root/.claude.json
     # FEISHU_APP_SECRET / LARKSUITE_CLI_APP_SECRET — supplied via the
     # `.env` file (gitignored) so the container's lark-cli can
     # authenticate without reaching the host's macOS keychain. Both
     # names work; setting both is harmless and forward-compat with
     # whichever lark-cli build the image bundles.
+    #
+    # ANTHROPIC_API_KEY (optional) — alternative to interactive
+    # `claude /login`; if set in .env, claude CLI uses the token
+    # directly without a login prompt.
     environment:
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
       - LARKSUITE_CLI_APP_SECRET=${LARKSUITE_CLI_APP_SECRET:-}
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - LARKSUITE_CLI_APP_ID=${LARKSUITE_CLI_APP_ID:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     network_mode: host
     tty: true
     stdin_open: true

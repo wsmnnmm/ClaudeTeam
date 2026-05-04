@@ -34,8 +34,10 @@ def _fake_send():
 
 
 def test_say_sends_to_chat_and_logs_locally():
+    """`--no-card` keeps the old text path so this test pins the
+    text-rendering format `[<agent>] <body>`."""
     with _isolated(), _fake_send() as send:
-        rc, out, _ = run_cli(["say", "manager", "hello", "world"])
+        rc, out, _ = run_cli(["say", "manager", "hello", "world", "--no-card"])
         assert rc == 0
         assert "manager → chat (message_id=om_fake)" in out
         assert send["calls"]
@@ -51,45 +53,45 @@ def test_say_sends_to_chat_and_logs_locally():
 
 def test_say_default_identity_is_bot():
     with _isolated(), _fake_send() as send:
-        run_cli(["say", "manager", "hi"])
+        run_cli(["say", "manager", "hi", "--no-card"])
         assert send["calls"][0]["as_user"] is False
 
 
 def test_say_as_user_flag():
     with _isolated(), _fake_send() as send:
-        run_cli(["say", "manager", "hi", "--as", "user"])
+        run_cli(["say", "manager", "hi", "--no-card", "--as", "user"])
         assert send["calls"][0]["as_user"] is True
 
 
 def test_say_env_var_picks_user_when_no_flag():
     with _isolated(), _fake_send() as send, \
             env_patch(CLAUDETEAM_LARK_SEND_AS="user"):
-        run_cli(["say", "manager", "hi"])
+        run_cli(["say", "manager", "hi", "--no-card"])
         assert send["calls"][0]["as_user"] is True
 
 
 def test_say_explicit_flag_overrides_env_var():
     with _isolated(), _fake_send() as send, \
             env_patch(CLAUDETEAM_LARK_SEND_AS="user"):
-        run_cli(["say", "manager", "hi", "--as", "bot"])
+        run_cli(["say", "manager", "hi", "--no-card", "--as", "bot"])
         assert send["calls"][0]["as_user"] is False
 
 
 def test_say_reply_flag_threads_through():
     with _isolated(), _fake_send() as send:
-        run_cli(["say", "manager", "hi", "--reply", "om_parent"])
+        run_cli(["say", "manager", "hi", "--no-card", "--reply", "om_parent"])
         assert send["calls"][0]["reply_to"] == "om_parent"
 
 
 def test_say_no_local_skips_log_write():
-    with _isolated(), _fake_send():
+    with _isolated(), _fake_send_card():
         run_cli(["say", "manager", "hi", "--no-local"])
         assert local_facts.list_logs("manager") == []
 
 
 def test_say_returns_one_when_chat_id_unset():
     with _isolated(chat_id=""), _fake_send():
-        rc, _, err = run_cli(["say", "manager", "hi"])
+        rc, _, err = run_cli(["say", "manager", "hi", "--no-card"])
         assert rc == 1
         assert "chat_id not set" in err
 
@@ -97,14 +99,14 @@ def test_say_returns_one_when_chat_id_unset():
 def test_say_returns_one_when_lark_returns_none():
     with _isolated(), _fake_send() as send:
         send["result"] = None
-        rc, _, err = run_cli(["say", "manager", "hi"])
+        rc, _, err = run_cli(["say", "manager", "hi", "--no-card"])
         assert rc == 1
         assert "Feishu send failed" in err
 
 
 def test_say_threads_profile():
     with _isolated(profile="prod"), _fake_send() as send:
-        run_cli(["say", "manager", "hi"])
+        run_cli(["say", "manager", "hi", "--no-card"])
         assert send["calls"][0]["profile"] == "prod"
 
 
@@ -178,15 +180,32 @@ def test_say_card_with_reply_warns_and_sends_card_anyway():
     assert "reply_to" not in st["card_calls"][0]
 
 
-def test_say_default_still_sends_text_when_no_card_flag():
-    """Backward-compat: without --card, behaviour is exactly the
-    pre-R99 text path."""
+def test_say_default_now_sends_card_after_R168():
+    """R168: default flipped — every `claudeteam say` now sends a v2
+    card (colored header per role), not plain text. Boss-flagged
+    convention for the test_a deploy: agent messages must look like
+    structured updates in chat, not raw text. Plain text path opts
+    in via the new `--no-card` flag (test below)."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "plain text msg"])
     assert rc == 0
+    assert len(st["card_calls"]) == 1
+    assert st["text_calls"] == []
+    card = st["card_calls"][0]["card"]
+    assert card["header"]["title"]["content"] == "[manager]"
+    body = card["body"]["elements"][0]["content"]
+    assert "plain text msg" in body
+
+
+def test_say_no_card_opts_back_to_plain_text():
+    """`--no-card` is the explicit escape hatch — short acks like
+    `收到` / `开始处理` can stay as plain text via this flag."""
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "manager", "收到", "--no-card"])
+    assert rc == 0
     assert len(st["text_calls"]) == 1
     assert st["card_calls"] == []
-    assert st["text_calls"][0]["text"] == "[manager] plain text msg"
+    assert st["text_calls"][0]["text"] == "[manager] 收到"
 
 
 def test_say_audit_log_failure_does_not_block_chat_send():
@@ -199,7 +218,7 @@ def test_say_audit_log_failure_does_not_block_chat_send():
 
     with _isolated(), _fake_send() as send, \
             attr_patch(local_facts, append_log=boom):
-        rc, _, err = run_cli(["say", "manager", "important message"])
+        rc, _, err = run_cli(["say", "manager", "important message", "--no-card"])
     # Chat send still succeeded despite audit failing
     assert rc == 0
     # The Feishu chat got the message

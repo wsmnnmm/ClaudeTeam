@@ -47,6 +47,21 @@ RUN apt-get update \
 RUN npm install --silent --global @larksuite/cli@latest \
     && lark-cli --version
 
+# R168: install Claude Code CLI so manager + worker_cc panes can
+# actually run an agent. Without this, the panes spawn the bash-side
+# `claude --dangerously-skip-permissions ...` command and immediately
+# get `claude: command not found` (boss saw this in /tmux output).
+#
+# Auth: token-based via ANTHROPIC_API_KEY env (passed through compose)
+# OR interactive `claude /login` once inside the container — tokens
+# persist via the /root/.claude volume so subsequent container restarts
+# pick them up automatically.
+#
+# Pinning to a fixed version keeps the smoke environment reproducible;
+# bump as needed when host operator upgrades to match.
+RUN npm install --silent --global @anthropic-ai/claude-code \
+    && claude --version
+
 WORKDIR /app
 
 # Copy only what's needed to install the package — pyproject + src.

@@ -23,7 +23,8 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 USAGE = (
     "usage: claudeteam say <agent> <message> "
-    "[--reply <message_id>] [--as user|bot] [--no-local] [--card]"
+    "[--reply <message_id>] [--as user|bot] [--no-local] "
+    "[--no-card | --card]"
 )
 
 
@@ -52,14 +53,22 @@ class _Args:
     reply_to: str = ""
     as_user: bool = False
     local: bool = True
-    as_card: bool = False
+    # R168: default flipped to True. Boss-flagged convention — every
+    # agent message in chat should be a colored-header card so the
+    # group reads as structured updates, not "raw chat-like text".
+    # `--no-card` opts back to plain text for one-line acks.
+    as_card: bool = True
 
 
 def _parse(argv: list[str]) -> _Args | None:
     if len(argv) < 2:
         return None
     rest = list(argv)
-    as_card = pop_bool_flag(rest, "--card")
+    # `--card` is now a no-op (kept for backward compat); `--no-card`
+    # flips to plain text. Both consume the flag.
+    pop_bool_flag(rest, "--card")
+    no_card = pop_bool_flag(rest, "--no-card")
+    as_card = not no_card
     no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
     as_explicit = pop_flag(rest, "--as")
