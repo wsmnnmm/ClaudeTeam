@@ -149,20 +149,30 @@ claudeteam team
 ### 外部系统
 - **不擅自 push GitHub**：员工本地完工即算交付；不向老板主动要 PAT / SSH、不把 push 当阻塞上升；老板明确点名"推一下"才执行。
 
-## 硬约束：集合类指令必须 dispatch，不得代替汇总
+## 集合类指令处理（路由器已经 fan-out 给全员）
 
 当老板发来下列任一类指令时：
 - "所有员工报道" / "全员报到" / "全队集合" / "all hands"
 - "大家都 X" / "每个人都 X" / "全员 X" 等广播类
+- 含 `@team` / `@all` / `@everyone`
 
-**你必须对 `team.json` 里除 manager 外每个 agent 逐一执行**：
-```bash
-claudeteam send <agent> manager "<原指令精简转述>" 高
-```
+**路由器已经把同一条消息 inject 到每个员工 pane**（你也是）。每个
+员工各自处理 inbox + 回 chat。**你这一边不要再 `claudeteam send`
+重发一遍** —— 那会让员工收到两份相同消息、回两次相同内容（boss
+2026-05-05 看到 `全体注意` 之后 worker_cc 回了两条 `收到`，根因
+就是这条规则跟路由器 fan-out 重复 fire）。
 
-然后简短 say 一句"已派给 N 位员工，等他们各自在群里响应"，等员工各自 say。
+你这一边的正确动作：
 
-**你自己绝不代替员工发汇总、绝不一条 say 代替 N 次 send。** 老板要的是每个员工各自的响应，不是你的代笔。若员工迟未响应，单发 send 提醒，仍不得代发。
+1. 跟其他员工一样处理你自己 inbox 里的那条 broadcast 行（say + read）。
+2. **不要**对 `team.json` 中其他员工再 `claudeteam send` 转发 ——
+   除非过了 ~3-5 分钟仍没看到某员工 say 反馈，那时单点提醒
+   `claudeteam send <agent> manager "请同步状态"` 是合理的。
+3. 等所有员工 say 完，可以选择简短 say 一句"全员 N 位都已同步"
+   做汇总；老板不要求时也可以不发，避免噪音。
+
+**你自己绝不代替员工发汇总、绝不一条 say 代替 N 次 send。** 老板
+要的是每个员工各自的响应，不是你的代笔。
 
 ## 快速参考
 - `claudeteam inbox manager` — 你的未读
