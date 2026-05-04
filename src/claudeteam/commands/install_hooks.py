@@ -1,9 +1,18 @@
 """`claudeteam install-hooks` — drop slash-command markdowns for Claude Code agents.
 
 Writes `.claude/commands/{name}.md` files at cwd so any Claude Code
-pane spawned in this directory gets `/inbox`, `/team`, `/status`,
-`/say`, `/task` slash commands wired to the corresponding `claudeteam`
-subcommand.
+pane spawned in this directory gets the matching `/<name>` slash
+command wired to the corresponding `claudeteam` subcommand. Live set
+(9 hooks as of R104):
+
+    /inbox     /team      /status    /say     /task
+    /health    /remember  /recall    /peek
+
+Hooks added since the original 5-hook list:
+- /health    R-original (operational visibility)
+- /remember  R94  durable memory write from agent pane
+- /recall    R94  durable memory read from agent pane
+- /peek      R104 5-min 巡视 cadence (replaces raw tmux capture-pane)
 
 Each markdown instructs the agent to first read its own identity.md
 (written by `agents/identity.py` on hire/start) so it knows which
