@@ -80,9 +80,31 @@ def _build_subscribe_cmd(profile: str, *,
     ]
 
 
-def _apply_with_wake(decision):
-    """Production deliver wrapper: lazy-wake panes before injecting."""
-    return _deliver_apply(decision, wake_fn=wake.wake_if_dormant)
+def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
+                          team_agents: list[str]):
+    """Build the per-event deliver wrapper with hot-path config pre-bound.
+
+    R147: chat_id / lark_profile / session / agent_names are deployment-
+    time stable — the daemon already had to read them at boot to filter
+    the subscribe stream and acquire the pidlock. Without this closure,
+    `deliver.apply` re-reads `runtime_config.json` (chat_id + profile)
+    AND `team.json` (session + agent_names) on every inbound event,
+    falling through `config.<getter>()` defaults. For a chatty deploy
+    that's 4 disk reads per message; for a hot SLASH command rebroadcast
+    it compounds across `_apply_slash`'s own getters.
+
+    Closing over the values bound at daemon startup matches reality:
+    operator changes to runtime_config.json or team.json don't propagate
+    into a running daemon today anyway (subscribe is bound to the
+    startup chat_id, the pidlock prevents a second daemon picking up
+    new config). If those values change, operator runs
+    `claudeteam down + up`.
+    """
+    def _apply_with_wake(decision):
+        return _deliver_apply(decision, wake_fn=wake.wake_if_dormant,
+                              session=session, chat_id=chat_id,
+                              profile=profile, team_agents=team_agents)
+    return _apply_with_wake
 
 
 def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
@@ -204,11 +226,22 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
 
+        # R147: bind the deployment-stable config values into apply_fn at
+        # daemon startup. session_name reads team.json the same way `chat`
+        # / `agents` already did; doing it once here removes 1-4 disk
+        # reads per inbound event from the deliver.apply hot path.
+        apply_fn = _make_apply_with_wake(
+            session=config.session_name(),
+            chat_id=chat,
+            profile=profile,
+            team_agents=agents,
+        )
+
         loop_kwargs = dict(
             team_agents=agents,
             chat_id=chat,
             default_target="manager",
-            apply_fn=_apply_with_wake,
+            apply_fn=apply_fn,
             on_progress=_on_progress,
         )
 
