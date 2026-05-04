@@ -451,20 +451,33 @@ def _summarise_ccusage_error(output: str) -> str:
     trace) down to one operator-readable line. Keeps the actual error
     message and drops the surrounding noise.
 
-    Walks `_CCUSAGE_ERROR_HINTS` in priority order so a real
-    `Error: No valid Claude data directories found` wins over the
-    `npm WARN EBADENGINE Unsupported engine` noise that typically
-    precedes it.
+    Two-pass match: first pass prefers lines that START with `Error:`
+    (the clean message ccusage prints AFTER the source-code excerpt).
+    Second pass falls back to the priority-ordered hint walk for cases
+    where the binary crashed without an Error: line.
+
+    Was a single-pass hint walk; that picked the SOURCE-CODE line of
+    the Node stack trace (e.g. `if (paths.length === 0) throw new
+    Error(\`No valid...\`)`) before the actual Error message line,
+    which rendered as a backtick-truncated red blob in the /usage
+    card (R170 saw this in the test_a chat).
     """
     if not output:
         return "ccusage 无输出"
+    # Prefer the clean `Error: …` line that ccusage prints AFTER its
+    # source-code excerpt — strip the trailing colon/period if any so
+    # only the headline phrase makes it into the 200-char window.
+    for line in output.splitlines():
+        s = line.strip()
+        if s.startswith("Error:"):
+            head = s.split("\n", 1)[0]
+            return head.rstrip(":").rstrip(".")[:200]
     low = output.lower()
     for hint in _CCUSAGE_ERROR_HINTS:
         if hint.lower() in low:
             for line in output.splitlines():
                 if hint.lower() in line.lower():
                     return line.strip()[:200]
-    # Fallback: first non-WARN line under 200 chars
     for line in output.splitlines():
         s = line.strip()
         if s and not s.lower().startswith(("npm warn", "warning:")):

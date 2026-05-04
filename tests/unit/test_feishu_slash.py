@@ -341,6 +341,33 @@ def test_usage_card_summarises_ccusage_failure_to_one_line():
     assert "EBADENGINE" not in right_content
 
 
+def test_usage_card_prefers_clean_error_line_over_source_excerpt():
+    """REGRESSION (R170): ccusage's stack trace prints the OFFENDING
+    source-code line BEFORE the clean `Error: …` line. The summariser
+    used to grab the source line first — backtick-truncated and ugly.
+    Two-pass logic now prefers the clean Error: prefix."""
+    # Use a single-line JSON payload with embedded \n so json.loads
+    # works; mimic real ccusage output: source-line with backtick first,
+    # then the clean Error: line.
+    src_line = ('\\tif (paths.length === 0) throw new Error('
+                '`No valid Claude data directories found. Please ensure...`)')
+    payload = (
+        '{"view":"daily","claude_code":{"ok":false,"rc":1,'
+        f'"output":"npm WARN ...\\n{src_line}\\n'
+        '\\t                                ^\\n\\n'
+        'Error: No valid Claude data directories found"},'
+        '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    elements = reply["body"]["elements"]
+    col_sets = [e for e in elements if e.get("tag") == "column_set"]
+    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
+    # The picked line is the clean Error: ... line, NOT the source-code
+    # line that contained `if (paths.length === 0)`. The backtick
+    # marker `\`` would crash card markdown if it leaked through.
+    assert "if (paths.length" not in right_content
+    assert "No valid Claude data directories" in right_content
+
+
 def test_usage_card_includes_other_cli_section_when_present():
     """`other_clis` from `claudeteam usage --json` (non-claude-code
     agents) render as their own section with column_set 2 rows."""

@@ -41,6 +41,13 @@ services:
       # host. Same OAuth account works for both host and container.
       - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
       - ${HOME}/.claude.json:/root/.claude.json
+      # R170: bind-mount the claude projects/ directory so ccusage can
+      # find usage logs inside the container. Without this, ccusage
+      # crashes with "No valid Claude data directories found" — the
+      # error rendered as a 200-char red Status line in the /usage
+      # card (boss-flagged). RW so the in-container claude can append
+      # session logs back to the same store.
+      - ${HOME}/.claude/projects:/root/.claude/projects
       # R170: bind-mount codex + kimi auth dirs so /usage queries can
       # call those CLIs (and the underlying providers) without an
       # interactive re-login. Codex stores ChatGPT OAuth tokens at
