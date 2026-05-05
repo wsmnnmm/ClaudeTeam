@@ -364,82 +364,11 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     )
 
 
-_CCUSAGE_TOTAL_RE = re.compile(
-    r"(?:Total|总计|合计)\s*:?\s*\$?\s*([\d.]+)", re.IGNORECASE)
-_CCUSAGE_DOLLAR_LINE_RE = re.compile(r"\$\s*([\d.]+)")
-# Priority-ordered hint phrases. The summariser walks this in order and
-# returns the first matching LINE — so a real Error: line wins over
-# the npm WARN noise that typically precedes it.
-_CCUSAGE_ERROR_HINTS = (
-    "No valid Claude data directories found",
-    "Cannot find module",
-    "MODULE_NOT_FOUND",
-    "Error:",
-    "npm error",
-    "Unsupported engine",
-)
-
-
-def _extract_ccusage_summary(output: str) -> dict | None:
-    """Pull a small structured summary out of ccusage stdout.
-
-    ccusage prints either a table (daily/monthly view) or a single
-    Total line. Either way we want to render one or two compact metric
-    rows in the card body, not a 30-line code-block dump.
-
-    Returns `{total: "$X.YZ"}` or None if no money-shaped pattern was
-    found.
-    """
-    if not output:
-        return None
-    m = _CCUSAGE_TOTAL_RE.search(output)
-    if m:
-        return {"total": f"${m.group(1)}"}
-    # Fallback: grab the LAST `$X.YZ` token in the output (often the
-    # rightmost cell of the totals row).
-    matches = _CCUSAGE_DOLLAR_LINE_RE.findall(output)
-    if matches:
-        return {"total": f"${matches[-1]}"}
-    return None
-
-
-def _summarise_ccusage_error(output: str) -> str:
-    """Boil ccusage's multi-line failure (npm WARN ... + Node stack
-    trace) down to one operator-readable line. Keeps the actual error
-    message and drops the surrounding noise.
-
-    Two-pass match: first pass prefers lines that START with `Error:`
-    (the clean message ccusage prints AFTER the source-code excerpt).
-    Second pass falls back to the priority-ordered hint walk for cases
-    where the binary crashed without an Error: line.
-
-    Was a single-pass hint walk; that picked the SOURCE-CODE line of
-    the Node stack trace (the line containing the offending
-    backtick literal inside `throw new Error(...)`) before the
-    actual Error message line, which rendered as a backtick-truncated
-    red blob in the /usage card (R170 saw this in the test_a chat).
-    """
-    if not output:
-        return "ccusage 无输出"
-    # Prefer the clean `Error: …` line that ccusage prints AFTER its
-    # source-code excerpt — strip the trailing colon/period if any so
-    # only the headline phrase makes it into the 200-char window.
-    for line in output.splitlines():
-        s = line.strip()
-        if s.startswith("Error:"):
-            head = s.split("\n", 1)[0]
-            return head.rstrip(":").rstrip(".")[:200]
-    low = output.lower()
-    for hint in _CCUSAGE_ERROR_HINTS:
-        if hint.lower() in low:
-            for line in output.splitlines():
-                if hint.lower() in line.lower():
-                    return line.strip()[:200]
-    for line in output.splitlines():
-        s = line.strip()
-        if s and not s.lower().startswith(("npm warn", "warning:")):
-            return s[:200]
-    return output.splitlines()[0].strip()[:200] if output.strip() else "(空)"
+# R173: dropped `_extract_ccusage_summary` / `_summarise_ccusage_error`
+# (and their CCUSAGE regex constants). ccusage just returned cumulative
+# cost ("Total: $X") which boss flagged as wrong — replaced by direct
+# Anthropic OAuth /usage API call (real per-window utilization). See
+# `commands/usage._query_cc_usage`.
 
 
 def _remaining_color(remaining_pct: float) -> str:
@@ -456,26 +385,33 @@ def _remaining_color(remaining_pct: float) -> str:
 def _codex_section(cx: dict) -> list:
     """Render Codex section rows for `/usage` card.
 
-    R170: Codex has no public live-usage endpoint, so we surface the
-    plan + subscription window decoded from `~/.codex/auth.json`
-    id_token JWT. That tells the boss "ChatGPT Pro valid until X" at a
-    glance — not real-time percent, but enough to flag an expired
-    seat. ok=False renders a single red font line so the failure mode
-    matches the ccusage error path."""
+    R173: shows real % consumed per limit window (5h / Weekly / etc),
+    same traffic-light layout as Kimi. Boss flagged R170's earlier
+    JWT-decode-only output as useless ("登录账号有屁用啊"). Now we
+    shell out to `codex-cli-usage` (uv-installed in container) and
+    render its lines as percent metrics. Plan stays as a top header
+    line for context. ok=False → red Status line."""
     rows: list = [{"tag": "markdown", "content": "**🟦 Codex (ChatGPT OAuth)**"}]
     if not cx.get("ok"):
         rows.append(column_set_2(
             "**Status**",
-            f"<font color='red'>Codex 状态读取失败</font> · {cx.get('note', '')}"))
+            f"<font color='red'>Codex 用量读取失败</font> · {cx.get('note', '')}"))
         return rows
-    plan = cx.get("plan") or "Unknown"
-    valid_until = cx.get("valid_until") or "未知"
-    email = cx.get("email") or ""
+    plan = cx.get("plan") or "unknown"
     rows.append(column_set_2(
-        "**Plan**",
-        f"<font color='blue'>**{plan}**</font>" + (f" · {email}" if email else "")))
-    rows.append(column_set_2(
-        "**Valid until**", f"<font color='grey'>{valid_until}</font>"))
+        "**Plan**", f"<font color='blue'>**{plan}**</font>"))
+    metrics = cx.get("metrics") or []
+    if not metrics:
+        rows.append(column_set_2(
+            "**Status**",
+            f"<font color='grey'>codex-cli-usage 跑通但没返回 % 数据</font>"))
+        return rows
+    for m in metrics:
+        color = _remaining_color(m["remaining_pct"])
+        rows.append(column_set_2(
+            f"**{m['label']}**",
+            (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
+             f"· 已用 {m['used_pct']}% · 重置 {m.get('reset', '')}")))
     return rows
 
 
@@ -534,23 +470,27 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     cc = data.get("claude_code")
     if cc is not None:
         elements.append({"tag": "markdown",
-                          "content": "**📊 Claude Code (ccusage)**"})
-        if cc.get("ok"):
-            summary = _extract_ccusage_summary(cc.get("output", ""))
-            if summary:
-                elements.append(column_set_2(
-                    "**Total**",
-                    f"<font color='blue'>**{summary['total']}**</font> "
-                    f"· view `{view}`"))
-            else:
-                elements.append(column_set_2(
-                    "**Status**",
-                    f"<font color='grey'>ccusage 跑通但没匹配到金额行</font>"))
-        else:
-            err_brief = _summarise_ccusage_error(cc.get("output", ""))
+                          "content": "**📊 Claude Code (api.anthropic.com)**"})
+        if not cc.get("ok"):
             elements.append(column_set_2(
                 "**Status**",
-                f"<font color='red'>ccusage 失败</font> · {err_brief}"))
+                f"<font color='red'>Claude usage 读取失败</font> · {cc.get('note', '')}"))
+        else:
+            metrics = cc.get("metrics") or []
+            if not metrics:
+                elements.append(column_set_2(
+                    "**Status**",
+                    f"<font color='grey'>API 跑通但没返回可解析窗口</font>"))
+            for m in metrics:
+                color = _remaining_color(m["remaining_pct"])
+                extra = m.get("extra")
+                if extra:
+                    right = (f"<font color='{color}'>**已用 {m['used_pct']}%**</font>"
+                             f" · ${extra['used']:.2f} / ${extra['cap']} {extra['ccy']}")
+                else:
+                    right = (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font>"
+                             f" · 已用 {m['used_pct']}% · 重置 {m.get('reset_iso', '')}")
+                elements.append(column_set_2(f"**{m['label']}**", right))
         elements.append({"tag": "hr"})
 
     cx = data.get("codex")

@@ -24,12 +24,18 @@ for _p in (SRC, TESTS):
         sys.path.insert(0, str(_p))
 
 
-def _discover() -> list[tuple[str, str]]:
-    return [
-        (path.stem, path.parent.name)
-        for sub in ("unit", "integration")
-        for path in sorted((ROOT / "tests" / sub).glob("test_*.py"))
-    ]
+def _discover(filt: str = "") -> list[tuple[str, str]]:
+    """Return [(stem, sub), ...]. If `filt` given, keep modules whose
+    stem contains the substring (so `python3 tests/run.py usage` runs
+    only test_commands_usage / test_*usage*). Boss-flagged 2026-05-05:
+    full suite is too slow during dev — let me filter."""
+    out = []
+    for sub in ("unit", "integration"):
+        for path in sorted((ROOT / "tests" / sub).glob("test_*.py")):
+            if filt and filt not in path.stem:
+                continue
+            out.append((path.stem, sub))
+    return out
 
 
 def _run_module(name: str, sub: str) -> tuple[int, int, list[str]]:
@@ -52,9 +58,14 @@ def _run_module(name: str, sub: str) -> tuple[int, int, list[str]]:
 
 
 def main() -> int:
+    filt = sys.argv[1] if len(sys.argv) > 1 else ""
     total_pass = total_fail = 0
     all_failures: list[str] = []
-    for name, sub in _discover():
+    modules = _discover(filt)
+    if filt and not modules:
+        print(f"no test modules match filter {filt!r}")
+        return 1
+    for name, sub in modules:
         p, f, fails = _run_module(name, sub)
         marker = "OK " if f == 0 else "FAIL"
         suffix = f", {f} failed" if f else ""

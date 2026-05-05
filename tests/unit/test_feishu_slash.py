@@ -298,11 +298,12 @@ def test_usage_view_threads_through_view_flag():
                                  "--view", "daily"]
 
 
-def test_usage_card_emits_purple_header_when_ccusage_ok():
-    """R167: matches main's /usage card branding — purple header.
-    No more blue / plain-body / fenced fallback."""
-    payload = ('{"view":"daily","claude_code":{"ok":true,"rc":0,'
-               '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
+def test_usage_card_emits_purple_header_when_cc_ok():
+    """R173: card branding stays purple when CC usage probe succeeds.
+    Header flips red on any per-CLI failure."""
+    payload = ('{"view":"daily","claude_code":{"ok":true,"metrics":['
+               '{"label":"5-hour window","used_pct":40,"remaining_pct":60,'
+               '"reset_iso":"2026-05-05T18:00:00Z"}]},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert isinstance(reply, dict)
@@ -311,55 +312,51 @@ def test_usage_card_emits_purple_header_when_ccusage_ok():
     assert "/usage" in title and "(daily)" in title
 
 
-def test_usage_card_extracts_total_from_ccusage_output():
-    """Total line surfaces with the dollar amount in blue. R172.b:
-    rendered as one markdown line per row instead of column_set."""
-    payload = ('{"view":"daily","claude_code":{"ok":true,"rc":0,'
-               '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
+def test_usage_card_renders_cc_metrics_with_traffic_light():
+    """R173: real per-window utilization replaces ccusage Total. Each
+    metric gets `**剩余 X%**` with traffic-light color (green > orange
+    > red as remaining drops)."""
+    payload = ('{"view":"daily","claude_code":{"ok":true,"metrics":['
+               '{"label":"5-hour window","used_pct":40,"remaining_pct":60,'
+               '"reset_iso":"2026-05-05T18:00:00Z"},'
+               '{"label":"7-day all models","used_pct":85,"remaining_pct":15,'
+               '"reset_iso":"2026-05-12T00:00:00Z"}]},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     blob = _all_markdown(reply)
-    assert "$1.23" in blob
-    assert "color='blue'" in blob
+    assert "5-hour window" in blob
+    assert "剩余 60%" in blob
+    assert "color='green'" in blob    # >50 remaining = green
+    assert "7-day all models" in blob
+    assert "剩余 15%" in blob
+    assert "color='red'" in blob       # ≤20 remaining = red
 
 
-def test_usage_card_summarises_ccusage_failure_to_one_line():
-    """ccusage's npm WARN + Node stack trace gets boiled down to one
-    operator-readable line in red — boss flagged the raw 30-line dump
-    as ugly. Header flips red so the failure is visible at glance."""
-    payload = ('{"view":"daily","claude_code":{"ok":false,"rc":1,'
-               '"output":"npm WARN EBADENGINE Unsupported engine\\n'
-               'npm WARN ...\\n'
-               'Error: No valid Claude data directories found\\n'
-               '   at getClaudePaths\\n"},'
+def test_usage_card_renders_cc_extra_usage_dollar_block():
+    """R173: extra_usage block (non-Max paid burst) renders as
+    `已用 X% · $used / $cap CCY` for Max-Pro pay-as-you-go visibility."""
+    payload = ('{"view":"daily","claude_code":{"ok":true,"metrics":['
+               '{"label":"Extra usage","used_pct":12,"remaining_pct":88,'
+               '"reset_iso":"","extra":{"used":3.45,"cap":50,"ccy":"USD"}}]},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    blob = _all_markdown(reply)
+    assert "Extra usage" in blob
+    assert "$3.45 / $50" in blob
+    assert "已用 12%" in blob
+
+
+def test_usage_card_marks_header_red_when_cc_failed():
+    """Auth expired / network down → ok=False with note; header flips
+    to red so boss notices in the chat title."""
+    payload = ('{"view":"daily","claude_code":{"ok":false,'
+               '"note":"access token 已过期 (2026-05-05 05:56)"},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert reply["header"]["template"] == "red"
     blob = _all_markdown(reply)
-    assert "color='red'" in blob
-    assert "ccusage 失败" in blob
-    assert "No valid Claude data directories" in blob
-    # WARN noise does NOT surface
-    assert "EBADENGINE" not in blob
-
-
-def test_usage_card_prefers_clean_error_line_over_source_excerpt():
-    """REGRESSION (R170): ccusage's stack trace prints the OFFENDING
-    source-code line BEFORE the clean `Error: …` line. The summariser
-    used to grab the source line first — backtick-truncated and ugly.
-    Two-pass logic now prefers the clean Error: prefix."""
-    src_line = ('\\tif (paths.length === 0) throw new Error('
-                '`No valid Claude data directories found. Please ensure...`)')
-    payload = (
-        '{"view":"daily","claude_code":{"ok":false,"rc":1,'
-        f'"output":"npm WARN ...\\n{src_line}\\n'
-        '\\t                                ^\\n\\n'
-        'Error: No valid Claude data directories found"},'
-        '"other_clis":[]}')
-    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    blob = _all_markdown(reply)
-    assert "if (paths.length" not in blob
-    assert "No valid Claude data directories" in blob
+    assert "Claude usage 读取失败" in blob
+    assert "已过期" in blob
 
 
 def test_usage_card_includes_other_cli_section_when_present():
@@ -386,19 +383,26 @@ def test_usage_card_renders_no_data_when_both_sections_empty():
     assert "(无数据)" in _all_markdown(reply)
 
 
-def test_usage_card_renders_codex_section_with_plan():
-    """R170: codex section surfaces plan + valid_until. R172.b: rows
-    render as `**Plan**：<value>` lines (column_set dropped)."""
+def test_usage_card_renders_codex_section_with_metrics():
+    """R173: codex section now surfaces real % consumed per limit
+    window (5h / Weekly / etc) — not just plan + email. Boss flagged
+    the R170 plan-only output as useless ('登录账号有屁用啊')."""
     payload = ('{"view":"daily","claude_code":null,'
-               '"codex":{"ok":true,"plan":"Pro",'
-               '"email":"x@example.com",'
-               '"valid_until":"2026-05-20T18:44:16+00:00"},'
+               '"codex":{"ok":true,"plan":"ChatGPT Pro","metrics":['
+               '{"label":"5h limit","used_pct":20,"remaining_pct":80,"reset":"4h"},'
+               '{"label":"Weekly limit","used_pct":35,"remaining_pct":65,"reset":"5d"}'
+               ']},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     blob = _all_markdown(reply)
     assert "🟦 Codex" in blob
-    assert "Pro" in blob
-    assert "2026-05-20" in blob
+    assert "ChatGPT Pro" in blob
+    # Per-window metrics with traffic-light colored remaining-%
+    assert "5h limit" in blob
+    assert "剩余 80%" in blob
+    assert "已用 20%" in blob
+    assert "Weekly limit" in blob
+    assert "剩余 65%" in blob
 
 
 def test_usage_card_renders_kimi_section_with_quota_metrics():

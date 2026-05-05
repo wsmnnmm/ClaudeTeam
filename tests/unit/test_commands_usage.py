@@ -40,14 +40,10 @@ def _stub_npx_present(present: bool):
 # ── happy path ──────────────────────────────────────────────────
 
 
-def test_usage_runs_ccusage_for_claude_code_agents():
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), _stub_npx_present(True), \
-            _stub_runner(rc=0, output="Day 1: 12345 tokens\nTotal: 12345"):
-        rc, out, _ = run_cli(["usage"])
-        assert rc == 0
-        assert "claude-code (via ccusage)" in out
-        assert "Day 1: 12345 tokens" in out
+# R173: ccusage-shell-out tests retired — the CC probe is now an
+# Anthropic OAuth API call (`_query_cc_usage` hits api.anthropic.com).
+# `_query_cc_usage` is covered by the new tests further below + the
+# slash card tests in test_feishu_slash.py.
 
 
 def test_usage_lists_other_clis_with_no_tool_message():
@@ -60,105 +56,6 @@ def test_usage_lists_other_clis_with_no_tool_message():
         assert rc == 0
         assert "qwen-code: no upstream usage tool" in out
         assert "gemini-cli: no upstream usage tool" in out
-
-
-def test_usage_warns_on_ccusage_failure():
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), _stub_npx_present(True), \
-            _stub_runner(rc=1, output="ccusage: not found"):
-        rc, out, _ = run_cli(["usage"])
-        assert rc == 0
-        assert "ccusage failed" in out
-        assert "ccusage: not found" in out
-
-
-def test_usage_skips_ccusage_when_npx_missing():
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), _stub_npx_present(False):
-        rc, out, _ = run_cli(["usage"])
-        assert rc == 0
-        assert "npx not on PATH" in out
-
-
-def test_usage_handles_ccusage_timeout():
-    """Regression: previously a TimeoutExpired propagated and crashed
-    `claudeteam usage` with a stack trace."""
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    saved = subprocess.run
-
-    def fake(argv, *args, **kwargs):
-        if argv[:1] == ["npx"]:
-            raise subprocess.TimeoutExpired(cmd=argv, timeout=60)
-        return saved(argv, *args, **kwargs)
-
-    with isolated_env(team=team), _stub_npx_present(True), \
-            attr_patch(subprocess, run=fake):
-        rc, out, _ = run_cli(["usage"])
-        assert rc == 0  # outer command still 0 even if ccusage failed
-        assert "ccusage timed out" in out
-
-
-def test_usage_handles_ccusage_oserror():
-    """Regression: subprocess OSError (e.g. fork failure) shouldn't crash."""
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    saved = subprocess.run
-
-    def fake(argv, *args, **kwargs):
-        if argv[:1] == ["npx"]:
-            raise OSError("fork failed")
-        return saved(argv, *args, **kwargs)
-
-    with isolated_env(team=team), _stub_npx_present(True), \
-            attr_patch(subprocess, run=fake):
-        rc, out, _ = run_cli(["usage"])
-        assert rc == 0
-        assert "ccusage exec failed" in out
-
-
-# ── flags / parsing ─────────────────────────────────────────────
-
-
-def test_usage_view_flag_threads_through():
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    captured = {}
-
-    def fake_run(view, days="", *, runner=None):
-        captured["view"] = view
-        captured["days"] = days
-        return 0, "ok"
-
-    with attr_patch(_usage_mod, _run_ccusage=fake_run), \
-            isolated_env(team=team), _stub_npx_present(True):
-        rc, _, _ = run_cli(["usage", "--view", "monthly"])
-        assert rc == 0
-        assert captured["view"] == "monthly"
-
-
-def test_usage_days_flag_passed_as_separate_argv_element():
-    """Regression: previously `--days N` was concatenated into the view
-    string and arrived as a single argv element like `"daily --days 7"`."""
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    captured = {}
-
-    def fake_runner(argv):
-        captured["argv"] = list(argv)
-
-        class R:
-            returncode = 0
-            stdout = "ok"
-            stderr = ""
-        return R()
-
-    saved_run = _usage_mod._run_ccusage
-
-    def patched_run(view, days="", *, runner=None):
-        return saved_run(view, days, runner=fake_runner)
-
-    with attr_patch(_usage_mod, _run_ccusage=patched_run), \
-            isolated_env(team=team), _stub_npx_present(True):
-        rc, _, _ = run_cli(["usage", "--days", "7"])
-        assert rc == 0
-        assert captured["argv"] == ["npx", "-y", "ccusage", "daily", "--days", "7"]
 
 
 def test_usage_rejects_unknown_view():
@@ -185,60 +82,50 @@ def test_usage_help():
 # ── --json mode ─────────────────────────────────────────────────
 
 
-def test_usage_json_dumps_structured_record_with_ccusage_output():
-    """--json should serialise the ccusage rc + lines + the other-CLI
-    notes into one machine-readable record. R170: catch-all `other_clis`
-    contains qwen/gemini/etc — codex + kimi have their own keys now."""
+def test_usage_json_includes_claude_code_section_with_metrics():
+    """R173: --json record carries `claude_code` as the new shape
+    `{ok, metrics: [...]}` from `_query_cc_usage`. ccusage-era fields
+    (rc, output, lines) gone — ok=False with `note` is the failure
+    surface now. CC probe stubbed because the live API needs OAuth
+    creds the test host doesn't provide."""
     import json as _json
+    from helpers import attr_patch
     team = {"agents": {
         "manager":      {"cli": "claude-code"},
         "worker_qwen":  {"cli": "qwen-code"},
     }}
-    with isolated_env(team=team), _stub_npx_present(True), \
-            _stub_runner(rc=0, output="Total: 7777"):
+    fake_metrics = [{"label": "5-hour window", "used_pct": 30,
+                     "remaining_pct": 70, "reset_iso": "2026-05-05T18:00:00Z"}]
+    with isolated_env(team=team), \
+            attr_patch(_usage_mod,
+                       _query_cc_usage=lambda home=None, opener=None: {
+                           "ok": True, "metrics": fake_metrics}):
         rc, out, _ = run_cli(["usage", "--json"])
         assert rc == 0
         data = _json.loads(out)
-        assert data["view"] == "daily"
-        assert data["days"] is None
         assert "claude-code" in data["clis"]
         assert "qwen-code" in data["clis"]
         assert data["claude_code"]["ok"] is True
-        assert data["claude_code"]["rc"] == 0
-        assert "Total: 7777" in data["claude_code"]["output"]
+        assert data["claude_code"]["metrics"] == fake_metrics
         qwen_entry = next(r for r in data["other_clis"] if r["cli"] == "qwen-code")
         assert "no upstream usage tool" in qwen_entry["note"]
 
 
-def test_usage_json_records_ccusage_failure_without_aborting():
-    """When ccusage exits non-zero, JSON still emits with ok=False so
-    consumers can branch on the field rather than re-parsing text."""
+def test_usage_json_records_cc_failure_without_aborting():
+    """When the CC probe fails (token expired, network down), JSON
+    still emits with ok=False + `note` so consumers branch on field."""
     import json as _json
+    from helpers import attr_patch
     team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), _stub_npx_present(True), \
-            _stub_runner(rc=1, output="ccusage: not initialised"):
+    with isolated_env(team=team), \
+            attr_patch(_usage_mod,
+                       _query_cc_usage=lambda home=None, opener=None: {
+                           "ok": False, "note": "access token 已过期"}):
         rc, out, _ = run_cli(["usage", "--json"])
-        # CLI exit is 0 — ccusage failure is data, not a CLI error
         assert rc == 0
         data = _json.loads(out)
         assert data["claude_code"]["ok"] is False
-        assert data["claude_code"]["rc"] == 1
-        assert "not initialised" in data["claude_code"]["output"]
-
-
-def test_usage_json_threads_view_and_days_into_record():
-    """--view + --days flags should appear in the JSON record so
-    consumers know what window they're looking at."""
-    import json as _json
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), _stub_npx_present(True), \
-            _stub_runner(rc=0, output="Monthly summary"):
-        rc, out, _ = run_cli(["usage", "--view", "monthly", "--days", "30",
-                              "--json"])
-        assert rc == 0
-        data = _json.loads(out)
-        assert data["view"] == "monthly"
-        assert data["days"] == "30"
+        assert "已过期" in data["claude_code"]["note"]
 
 
 # ── R170: codex + kimi probes ───────────────────────────────────
@@ -281,38 +168,65 @@ def _fake_jwt(payload: dict) -> str:
     return f"hdr.{_b64url(payload)}.sig"
 
 
-def test_codex_query_decodes_plan_from_auth_json():
-    """Happy path: auth.json has a chatgpt id_token whose payload
-    declares plan + window — surface them verbatim."""
-    payload = {
-        "email": "boss@example.com",
-        "https://api.openai.com/auth": {
-            "chatgpt_plan_type": "pro",
-            "chatgpt_subscription_active_start": "2026-04-20T18:44:16+00:00",
-            "chatgpt_subscription_active_until": "2026-05-20T18:44:16+00:00",
-        },
-    }
-    with _fake_home(codex_auth={
-            "tokens": {"id_token": _fake_jwt(payload)}}) as home:
-        result = _usage_mod._query_codex_usage(home=home)
+def _make_runner(returncode=0, stdout="", stderr=""):
+    class _R:
+        pass
+    _R.returncode = returncode
+    _R.stdout = stdout
+    _R.stderr = stderr
+    def runner(argv):
+        return _R
+    return runner
+
+
+def test_codex_query_parses_codex_cli_usage_output():
+    """R173: real path is `codex-cli-usage` subprocess. Output looks
+    like:
+        Plan: ChatGPT Pro
+        5h limit  20% resets 4h
+        Weekly limit  35% resets 5d
+    Each `<label> <pct>% resets <reset>` becomes a metric with the
+    used+remaining percent split + reset string surfaced verbatim."""
+    import shutil
+    from helpers import attr_patch
+    output = (
+        "Plan: ChatGPT Pro\n"
+        "5h limit  20% resets 4h\n"
+        "Weekly limit  35% resets 5d\n"
+    )
+    with attr_patch(shutil, which=lambda t: "/usr/local/bin/codex-cli-usage" if t == "codex-cli-usage" else None):
+        result = _usage_mod._query_codex_usage(
+            runner=_make_runner(returncode=0, stdout=output))
     assert result["ok"] is True
-    assert result["plan"] == "Pro"
-    assert result["valid_until"] == "2026-05-20T18:44:16+00:00"
-    assert result["email"] == "boss@example.com"
+    assert result["plan"] == "ChatGPT Pro"
+    labels = [m["label"] for m in result["metrics"]]
+    assert labels == ["5h limit", "Weekly limit"]
+    assert result["metrics"][0]["used_pct"] == 20
+    assert result["metrics"][0]["remaining_pct"] == 80
+    assert result["metrics"][0]["reset"] == "4h"
+    assert result["metrics"][1]["used_pct"] == 35
 
 
-def test_codex_query_returns_failure_when_auth_json_missing():
-    with _fake_home() as home:  # no .codex created
-        result = _usage_mod._query_codex_usage(home=home)
+def test_codex_query_returns_failure_when_tool_missing():
+    """R173: if codex-cli-usage isn't on PATH (host dev mac without
+    `uv tool install`), surface a clear missing-tool note."""
+    import shutil
+    from helpers import attr_patch
+    with attr_patch(shutil, which=lambda t: None):
+        result = _usage_mod._query_codex_usage(runner=_make_runner())
     assert result["ok"] is False
-    assert "auth.json" in result["note"]
+    assert "未安装" in result["note"] or "uv tool install" in result["note"]
 
 
-def test_codex_query_returns_failure_on_undecodable_token():
-    with _fake_home(codex_auth={"tokens": {"id_token": "not.a.jwt"}}) as home:
-        result = _usage_mod._query_codex_usage(home=home)
+def test_codex_query_returns_failure_on_nonzero_exit():
+    """codex-cli-usage rc != 0 → surface first non-npm-noise error line."""
+    import shutil
+    from helpers import attr_patch
+    with attr_patch(shutil, which=lambda t: "/usr/local/bin/codex-cli-usage"):
+        result = _usage_mod._query_codex_usage(
+            runner=_make_runner(returncode=1, stderr="Error: HTTP 401 unauthorized\n"))
     assert result["ok"] is False
-    assert "无法解码" in result["note"]
+    assert "HTTP 401" in result["note"] or "Error" in result["note"]
 
 
 def test_kimi_query_parses_weekly_and_window_metrics():
@@ -398,7 +312,7 @@ def test_usage_json_includes_codex_and_kimi_keys_for_those_clis():
     with isolated_env(team=team), _stub_npx_present(True), \
             _stub_runner(rc=0, output="Total: 7777"), \
             attr_patch(_usage_mod,
-                       _query_codex_usage=lambda home=None: {"ok": True, "plan": "Pro"},
+                       _query_codex_usage=lambda home=None, runner=None: {"ok": True, "plan": "Pro", "metrics": []},
                        _query_kimi_usage=lambda home=None, opener=None: {
                            "ok": True, "metrics": [
                                {"label": "Weekly limit", "used": 1,
@@ -430,15 +344,23 @@ def test_usage_probes_codex_kimi_when_team_has_no_matching_agent():
     def fake_opener(req, timeout):
         raise OSError("no net in tests")
 
+    # R173: codex query is now a subprocess shell-out to codex-cli-usage,
+    # not JWT decode. On test host (no codex-cli-usage installed) the
+    # codex section reports ok=False with "未安装" note — still rendered,
+    # which is the behavior we want.
+    import shutil
+    from helpers import attr_patch
     with _fake_home(
             codex_auth={"tokens": {"id_token": _fake_jwt(payload)}},
-            kimi_cred={"access_token": "tok"}) as home:
+            kimi_cred={"access_token": "tok"}) as home, \
+            attr_patch(shutil, which=lambda t: None):
         data = _usage_mod._build_data(
             "daily", "", {"claude-code"}, home=home, opener=fake_opener)
-    # Codex probed despite team only having claude-code
-    assert data["codex"]["ok"] is True
-    assert data["codex"]["plan"] == "Pro"
-    # Kimi probed too; opener throws so ok=False, but the section IS rendered
+    # Codex section IS produced (because cred file existed) but reports
+    # tool-missing on this test host
+    assert data["codex"] is not None
+    assert data["codex"]["ok"] is False
+    # Kimi probed too; opener throws so ok=False, section still rendered
     assert data["kimi"] is not None
     assert data["kimi"]["ok"] is False
 
@@ -464,10 +386,11 @@ def test_usage_text_renders_codex_and_kimi_sections():
     with isolated_env(team=team), _stub_npx_present(True), \
             _stub_runner(rc=0, output="Total: 1"), \
             attr_patch(_usage_mod,
-                       _query_codex_usage=lambda home=None: {
+                       _query_codex_usage=lambda home=None, runner=None: {
                            "ok": True, "plan": "Pro",
-                           "email": "x@example.com",
-                           "valid_until": "2026-05-20T00:00:00+00:00"},
+                           "metrics": [
+                               {"label": "5h limit", "used_pct": 20,
+                                "remaining_pct": 80, "reset": "4h"}]},
                        _query_kimi_usage=lambda home=None, opener=None: {
                            "ok": True, "metrics": [
                                {"label": "Weekly limit", "used": 5,
@@ -476,7 +399,8 @@ def test_usage_text_renders_codex_and_kimi_sections():
                                 "reset_iso": "2026-05-08T00:00:00Z"}]}):
         rc, out, _ = run_cli(["usage"])
         assert rc == 0
-        assert "codex (chatgpt OAuth)" in out
+        # R173: codex header changed from "(chatgpt OAuth)" → "(codex-cli-usage)"
+        assert "codex (codex-cli-usage)" in out
         assert "Plan: Pro" in out
         assert "kimi-code (api.kimi.com)" in out
         assert "Weekly limit" in out

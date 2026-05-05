@@ -3,9 +3,10 @@
 R170: every CLI we ship an adapter for now has *some* visibility:
   - claude-code → `npx ccusage <view>` (community ccusage CLI; reads
     `~/.claude/projects` logs)
-  - codex       → decode `~/.codex/auth.json` id_token JWT (chatgpt
-    OAuth) and surface plan + subscription window. There is no public
-    Codex usage endpoint, so this is plan-static, not live percent.
+  - codex       → shell out to `codex-cli-usage` (Python tool, installed
+    in container via `uv tool install`) for real % consumed per limit
+    window (5h / Weekly / etc). R173 replaced the earlier JWT-decode-
+    only path because boss flagged it as useless without real %.
   - kimi-code   → `https://api.kimi.com/coding/v1/usages` with the
     bearer token from `~/.kimi/credentials/kimi-code.json`. Returns
     weekly + 5h sliding window quotas.
@@ -23,9 +24,9 @@ formatted output.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,69 +49,173 @@ _VIEWS = ("daily", "monthly", "session", "blocks")
 
 _KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 
+# R173: Claude Max OAuth usage endpoint. Same one main's
+# `scripts/usage_snapshot.py` hits — bypasses Cloudflare on
+# claude.ai by going through api.anthropic.com with the OAuth beta
+# header. Returns JSON: five_hour / seven_day / seven_day_sonnet /
+# seven_day_opus / extra_usage. Each block has utilization (0-100)
+# + resets_at (ISO).
+_CC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+_CC_USAGE_BETA = "oauth-2025-04-20"
 
+
+def _query_cc_usage(home: Path | None = None,
+                    *, opener: Callable = None) -> dict:
+    """Hit Claude Max's `/api/oauth/usage` for real per-window
+    utilization (5h / 7d / Sonnet / Opus / Extra) — boss flagged the
+    earlier `npx ccusage Total: $X` dump as just cumulative cost,
+    NOT actual quota usage. Mirrors main's `scripts/usage_snapshot.py`.
+
+    Returns `{ok, metrics: [{label, used_pct, remaining_pct, reset_iso,
+    extra: {used,cap,ccy} optional}]}` on success or `{ok: false, note}`
+    on failure. Token comes from `~/.claude/.credentials.json`."""
+    if opener is None:
+        opener = _opener_default
+    cred_path = (home or Path.home()) / ".claude" / ".credentials.json"
+    try:
+        oauth = json.loads(cred_path.read_text())["claudeAiOauth"]
+    except FileNotFoundError:
+        return {"ok": False, "note": f"{cred_path} 不存在；运行 claude /login"}
+    except (OSError, ValueError, KeyError) as e:
+        return {"ok": False, "note": f"读取 {cred_path} 失败: {e}"}
+    token = oauth.get("accessToken", "")
+    expires_ms = oauth.get("expiresAt", 0)
+    import time as _time
+    if expires_ms and expires_ms < int(_time.time() * 1000):
+        return {"ok": False,
+                "note": f"access token 已过期 ({_time.strftime('%Y-%m-%d %H:%M', _time.localtime(expires_ms/1000))})；"
+                        f"刷新 keychain 或 watchdog 自动 refresh"}
+    if not token:
+        return {"ok": False, "note": "credentials.json 缺少 accessToken"}
+
+    req = urllib_request.Request(_CC_USAGE_URL, headers={
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": _CC_USAGE_BETA,
+        "Accept": "application/json",
+    })
+    try:
+        with opener(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except urllib_error.HTTPError as e:
+        return {"ok": False, "note": f"Claude usage HTTP {e.code}: {e.reason}"}
+    except (urllib_error.URLError, OSError, ValueError) as e:
+        return {"ok": False, "note": f"Claude usage 请求失败: {e}"}
+
+    metrics: list[dict] = []
+    for label, key in (
+        ("5-hour window", "five_hour"),
+        ("7-day all models", "seven_day"),
+        ("7-day Sonnet", "seven_day_sonnet"),
+        ("7-day Opus", "seven_day_opus"),
+    ):
+        block = data.get(key) or {}
+        util = block.get("utilization")
+        if util is None:
+            continue
+        used_pct = int(round(float(util)))
+        metrics.append({
+            "label": label,
+            "used_pct": used_pct,
+            "remaining_pct": max(0, min(100, 100 - used_pct)),
+            "reset_iso": block.get("resets_at", ""),
+        })
+    extra = data.get("extra_usage") or {}
+    if extra.get("is_enabled"):
+        used = float(extra.get("used_credits", 0) or 0)
+        cap = float(extra.get("monthly_limit", 0) or 0)
+        ccy = extra.get("currency", "USD")
+        util = extra.get("utilization")
+        used_pct = int(round(float(util))) if util is not None else 0
+        metrics.append({
+            "label": "Extra usage",
+            "used_pct": used_pct,
+            "remaining_pct": max(0, min(100, 100 - used_pct)),
+            "reset_iso": "",
+            "extra": {"used": used, "cap": cap, "ccy": ccy},
+        })
+    if not metrics:
+        return {"ok": False, "note": "Claude usage API 没返回可解析窗口"}
+    return {"ok": True, "metrics": metrics}
+
+
+# Back-compat: keep _run_ccusage as a no-op that signals deprecation,
+# in case anyone still imports it. Real CC usage now goes via
+# `_query_cc_usage` above.
 def _run_ccusage(view: str, days: str = "",
                  *, runner: Callable | None = None) -> tuple[int, str]:
-    """Invoke ccusage via npx and return (rc, combined_output)."""
+    """DEPRECATED in R173. ccusage only returns cumulative cost
+    ('Total: $X') — boss flagged this as wrong-data. Real quota %
+    comes from `_query_cc_usage` (Anthropic OAuth API). Kept only so
+    older callers get a clear deprecation note rather than a NameError."""
+    return 1, "(R173: ccusage replaced by _query_cc_usage / api.anthropic.com)"
+
+
+_CODEX_USAGE_RE = re.compile(
+    r"(?P<label>[\w \-()]+?)\s+(?P<pct>\d+(?:\.\d+)?)%\s+resets\s+(?P<reset>\S+)",
+    re.IGNORECASE,
+)
+
+
+def _query_codex_usage(home: Path | None = None,
+                       *, runner: Callable | None = None) -> dict:
+    """Shell out to `codex-cli-usage` for real % consumed (R173 fix).
+
+    Earlier R170 only decoded `~/.codex/auth.json` JWT and surfaced
+    plan + email + valid_until — boss flagged 2026-05-05 as useless
+    ("登录账号有屁用啊"). Real usage requires the `codex-cli-usage`
+    Python tool (installed in container via `uv tool install`,
+    symlinked to /usr/local/bin), which queries OpenAI's actual
+    quota endpoints and prints lines like:
+        Plan: ChatGPT Pro
+        5h limit  20% resets 4h
+        Weekly limit  35% resets 5d
+
+    Each `<label> <pct>% resets <reset>` line becomes a metric with
+    used_pct + remaining_pct so the /usage card renders the same
+    traffic-light layout as Claude Code / Kimi.
+
+    Returns `{ok, plan, metrics: [{label, used_pct, remaining_pct,
+    reset}]}` on success, `{ok: false, note}` on failure.
+    """
     if runner is None:
-        runner = lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    if shutil.which("npx") is None:
-        return 1, "(npx not on PATH; install Node.js to use ccusage)"
-    argv = ["npx", "-y", "ccusage", view]
-    if days:
-        argv += ["--days", days]
+        runner = lambda argv: subprocess.run(
+            argv, capture_output=True, text=True, timeout=15)
+    if shutil.which("codex-cli-usage") is None:
+        return {"ok": False, "note": "codex-cli-usage 未安装；容器需 `uv tool install codex-cli-usage`"}
     try:
-        r = runner(argv)
+        r = runner(["codex-cli-usage"])
     except subprocess.TimeoutExpired:
-        return 1, "(ccusage timed out after 60s)"
+        return {"ok": False, "note": "codex-cli-usage 超时（15s）"}
     except OSError as e:
-        return 1, f"(ccusage exec failed: {e})"
-    out = (r.stdout or "") + (r.stderr or "")
-    return r.returncode, out
+        return {"ok": False, "note": f"codex-cli-usage exec 失败: {e}"}
+    if r.returncode != 0:
+        out = (r.stderr or "") + (r.stdout or "")
+        first_err = next(
+            (ln for ln in out.splitlines()
+             if ln.strip() and not ln.startswith("npm")),
+            "未知错误")
+        return {"ok": False, "note": f"codex-cli-usage 失败: {first_err.strip()[:140]}"}
 
-
-def _decode_jwt_payload(token: str) -> dict | None:
-    """Return the payload dict of a JWT, or None if undecodable.
-
-    Signature is NOT verified — we only inspect plan info that the
-    issuer signs but we trust because the file came from disk."""
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return None
-        body = parts[1] + "=" * (-len(parts[1]) % 4)
-        return json.loads(base64.urlsafe_b64decode(body))
-    except Exception:
-        return None
-
-
-def _query_codex_usage(home: Path | None = None) -> dict:
-    """Read `~/.codex/auth.json` and surface plan + window. There is
-    no public Codex usage endpoint we can hit, so this returns plan
-    metadata only — sufficient for "is the subscription still valid".
-
-    Returns `{ok, plan, valid_until, valid_from, email, note}` on
-    success, or `{ok: false, note}` describing why we couldn't read
-    plan info."""
-    auth_path = (home or Path.home()) / ".codex" / "auth.json"
-    try:
-        data = json.loads(auth_path.read_text())
-    except FileNotFoundError:
-        return {"ok": False, "note": f"{auth_path} 不存在；运行 `codex login` 完成 OAuth"}
-    except (OSError, ValueError) as e:
-        return {"ok": False, "note": f"读取 {auth_path} 失败：{e}"}
-    token = (data.get("tokens") or {}).get("id_token") or ""
-    payload = _decode_jwt_payload(token)
-    if not payload:
-        return {"ok": False, "note": "auth.json 中 id_token 无法解码"}
-    chat = payload.get("https://api.openai.com/auth", {}) or {}
-    plan = chat.get("chatgpt_plan_type") or "unknown"
+    plan = ""
+    metrics: list[dict] = []
+    for line in (r.stdout or "").splitlines():
+        s = line.strip()
+        if s.startswith("Plan:"):
+            plan = s.split(":", 1)[1].strip()
+            continue
+        m = _CODEX_USAGE_RE.search(s)
+        if m:
+            used_pct = int(round(float(m.group("pct"))))
+            metrics.append({
+                "label": m.group("label").strip(),
+                "used_pct": used_pct,
+                "remaining_pct": max(0, min(100, 100 - used_pct)),
+                "reset": m.group("reset"),
+            })
     return {
         "ok": True,
-        "plan": str(plan).capitalize(),
-        "valid_from": chat.get("chatgpt_subscription_active_start", ""),
-        "valid_until": chat.get("chatgpt_subscription_active_until", ""),
-        "email": payload.get("email", ""),
+        "plan": plan or "unknown",
+        "metrics": metrics,
     }
 
 
@@ -226,13 +331,11 @@ def _build_data(view: str, days: str, clis: set[str],
         "other_clis": [],
     }
     if "claude-code" in clis:
-        rc, out = _run_ccusage(view, days)
-        data["claude_code"] = {
-            "rc": rc,
-            "ok": rc == 0,
-            "output": out,
-            "lines": (out or "").splitlines(),
-        }
+        # R173: real per-window utilization via Anthropic OAuth API
+        # (api.anthropic.com/api/oauth/usage). Replaces the older
+        # `npx ccusage <view>` shell-out which only returned cumulative
+        # cost, not actual quota %. Mirrors main's usage_snapshot.
+        data["claude_code"] = _query_cc_usage(home, opener=opener)
     home_dir = home or Path.home()
     if ("codex-cli" in clis or "codex" in clis
             or (home_dir / ".codex" / "auth.json").exists()):
@@ -252,23 +355,28 @@ def _emit_text(data: dict) -> None:
     print(f"━━ usage ({data['view']}) ━━")
     cc = data.get("claude_code")
     if cc is not None:
-        print("\nclaude-code (via ccusage):")
+        print("\nclaude-code (api.anthropic.com /usage):")
         if not cc["ok"]:
-            print("  ⚠️  ccusage failed:")
-            for line in cc["lines"]:
-                print(f"    {line}")
+            print(f"  ⚠️  {cc.get('note', 'unknown error')}")
         else:
-            for line in cc["lines"]:
-                print(f"  {line}")
+            for m in cc.get("metrics", []):
+                extra = m.get("extra")
+                if extra:
+                    print(f"  {m['label']}: 已用 {m['used_pct']}% · "
+                          f"${extra['used']:.2f} / ${extra['cap']} {extra['ccy']}")
+                else:
+                    print(f"  {m['label']}: 已用 {m['used_pct']}% · "
+                          f"剩余 {m['remaining_pct']}% · 重置 {m.get('reset_iso', '')}")
     cx = data.get("codex")
     if cx is not None:
-        print("\ncodex (chatgpt OAuth):")
+        print("\ncodex (codex-cli-usage):")
         if not cx["ok"]:
             print(f"  ⚠️  {cx['note']}")
         else:
-            print(f"  Plan: {cx['plan']}  ({cx.get('email', '')})")
-            if cx.get("valid_until"):
-                print(f"  Valid until: {cx['valid_until']}")
+            print(f"  Plan: {cx['plan']}")
+            for m in cx.get("metrics", []):
+                print(f"  {m['label']}: 已用 {m['used_pct']}% · "
+                      f"剩余 {m['remaining_pct']}% · 重置 {m.get('reset', '')}")
     km = data.get("kimi")
     if km is not None:
         print("\nkimi-code (api.kimi.com):")

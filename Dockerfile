@@ -120,6 +120,20 @@ RUN npm install --silent --global @openai/codex \
 RUN pip install --no-cache-dir kimi-cli \
     && kimi --version
 
+# R173: install `uv` so we can pull `codex-cli-usage` (and gemini /
+# kimi sister tools) — these are the only way to get real usage
+# percentages from Codex (boss-flagged 2026-05-05: showing the OAuth
+# email + plan + valid-until is "登录账号有屁用" — useless without
+# real % consumed). Mirrors main's Dockerfile pattern: install via
+# `uv tool install` then symlink the venv bin into /usr/local/bin so
+# the subprocess shell-out from feishu/slash._handle_usage finds it
+# on PATH without needing $HOME/.local/bin in PATH at runtime.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && export PATH="$HOME/.local/bin:$PATH" \
+    && uv tool install codex-cli-usage \
+    && ln -sf /root/.local/share/uv/tools/codex-cli-usage/bin/codex-cli-usage /usr/local/bin/codex-cli-usage \
+    && codex-cli-usage --help > /dev/null
+
 WORKDIR /app
 
 # Copy only what's needed to install the package — pyproject + src.
