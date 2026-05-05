@@ -190,11 +190,31 @@ def _query_codex_usage(home: Path | None = None,
         return {"ok": False, "note": f"codex-cli-usage exec 失败: {e}"}
     if r.returncode != 0:
         out = (r.stderr or "") + (r.stdout or "")
-        first_err = next(
-            (ln for ln in out.splitlines()
-             if ln.strip() and not ln.startswith("npm")),
-            "未知错误")
-        return {"ok": False, "note": f"codex-cli-usage 失败: {first_err.strip()[:140]}"}
+        # Prefer the last meaningful exception line (e.g.
+        # `urllib.error.HTTPError: HTTP Error 403: Forbidden`) over
+        # the first noisy "Traceback ..." or "  File ..." frame.
+        # Walk lines bottom-up; pick the first that looks like an
+        # actual error — has ":" but isn't a `File "..."` frame and
+        # isn't the bare "Traceback (most recent call last):" header.
+        err_line = ""
+        for ln in reversed(out.splitlines()):
+            s = ln.strip()
+            if (s and ":" in s
+                    and not s.startswith("File ")
+                    and not s.startswith("^")
+                    and "most recent call last" not in s):
+                err_line = s
+                break
+        if not err_line:
+            err_line = next(
+                (ln.strip() for ln in out.splitlines() if ln.strip()),
+                "未知错误")
+        # 403 from OpenAI's usage endpoint is a known container-side
+        # auth issue (main's docs: codex tokens get IP-pinned). Add
+        # a hint so boss knows to `docker compose exec ... codex login`.
+        if "403" in err_line:
+            err_line += " · 容器内 codex 可能需重新 login"
+        return {"ok": False, "note": f"codex-cli-usage: {err_line[:160]}"}
 
     plan = ""
     metrics: list[dict] = []
