@@ -18,10 +18,11 @@ def test_render_manager_uses_manager_template():
     assert "manager" in text
     # Core management rules from main's manager.identity.md
     assert "管理分发铁律" in text
-    # R172.b: rule reworded — router fan-outs already handle broadcasts;
-    # manager's job is now to NOT re-dispatch (avoids duplicate replies).
-    assert "集合类指令" in text
-    assert "路由器已经" in text  # explains why no re-dispatch
+    # R174: manager is the sole interface to boss; all routing is
+    # 老板 → manager → claudeteam send → workers. The identity now
+    # spells out the dispatch flow + visibility into worker say replies.
+    assert "唯一接口" in text
+    assert "claudeteam send" in text
     # Argument-order contract carried over from rebuild's earlier version
     assert "claudeteam send <recipient> <sender>" in text
 

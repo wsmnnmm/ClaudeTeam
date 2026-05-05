@@ -161,18 +161,19 @@ def test_human_message_lands_in_manager_inbox_and_pane():
 # ── Scenario B: @-mention worker_codex ───────────────────────────
 
 
-def test_mention_routes_to_codex_with_m_enter_first():
+def test_mention_now_routes_to_manager_only_r174():
+    """R174: `@worker_codex review` from boss no longer fans out to
+    codex directly — it goes to manager, who decides whether to
+    dispatch via `claudeteam send`."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_mention_1", "ou_user", "@worker_codex review")
         _run_lines([line])
-        # codex got it, manager did not
-        codex_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:worker_codex"]
-        assert len(codex_inj) == 1
         manager_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:manager"]
-        assert manager_inj == []
-
-        # Codex submits with M-Enter first per its adapter
-        assert codex_inj[0]["submit_keys"][0] == "M-Enter"
+        codex_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:worker_codex"]
+        assert len(manager_inj) == 1
+        assert codex_inj == []  # router doesn't fan out
+        # @-mention text preserved verbatim for manager to read
+        assert "@worker_codex" in manager_inj[0]["text"]
 
 
 # ── Scenario C: dedup ────────────────────────────────────────────
@@ -208,67 +209,59 @@ def test_message_from_other_chat_is_ignored():
 
 
 def test_mixed_traffic_classifies_each_event_correctly():
+    """R174: ALL human messages → manager (`@worker_X` is now content,
+    not routing). 3 handled events all land in manager's inbox."""
     with _isolated(), _fake_inject() as inj:
         events = [
             _ndjson_event("om_1", "ou_user", "task A"),                  # → manager
-            _ndjson_event("om_2", "ou_user", "@worker_kimi handle B"),    # → worker_kimi
+            _ndjson_event("om_2", "ou_user", "@worker_kimi handle B"),    # → manager (was kimi)
             _ndjson_event("om_3", "ou_user", ""),                        # empty → drop
             _ndjson_event("om_4", "ou_bot", "self-talk"),                # bot_self
             _ndjson_event("om_1", "ou_user", "duplicate of #1"),         # dedup
             "not-json",                                                  # bad_json
-            _ndjson_event("om_5", "ou_user", "@worker_kimi @worker_codex"),  # → both
+            _ndjson_event("om_5", "ou_user", "@worker_kimi @worker_codex"),  # → manager
         ]
         stats = _run_lines(events, bot_id="ou_bot")
-        assert stats.handled == 3  # om_1, om_2, om_5
-        assert stats.dropped == 4  # empty, bot_self, dedup, bad_json
+        assert stats.handled == 3
+        assert stats.dropped == 4
 
-        # inbox: manager (om_1) + kimi (om_2 + om_5) + codex (om_5)
-        assert len(local_facts.list_messages("manager")) == 1
-        assert len(local_facts.list_messages("worker_kimi")) == 2
-        assert len(local_facts.list_messages("worker_codex")) == 1
-
-
-# ── Scenario F: BROADCAST fans out to non-sender agents ──────────
+        # All 3 handled events route to manager; workers get nothing
+        # from the router (manager dispatches via send, not tested here).
+        assert len(local_facts.list_messages("manager")) == 3
+        assert len(local_facts.list_messages("worker_kimi")) == 0
+        assert len(local_facts.list_messages("worker_codex")) == 0
 
 
-def test_broadcast_token_at_team_fans_out_to_all_workers():
-    """`@team` from a human reaches every team agent's inbox + pane.
-    Sender is unknown (human), so all 3 team_agents get the message."""
+# ── Scenario F: R174 — broadcast triggers route to manager only ───
+
+
+def test_at_team_routes_to_manager_only_r174():
+    """R174: `@team` from boss → manager only. Manager parses the
+    intent and decides whether to fan-out via `claudeteam send` per
+    worker. Workers get nothing from the router for this event."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_bcast_1", "ou_user", "@team standup at 3pm")
         stats = _run_lines([line])
         assert stats.handled == 1
+        assert len(local_facts.list_messages("manager")) == 1
+        assert local_facts.list_messages("worker_codex") == []
+        assert local_facts.list_messages("worker_kimi") == []
+        # Manager's pane received exactly one inject
+        manager_inj = [c for c in inj["calls"]
+                        if c["target"] == "SmokeTeam:manager"]
+        assert len(manager_inj) == 1
+        assert "@team" in manager_inj[0]["text"]
 
-        for agent in _DEFAULT_AGENTS:
-            assert len(local_facts.list_messages(agent)) == 1, (
-                f"{agent} should have 1 inbox row from broadcast")
-            agent_inj = [c for c in inj["calls"]
-                         if c["target"] == f"SmokeTeam:{agent}"]
-            assert len(agent_inj) == 1, (
-                f"{agent} pane should have 1 inject from broadcast")
 
-
-def test_broadcast_chinese_quanti_prefix_routes_same_way():
-    """`全体X` Chinese broadcast trigger — same fanout as @team."""
+def test_chinese_quanti_prefix_routes_to_manager_only_r174():
+    """`全体X` from boss → manager only (was BROADCAST in R172.b,
+    now ROUTE per R174)."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_bcast_2", "ou_user", "全体注意：今晚封版")
         _run_lines([line])
         assert len(local_facts.list_messages("manager")) == 1
-        assert len(local_facts.list_messages("worker_codex")) == 1
-        assert len(local_facts.list_messages("worker_kimi")) == 1
-
-
-def test_broadcast_from_known_agent_excludes_sender():
-    """If [worker_codex] @team broadcasts, codex's own inbox shouldn't
-    receive a copy — broadcast targets non-sender agents."""
-    with _isolated(), _fake_inject() as inj:
-        line = _ndjson_event("om_bcast_3", "ou_user",
-                             "[worker_codex] @team status sync")
-        _run_lines([line])
-        # manager + kimi got it; codex did not
-        assert len(local_facts.list_messages("manager")) == 1
-        assert len(local_facts.list_messages("worker_kimi")) == 1
         assert local_facts.list_messages("worker_codex") == []
+        assert local_facts.list_messages("worker_kimi") == []
 
 
 # ── Scenario G: SLASH dispatches at router level (zero LLM) ──────
@@ -403,10 +396,12 @@ def test_image_with_at_mention_caption_routes_to_mentioned_worker():
 
 def test_lazy_pane_wake_fn_invoked_then_inject_proceeds():
     """When deliver.apply is wired with a wake_fn (production: the
-    router daemon passes wake.wake_if_dormant), an inbound message to
-    a lazy pane should trigger the wake before the inject. Verifies
-    wake_fn was called with the right kwargs (spawn_cmd, init_msg,
-    on_woken) and that the inject still happens after."""
+    router daemon passes wake.wake_if_dormant), a Decision that targets
+    a lazy worker should trigger the wake before the inject. R174:
+    router only routes to manager from chat — but `claudeteam send`
+    + watchdog respawn paths still construct ROUTE Decisions targeting
+    workers directly, so this still matters. Verify wake_fn fires."""
+    from claudeteam.feishu.router import Action, Decision
     wake_calls = []
 
     def fake_wake(target, adapter, *, spawn_cmd, init_msg, on_woken):
@@ -418,15 +413,12 @@ def test_lazy_pane_wake_fn_invoked_then_inject_proceeds():
         on_woken()  # simulate the lazy pane coming alive
         return True
 
-    def apply_with_wake(decision):
-        return apply(decision, wake_fn=fake_wake)
-
     with _isolated(), _fake_inject() as inj:
-        line = _ndjson_event("om_lazy_1", "ou_user", "@worker_kimi wake up")
-        subscribe.process_lines(
-            [line], team_agents=_DEFAULT_AGENTS, chat_id="oc_smoke",
-            apply_fn=apply_with_wake,
+        decision = Decision(
+            action=Action.ROUTE, targets=["worker_kimi"], sender="manager",
+            text="wake up", msg_id="om_lazy_1",
         )
+        apply(decision, wake_fn=fake_wake)
         # wake_fn was called with the right shape
         assert len(wake_calls) == 1
         assert wake_calls[0]["target"] == "SmokeTeam:worker_kimi"
@@ -457,15 +449,17 @@ def test_rate_limited_pane_keeps_inbox_skips_inject():
         # Only worker_codex is rate-limited; others are clear
         return target.window == "worker_codex"
 
+    from claudeteam.feishu.router import Action, Decision
     with _isolated(), _fake_inject() as inj, attr_patch(
             _wake, is_rate_limited=fake_rate_limited):
-        events = [
-            # @ codex (rate-limited) → inbox written, inject skipped
-            _ndjson_event("om_rl_1", "ou_user", "@worker_codex urgent"),
-            # @ kimi (clear) → both inbox + inject happen
-            _ndjson_event("om_rl_2", "ou_user", "@worker_kimi do this"),
-        ]
-        _run_lines(events)
+        # R174: routes from chat all go to manager, but peer dispatch
+        # (manager → worker via `claudeteam send`) still constructs
+        # ROUTE Decisions targeting workers. Build them directly so we
+        # can exercise the rate-limit branch on a worker target.
+        apply(Decision(action=Action.ROUTE, targets=["worker_codex"],
+                       sender="manager", text="urgent", msg_id="om_rl_1"))
+        apply(Decision(action=Action.ROUTE, targets=["worker_kimi"],
+                       sender="manager", text="do this", msg_id="om_rl_2"))
 
         # codex: inbox YES, inject NO
         assert len(local_facts.list_messages("worker_codex")) == 1

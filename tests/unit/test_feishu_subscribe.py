@@ -120,7 +120,11 @@ def test_bot_self_messages_are_dropped():
     assert "bot_self" in stats.drops_by_reason
 
 
-def test_mention_routes_to_specific_worker():
+def test_human_message_routes_to_manager_r174():
+    """R174: human chat messages always route to manager — even
+    those with `@worker_X` text. Manager parses intent and dispatches
+    via `claudeteam send`. Verifies the subscribe→classify→apply
+    chain emits a Decision targeting only manager."""
     applied = []
     stats = process_lines(
         _ndjson(_wrapped("om_1", "oc_team", "ou_user", "@worker_codex review")),
@@ -129,7 +133,7 @@ def test_mention_routes_to_specific_worker():
         apply_fn=applied.append,
     )
     assert stats.handled == 1
-    assert applied[0].targets == ["worker_codex"]
+    assert applied[0].targets == ["manager"]
 
 
 def test_progress_callback_failure_does_not_kill_loop():
@@ -287,7 +291,8 @@ def test_normalises_real_lark_cli_compact_wire_format():
     )
     assert stats.handled == 1, f"expected 1 handled, got drops {dict(stats.drops_by_reason)}"
     assert applied[0].text == "[boss] @worker_codex hello round-trip"
-    assert applied[0].targets == ["worker_codex"]
+    # R174: human messages → manager regardless of @-mention
+    assert applied[0].targets == ["manager"]
     assert applied[0].msg_id == "om_x100b50536a8a94a0c457f151f14c25b"
 
 

@@ -83,66 +83,55 @@ def test_default_target_can_be_overridden():
     assert d.targets == ["worker_cc"]
 
 
-# ── ROUTE: @-mentions ─────────────────────────────────────────────
+# ── R174: ALL human routes go to manager (mentions are text, not routes) ──
 
 
-def test_human_at_mention_routes_to_mentioned_agent():
+def test_human_at_mention_still_routes_only_to_manager():
+    """R174: `@worker_codex review this` from boss — `@worker_codex` is
+    text content for manager to parse, NOT a routing instruction.
+    Manager decides whether to dispatch via `claudeteam send`."""
     d = classify_event(_ev(text="@worker_codex review this"), team_agents=_AGENTS)
     assert d.action is Action.ROUTE
-    assert d.targets == ["worker_codex"]
+    assert d.targets == ["manager"]
     assert d.sender == ""  # human
 
 
-def test_multiple_mentions_preserve_order_and_dedupe():
+def test_multiple_mentions_still_routes_only_to_manager():
     d = classify_event(
         _ev(text="@worker_cc and @worker_codex and @worker_cc"),
         team_agents=_AGENTS,
     )
-    assert d.targets == ["worker_cc", "worker_codex"]
+    assert d.targets == ["manager"]
 
 
-def test_mentions_of_unknown_names_are_ignored_falling_to_default():
+def test_mentions_of_unknown_names_routes_to_manager():
     d = classify_event(_ev(text="hey @stranger please help"), team_agents=_AGENTS)
-    assert d.targets == ["manager"]  # only @-mentions matching team count
-
-
-def test_agent_at_mention_excludes_sender_from_targets():
-    """`[worker_cc] @worker_cc reminding myself` shouldn't loop the sender."""
-    d = classify_event(
-        _ev(text="[worker_cc] @worker_cc and @worker_codex"),
-        team_agents=_AGENTS,
-    )
-    assert d.sender == "worker_cc"
-    assert d.targets == ["worker_codex"]
+    assert d.targets == ["manager"]
 
 
 # ── ROUTE: agent-tagged sender ────────────────────────────────────
 
 
-def test_agent_prefix_is_stripped_from_text():
+def test_agent_prefix_with_no_target_drops():
+    """`[worker_codex] @manager status update` → still drops as
+    `agent_no_target` (this is the legacy `[<agent>]` plain-text path,
+    largely dead since `claudeteam say` posts cards now). The card
+    path goes through the bot_id branch instead."""
     d = classify_event(
         _ev(text="[worker_codex] @manager status update"),
         team_agents=_AGENTS,
     )
     assert d.sender == "worker_codex"
-    assert d.targets == ["manager"]
-    assert d.text.startswith("@manager status update")
+    assert d.action is Action.DROP
+    assert d.reason == "agent_no_target"
 
 
-def test_agent_prefix_with_unknown_name_does_not_match():
-    """`[stranger] hi` is treated as plain text from a human."""
+def test_agent_prefix_with_unknown_name_routes_to_manager():
+    """`[stranger] hi` is treated as plain text from a human → manager."""
     d = classify_event(_ev(text="[stranger] hi"), team_agents=_AGENTS)
     assert d.sender == ""
     assert d.targets == ["manager"]
     assert d.text == "[stranger] hi"
-
-
-def test_at_mention_alternative_prefix_form():
-    d = classify_event(_ev(text="@worker_cc: do the thing"), team_agents=_AGENTS)
-    # `@worker_cc:` matched as sender (test our regex's prefix flexibility)
-    # or as a mention — verify result regardless
-    assert d.action is Action.ROUTE
-    assert "worker_cc" in d.targets or d.sender == "worker_cc"
 
 
 # ── seen_msg_ids interaction ─────────────────────────────────────
@@ -208,78 +197,101 @@ def test_slash_strips_known_agent_prefix_too():
 # ── Action.BROADCAST (whole-team routing) ────────────────────────
 
 
-def test_broadcast_chinese_phrase_routes_to_all_non_sender():
+def test_chinese_broadcast_phrase_routes_to_manager_only():
+    """R174: `全体成员请汇报状态` from boss → only manager. Manager
+    parses the broadcast intent and dispatches to workers."""
     d = classify_event(_ev(text="全体成员请汇报状态"), team_agents=_AGENTS)
-    assert d.action is Action.BROADCAST
-    assert set(d.targets) == set(_AGENTS)
-
-
-def test_broadcast_at_team_token():
-    d = classify_event(_ev(text="@team standup in 5"), team_agents=_AGENTS)
-    assert d.action is Action.BROADCAST
-    assert set(d.targets) == set(_AGENTS)
-
-
-def test_broadcast_at_all_token():
-    d = classify_event(_ev(text="@all heads up"), team_agents=_AGENTS)
-    assert d.action is Action.BROADCAST
-
-
-def test_broadcast_at_everyone_token():
-    """`@everyone` is in _BROADCAST_TOKENS too — third trigger besides
-    @team / @all. Was missing direct coverage."""
-    d = classify_event(_ev(text="@everyone deploy now"), team_agents=_AGENTS)
-    assert d.action is Action.BROADCAST
-
-
-def test_broadcast_substring_does_not_match():
-    """`@teammate` looks like a broadcast token but isn't — the regex
-    token-boundary check (^|\\s before, \\s|$|[,!?...] after) must reject
-    it, otherwise an @-mention to a worker named "teammate" would
-    silently fan out to everyone. No `teammate` agent in this team, so
-    the message routes as default-target instead."""
-    d = classify_event(_ev(text="@teammate hi"), team_agents=_AGENTS)
-    assert d.action is not Action.BROADCAST
+    assert d.action is Action.ROUTE
     assert d.targets == ["manager"]
 
 
-def test_broadcast_token_followed_by_punctuation_still_matches():
-    """`@team!` / `@team,` / `@team?` should all match — punctuation is
-    in the allowed after-set so urgent messages still trigger broadcast."""
-    for trailing in ("!", ",", ".", "?"):
-        text = f"@team{trailing} ASAP"
-        d = classify_event(_ev(text=text, message_id=f"om_punct_{trailing}"),
-                           team_agents=_AGENTS)
-        assert d.action is Action.BROADCAST, (
-            f"@team{trailing} should still trigger broadcast")
+def test_at_team_token_routes_to_manager_only():
+    d = classify_event(_ev(text="@team standup in 5"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
 
 
-def test_broadcast_token_mid_word_does_not_match():
-    """`team@team` (no whitespace before the token) should NOT trigger
-    broadcast — otherwise email-style addresses or jargon could fire
-    it accidentally."""
-    d = classify_event(_ev(text="discussed at team@team yesterday"),
-                       team_agents=_AGENTS)
-    assert d.action is not Action.BROADCAST
+def test_at_all_token_routes_to_manager_only():
+    d = classify_event(_ev(text="@all heads up"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
 
 
-def test_broadcast_excludes_agent_sender():
-    """When manager broadcasts, manager itself is not a target."""
-    d = classify_event(_ev(text="[manager] @team please report"),
-                       team_agents=_AGENTS)
-    assert d.action is Action.BROADCAST
-    assert "manager" not in d.targets
-    assert set(d.targets) == set(_AGENTS) - {"manager"}
+def test_at_everyone_routes_to_manager_only():
+    d = classify_event(_ev(text="@everyone deploy now"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
 
 
-def test_explicit_mention_overrides_broadcast():
-    """If text has both @worker_cc and 全体, explicit mention wins."""
+def test_action_broadcast_no_longer_emitted():
+    """R174: routing-level broadcast is dead. Every variant of
+    'broadcast trigger' from a human now ROUTEs to manager. The
+    BROADCAST action itself is kept in the enum for legacy reasons
+    but is unreachable from classify_event."""
+    for text in ("全体注意", "@team x", "@all y", "@everyone z"):
+        d = classify_event(_ev(text=text, message_id=f"om_{hash(text)}"),
+                            team_agents=_AGENTS)
+        assert d.action is Action.ROUTE, f"{text!r} should route to manager"
+        assert d.targets == ["manager"], f"{text!r} target wrong"
+
+
+def test_explicit_mention_with_broadcast_token_routes_to_manager():
+    """`@worker_cc 全体成员都开会` — both tokens present. R174: still
+    just manager. Manager reads the text and decides intent."""
     d = classify_event(_ev(text="@worker_cc 全体成员都开会"), team_agents=_AGENTS)
     assert d.action is Action.ROUTE
-    assert d.targets == ["worker_cc"]
+    assert d.targets == ["manager"]
 
 
-def test_broadcast_token_must_be_word_boundary():
-    """'@teammate' should not be misread as @team broadcast."""
-    d = classify_event(_ev(text="ping @teammate later"), team_agents=_AGENTS)
-    assert d.action is not Action.BROADCAST
+# ── R174: bot-sent worker cards route to manager ────────────────
+
+
+def test_worker_card_say_routes_to_manager_inbox():
+    """Worker `claudeteam say` posts an interactive card with title
+    `💎 worker_cc · ...`. sender_id == bot_id but the card-title
+    parser identifies the originating agent. R174: route to manager
+    so manager has visibility into worker chat replies."""
+    card_text = '<card title="💎 worker_cc · 工程师">step 1 done</card>'
+    d = classify_event(
+        _ev(text=card_text, sender_id="bot_xxx"),
+        team_agents=_AGENTS, bot_id="bot_xxx",
+    )
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.sender == "worker_cc"  # parsed from card title
+
+
+def test_manager_own_card_say_still_drops_no_self_loop():
+    """Manager's own card → drop (no self-route, otherwise infinite
+    loop: manager say → manager inbox → manager re-acts → say again)."""
+    card_text = '<card title="🎯 manager · 团队主管">summary line</card>'
+    d = classify_event(
+        _ev(text=card_text, sender_id="bot_xxx"),
+        team_agents=_AGENTS, bot_id="bot_xxx",
+    )
+    assert d.action is Action.DROP
+    assert d.reason == "bot_self"
+
+
+def test_unparseable_bot_message_drops():
+    """Bot sends some plain-text reply that isn't card-shaped — no
+    agent attribution possible — drop as before."""
+    d = classify_event(
+        _ev(text="some bot reply", sender_id="bot_xxx"),
+        team_agents=_AGENTS, bot_id="bot_xxx",
+    )
+    assert d.action is Action.DROP
+    assert d.reason == "bot_self"
+
+
+def test_worker_card_with_chinese_role_still_parsed():
+    """The role text in the title is Chinese (`container-A 工程师`),
+    but the agent name `worker_cc` is what the parser keys on."""
+    card_text = '<card title="💎 worker_cc · container-A 工程师">报道</card>'
+    d = classify_event(
+        _ev(text=card_text, sender_id="bot_xxx"),
+        team_agents=_AGENTS, bot_id="bot_xxx",
+    )
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.sender == "worker_cc"

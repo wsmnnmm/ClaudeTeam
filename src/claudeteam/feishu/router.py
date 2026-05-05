@@ -96,6 +96,30 @@ def _parse_mentions(text: str, agents: set[str]) -> list[str]:
     return seen
 
 
+# R174: card-title sender-extraction. Worker `claudeteam say` posts
+# interactive cards with title `{emoji} {agent} · {role}`; the
+# subscribe layer's text-extractor for interactive messages embeds the
+# card title at the start of the extracted text. Match it here so we
+# can identify which agent sent a chat message even though the
+# inbound `sender_id` is the bot's open_id (one app, all agents share
+# it). Manager's own messages still get dropped to avoid self-loops.
+_CARD_TITLE_AGENT_RE = re.compile(
+    r"(?:^|<card title=\")[^\">\n]*?(?<![\w])([A-Za-z][A-Za-z0-9_\-]+)\s*·"
+)
+
+
+def _card_sender_agent(text: str, agents: set[str]) -> str:
+    """Return the agent name parsed from a card-format `say` message,
+    or "" if not a recognizable card. Used by router to attribute
+    bot-sent messages to the originating worker so manager can see
+    them in inbox."""
+    for m in _CARD_TITLE_AGENT_RE.finditer(text):
+        candidate = m.group(1)
+        if candidate in agents:
+            return candidate
+    return ""
+
+
 def classify_event(event: dict, *,
                    team_agents: list[str],
                    chat_id: str = "",
@@ -104,25 +128,36 @@ def classify_event(event: dict, *,
                    default_target: str = "manager") -> Decision:
     """Classify one inbound Feishu message event.
 
+    R174: ALL human chat messages route to `default_target` (manager).
+    `@worker_cc` and `@team` / `全体X` no longer fan out from the
+    router — boss-flagged design: manager is the sole interface to
+    boss; worker dispatch must go through `claudeteam send`. Bot-sent
+    interactive cards from non-manager workers also route to
+    manager's inbox so manager can see worker chat replies and
+    summarize. Manager's own bot messages still drop (avoid loop).
+
     Args:
         event: dict with keys message_id, chat_id, sender_id, text, msg_type
         team_agents: list of agent names known to this deployment
         chat_id: this team's chat — events from other chats get dropped
-        bot_id: this app's bot open_id — bot self-talk gets dropped
+        bot_id: this app's bot open_id — bot self-talk gets dropped UNLESS
+                it parses as a non-manager worker card (then routed to manager)
         seen_msg_ids: optional dedup set; populate as you process
-        default_target: agent to route to when no @mention and sender is human
+        default_target: agent that receives all routed messages (manager)
 
     Decision rules (first match wins):
-        no message_id        → DROP "no_msg_id"
-        seen msg_id          → DROP "dedup"
-        wrong chat_id        → DROP "cross_team"
-        sender == bot_id     → DROP "bot_self"
-        empty text           → DROP "empty"
-        text starts with `/` → SLASH (operator command, zero-LLM dispatch)
-        broadcast trigger    → BROADCAST to all non-sender agents
-        @mentions hit        → ROUTE to mentioned agents (excluding the sender)
-        sender unknown       → ROUTE to [default_target]
-        agent broadcast      → DROP "agent_no_target" (no humans to deliver to)
+        no message_id          → DROP "no_msg_id"
+        seen msg_id            → DROP "dedup"
+        wrong chat_id          → DROP "cross_team"
+        sender == bot_id AND
+          card sender is manager
+            (or unidentifiable) → DROP "bot_self"
+        sender == bot_id AND
+          card sender is worker → ROUTE to [manager] (manager sees worker say)
+        empty text             → DROP "empty"
+        text starts with `/`   → SLASH (operator command, zero-LLM dispatch)
+        agent-tagged sender + no @target → DROP "agent_no_target"
+        else (human sender)    → ROUTE to [default_target]
     """
     agents = set(team_agents)
     msg_id = event.get("message_id", "")
@@ -133,43 +168,37 @@ def classify_event(event: dict, *,
         return Decision(Action.DROP, reason="dedup", **common)
     if chat_id and event.get("chat_id") and event["chat_id"] != chat_id:
         return Decision(Action.DROP, reason="cross_team", **common)
-    if bot_id and event.get("sender_id") == bot_id:
-        return Decision(Action.DROP, reason="bot_self", **common)
 
     raw_text = (event.get("text") or "").strip()
+
+    # Bot self-talk: the app open_id sent this. Default = drop. R174
+    # exception: if the card was posted by a NON-manager worker (per
+    # card-title parse), route to manager's inbox so manager has
+    # visibility into worker chat replies. Self-loop guard: manager's
+    # own cards always drop here.
+    if bot_id and event.get("sender_id") == bot_id:
+        card_agent = _card_sender_agent(raw_text, agents) if raw_text else ""
+        if card_agent and card_agent != default_target:
+            return Decision(Action.ROUTE, targets=[default_target],
+                            sender=card_agent, text=raw_text, **common)
+        return Decision(Action.DROP, reason="bot_self", **common)
+
     if not raw_text:
         return Decision(Action.DROP, reason="empty", **common)
 
     # Slash command: matched at router level, NOT injected into any pane.
     # Deliver layer runs the registered handler and posts the result back
     # to chat as a bot reply. Zero LLM involvement.
-    #
-    # Strip any leading `[<token>]` prefix before the / check — `say.py`
-    # always wraps outgoing chat with `[<sender>] <body>`, even when the
-    # body is a slash command. Without this strip, `claudeteam say boss
-    # "/team"` produces `[boss] /team` in chat and the slash detection
-    # misses it entirely (round A2 bug B1).
     slash_text = re.sub(r"^\s*\[[^\]]+\]\s*", "", raw_text)
     if slash_text.startswith("/"):
         return Decision(Action.SLASH, text=slash_text, **common)
 
     sender, text = _parse_sender(raw_text, agents)
-    mentions = [a for a in _parse_mentions(text, agents) if a != sender]
 
-    # Broadcast: hit all non-sender agents (covers "全体成员"/"@team"/"@all"
-    # so an operator can address the whole team without listing every name).
-    if _is_broadcast(text) and not mentions:
-        targets = [a for a in team_agents if a != sender]
-        if targets:
-            return Decision(Action.BROADCAST, targets=targets, sender=sender,
-                            text=text, **common)
-
-    if mentions:
-        return Decision(Action.ROUTE, targets=mentions, sender=sender,
-                        text=text, **common)
-
+    # R174: human / unknown sender → manager only. `@worker_cc` and
+    # `全体X` are no longer routing instructions; they're text content
+    # for manager to read and decide how to dispatch.
     if not sender:
-        # human / unknown sender → manager (or configured default)
         return Decision(Action.ROUTE, targets=[default_target], text=text, **common)
 
     # agent-tagged message with no @-target → broadcast with nobody to hear it

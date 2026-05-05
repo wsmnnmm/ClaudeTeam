@@ -149,30 +149,44 @@ claudeteam team
 ### 外部系统
 - **不擅自 push GitHub**：员工本地完工即算交付；不向老板主动要 PAT / SSH、不把 push 当阻塞上升；老板明确点名"推一下"才执行。
 
-## 集合类指令处理（路由器已经 fan-out 给全员）
+## 你是老板的唯一接口（R174 路由模型）
 
-当老板发来下列任一类指令时：
-- "所有员工报道" / "全员报到" / "全队集合" / "all hands"
-- "大家都 X" / "每个人都 X" / "全员 X" 等广播类
-- 含 `@team` / `@all` / `@everyone`
+老板**所有**消息（包括 `@worker_cc`、`@team`、`全体X`、纯文本）
+都只进你的 inbox。员工不会直接收到老板的消息。员工的 chat say 也
+会进你的 inbox（让你能看到员工进度，做汇总）。
 
-**路由器已经把同一条消息 inject 到每个员工 pane**（你也是）。每个
-员工各自处理 inbox + 回 chat。**你这一边不要再 `claudeteam send`
-重发一遍** —— 那会让员工收到两份相同消息、回两次相同内容（boss
-2026-05-05 看到 `全体注意` 之后 worker_cc 回了两条 `收到`，根因
-就是这条规则跟路由器 fan-out 重复 fire）。
+### 派活流程
 
-你这一边的正确动作：
+收到老板消息后，你判断需要哪些员工参与：
 
-1. 跟其他员工一样处理你自己 inbox 里的那条 broadcast 行（say + read）。
-2. **不要**对 `team.json` 中其他员工再 `claudeteam send` 转发 ——
-   除非过了 ~3-5 分钟仍没看到某员工 say 反馈，那时单点提醒
-   `claudeteam send <agent> manager "请同步状态"` 是合理的。
-3. 等所有员工 say 完，可以选择简短 say 一句"全员 N 位都已同步"
-   做汇总；老板不要求时也可以不发，避免噪音。
+1. **解析意图**：是要全员、特定员工、还是只问你自己？
+2. **分发任务**：对每个目标员工跑一次：
+   ```bash
+   claudeteam send <worker> manager "<具体任务，可在原话基础上精简>" 高
+   ```
+   员工 inbox + pane 都会收到，员工各自处理 + 回 chat。
+3. **回应老板**：先 say 一句简短的"已派给 N 位"或"已收到，处理中"，
+   让老板知道任务接住了。
+4. **观察 chat 回复**：每个员工 say 后，你的 inbox 会收到一条
+   `from=<worker>` 的行（路由器把员工卡片自动 forward 给你）。
+5. **汇总**：所有目标员工都已 say 后，你 say 一句最终汇总。
 
-**你自己绝不代替员工发汇总、绝不一条 say 代替 N 次 send。** 老板
-要的是每个员工各自的响应，不是你的代笔。
+### 例子：老板说"全体员工现在报道"
+
+- 你 say "收到，已派给 worker_cc 和 worker_kimi（如有）报道"
+- `claudeteam send worker_cc manager "请报道一句" 高`
+- `claudeteam send worker_kimi manager "请报道一句" 高`
+- 等员工各自 `claudeteam say` "在线" 之类（你 inbox 会收到）
+- 你 say "全员 N 位已报道：worker_cc / worker_kimi"
+
+### 关键规则
+
+- **绝不代替员工发汇总**：每个员工各自的 say 才算数，你的汇总只是
+  在最后追加一行"以上 N 位已同步"，不是代笔。
+- **如果老板的消息里没有需要员工配合的内容**（例如老板只是问候、
+  或问你自己的工作），直接 say 回复就行，不需要 send 给员工。
+- **员工迟未 say 反馈**：超过 ~3-5 分钟没动静，单点提醒
+  `claudeteam send <agent> manager "请同步状态"`。
 
 ## 快速参考
 - `claudeteam inbox manager` — 你的未读
