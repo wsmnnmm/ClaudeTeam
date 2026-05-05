@@ -142,22 +142,25 @@ def _compose_inject_text(agent: str, decision: Decision,
         summary_hint = (f" 这条似乎需要 manager 汇总，处理完后**额外**"
                         f"发一句 `claudeteam send manager {agent} \"<结果>\"` "
                         f"让 manager inbox 知道你的进度。")
-    # R174.b: avoid <回复> / <reply> placeholder — manager has been
-    # observed pasting the literal placeholder into `claudeteam say`,
-    # ending up posting "<回复>" verbatim to chat. Use natural-language
-    # instruction without angle-bracket templates.
+    # R174.c: any placeholder in the hint (`<回复>`, `...`, `<reply>`)
+    # gets copy-pasted literally by claude into `claudeteam say`,
+    # ending up as e.g. "<回复>" or "..." in chat. Show a CONCRETE
+    # realistic example instead — the model will adapt the content
+    # to the actual situation rather than echoing template syntax.
     if sender == "user" or not sender:
-        hint = (f"[群聊消息·发送者=老板] 读完下面这条后，把你的回复内容"
-                f"作为引号里的字符串跑 `claudeteam say {agent} \"...\"`，"
-                f"自己写实际内容，不要原样发"
-                f"`<回复>`/`<reply>` 这种占位符。直接 pane 内文本回答"
-                f"老板看不到。"
+        hint = (f"[群聊消息·发送者=老板] ⚠️ 这条消息只到了你的 inbox，"
+                f"老板看不到你 pane 里直接打的字。"
+                f"想让老板看见，必须用 `claudeteam say {agent}` 命令"
+                f"加上一段引号字符串发回群里。"
+                f"举例（请用实际处理结果替换内容、不要原样复制）："
+                f"`claudeteam say {agent} \"收到，正在处理\"`。"
                 f"{summary_hint}{read_hint}")
     else:
-        hint = (f"[同事消息·发送者={sender}] 处理后跑 "
-                f"`claudeteam send {sender} {agent} \"...\"` 回 {sender}（"
-                f"用你自己写的实际内容代替 `...`），"
-                f"或公告到群用 `claudeteam say {agent} \"...\"`。"
+        hint = (f"[同事消息·发送者={sender}] 这条来自员工/同事，"
+                f"想回复 {sender} 用 `claudeteam send {sender} {agent} "
+                f"\"实际回复内容\"`；想公告到老板群用 "
+                f"`claudeteam say {agent} \"实际公告内容\"`。"
+                f"举例：`claudeteam say {agent} \"已确认收到 worker_cc 的进度\"`。"
                 f"{read_hint}")
     return f"{hint}\n\n{decision.text}"
 
