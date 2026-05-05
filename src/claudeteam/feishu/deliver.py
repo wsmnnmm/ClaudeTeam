@@ -142,15 +142,22 @@ def _compose_inject_text(agent: str, decision: Decision,
         summary_hint = (f" 这条似乎需要 manager 汇总，处理完后**额外**"
                         f"发一句 `claudeteam send manager {agent} \"<结果>\"` "
                         f"让 manager inbox 知道你的进度。")
+    # R174.b: avoid <回复> / <reply> placeholder — manager has been
+    # observed pasting the literal placeholder into `claudeteam say`,
+    # ending up posting "<回复>" verbatim to chat. Use natural-language
+    # instruction without angle-bracket templates.
     if sender == "user" or not sender:
-        hint = (f"[来自群聊 · 发送者=user] 处理后请用 "
-                f"`claudeteam say {agent} \"<回复>\"` 回到群里，"
-                f"而不是直接回 pane。"
+        hint = (f"[群聊消息·发送者=老板] 读完下面这条后，把你的回复内容"
+                f"作为引号里的字符串跑 `claudeteam say {agent} \"...\"`，"
+                f"自己写实际内容，不要原样发"
+                f"`<回复>`/`<reply>` 这种占位符。直接 pane 内文本回答"
+                f"老板看不到。"
                 f"{summary_hint}{read_hint}")
     else:
-        hint = (f"[来自 {sender} · 同事消息] 处理后请用 "
-                f"`claudeteam send {sender} {agent} \"<回复>\"` 回 {sender}，"
-                f"或 `claudeteam say {agent} ...` 公告到群。"
+        hint = (f"[同事消息·发送者={sender}] 处理后跑 "
+                f"`claudeteam send {sender} {agent} \"...\"` 回 {sender}（"
+                f"用你自己写的实际内容代替 `...`），"
+                f"或公告到群用 `claudeteam say {agent} \"...\"`。"
                 f"{read_hint}")
     return f"{hint}\n\n{decision.text}"
 
