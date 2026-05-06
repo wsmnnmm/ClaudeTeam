@@ -45,7 +45,7 @@ def _data_writable() -> bool:
 
 class ClaudeCodeAdapter(CliAdapter):
     def spawn_cmd(self, agent: str, model: str) -> str:
-        # R172.b: full silent-launch recipe (boss-provided 2026-05-04).
+        # Full silent-launch recipe — bypass-permissions confirm, theme picker, etc.
         # - IS_SANDBOX=1: claude allows --dangerously-skip-permissions
         # - CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 / DISABLE_AUTOUPDATER=1:
         #   silence survey + autoupdate banners.

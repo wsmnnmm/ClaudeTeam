@@ -32,9 +32,9 @@ def _reidentify_one(agent: str, session: str, *,
     a one-line warning and return False so the caller can tally and
     decide overall rc.
 
-    R151: optional `cli` lets the --all caller resolve adapters from a
-    single pre-loaded team.json instead of paying one disk read per
-    agent inside `adapter_for_agent`. Empty cli falls back to the
+    Optional `cli` arg lets the --all caller resolve adapters from
+    a pre-loaded team config instead of paying one disk read per
+    agent inside `adapter_for_agent`. Empty `cli` falls back to the
     config-driven lookup so the single-agent error contract stays.
     """
     target = tmux.Target(session, agent)
@@ -72,12 +72,13 @@ def main(argv: list[str]) -> int:
     rest = list(argv)
     do_all = pop_bool_flag(rest, "--all")
 
-    # Argv validation first so existing single-agent error contracts hold:
-    # `reidentify` (no arg) → usage_error; `reidentify ghost` → unknown agent.
-    # Round-91 swap: --all skips arg validation but still hits team.json.
-    # R151: --all path pre-loads team.json so the per-agent adapter
-    # resolution doesn't re-read it N times. Single-agent path keeps
-    # the config-driven lookup so the error contract stays.
+    # Argv validation first so existing single-agent error contracts
+    # hold: `reidentify` (no arg) → usage_error;
+    # `reidentify ghost` → unknown agent. The --all path skips that
+    # validation but still loads team config (pre-loaded once so
+    # per-agent adapter resolution doesn't re-read it N times).
+    # Single-agent path keeps the config-driven lookup so the error
+    # contract stays unchanged.
     agents_dict: dict = {}
     if do_all:
         agents_dict = config.load_team().get("agents", {})
@@ -108,9 +109,8 @@ def main(argv: list[str]) -> int:
         print(f"reidentified {ok}/{len(agents)} agents")
         return 0 if ok == len(agents) else 1
 
-    # Single-agent path: keep the explicit error rendering the existing
-    # tests pin against (was the behaviour before round-91; --all is the
-    # only new branch).
+    # Single-agent path: keeps the explicit error rendering that
+    # existing tests pin against; --all is the bulk variant.
     agent = agents[0]
     target = tmux.Target(session, agent)
     if not tmux.has_window(target):

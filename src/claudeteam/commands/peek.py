@@ -1,7 +1,7 @@
 """`claudeteam peek <agent> [N]` — capture the last N lines of an agent's pane.
 
 Local fast path equivalent to the `/tmux <agent> N` slash command but
-without the chat round-trip. Manager identity v2 (R85) calls out
+without the chat round-trip. The manager identity calls out
 `tmux capture-pane -t {session}:<agent> -p -S -30` for the 5-min
 巡视 cadence; this command wraps it so:
 - the session name comes from `team.json` instead of being hardcoded

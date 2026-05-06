@@ -18,7 +18,7 @@ crash mid-apply means we re-encounter the message and lean on
 process_lines' dedup set to skip duplicates.
 
 Two response shapes seen in the wild from `lark-cli im +chat-messages-list`
-(round-56 smoke caught this):
+Specifically:
   - older / fixture: `{body: {content: "..."}, create_time: "<epoch-ms>"}`
   - lark-cli 1.0.21 live: `{content: "...", create_time: "2026-05-03 18:53"}`
 The shape-normalisation helpers below accept both.
@@ -78,7 +78,7 @@ def _msg_to_event_line(fei_msg: dict) -> str:
     `lark-cli event +subscribe --compact` shape.
 
     Carries sender.id_type into the event so subscribe._normalise can
-    surface sender_type to classify_event — without it, R174 bot-self
+    surface sender_type to classify_event — without it bot-self
     detection misses bot-sent cards on the catchup path and forwards
     manager's own ack cards back into manager's inbox every restart
     (host_smoke 2026-05-06: 7 loops in one session)."""

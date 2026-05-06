@@ -3,7 +3,7 @@
 Append a message to the local inbox AND poke the recipient's tmux
 pane so they know to read it.
 
-R168: previously inbox-only with the doc claim "only the Feishu
+Previously inbox-only with the doc claim "only the Feishu
 router can do tmux inject". That broke peer messaging end-to-end —
 manager sending to worker_cc wrote a row, but worker_cc had no way
 to know unless it polled. Boss-flagged after the 全员报道 e2e where

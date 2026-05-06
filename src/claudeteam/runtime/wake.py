@@ -50,7 +50,7 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
 
 
 # Onboarding dialogs claude pops on fresh ~/.claude.json (ephemeral
-# per-container since R172.b dropped the host bind-mount). Each dialog
+# per-container since the host bind-mount was dropped). Each dialog
 # blocks the `bypass permissions on` ready marker, so we auto-press
 # Enter to accept the default highlighted choice. Settings.json
 # silent-launch flags suppress most onboarding paths, but a few
@@ -68,7 +68,7 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
                       capture: Callable, sleep: Callable, now: Callable) -> bool:
     """Loop `is_ready` checks until a ready marker shows up or `timeout_s`
-    elapses. R172.b: claude pops a chain of first-launch dialogs (theme
+    elapses. claude pops a chain of first-launch dialogs (theme
     picker, auth-method picker, bypass-perms confirm). Each dialog
     blocks the next, so we auto-press Enter every time we see ANY
     known dialog marker, throttled to once per second so we don't

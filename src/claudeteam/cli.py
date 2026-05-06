@@ -24,7 +24,7 @@ CommandHandler = Callable[[list[str]], int | None]
 
 # Subcommand registry, structured as ordered (group_label, [(name, fn)…])
 # pairs so `claudeteam --help` can render commands in semantic groups
-# instead of a flat 26-line wall (round-93). Adding a new command:
+# instead of a flat 26-line wall. Adding a new command:
 # write a module under claudeteam.commands with `main(argv)`, then
 # append the (name, fn) pair into the appropriate group below.
 _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [

@@ -1,11 +1,11 @@
 """`claudeteam remember <agent> <kind> <content> [--ref <ref>]`
 
-Append an entry to `<agent>`'s durable memory (round-83 store/memory.py).
+Append an entry to `<agent>`'s durable memory (`store/memory.py`).
 Memory survives tmux pane restart / `/clear`, gets injected into the
-agent's identity init prompt on wake (round-84) so context carries over.
+agent's identity init prompt on wake so context carries over.
 
 Example:
-    claudeteam remember manager task_assigned "round-87 implement remember cmd" --ref om_xx
+    claudeteam remember manager task_assigned "implement remember cmd" --ref om_xx
     claudeteam remember worker_cc learning "auth uses bcrypt; salt rounds=12"
     claudeteam remember worker_codex blocker "blocked on missing GH PAT" --ref T-42
 

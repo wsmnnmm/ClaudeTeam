@@ -6,7 +6,7 @@ One source of truth on a host for:
 - heartbeats  (last-seen-active timestamp per agent, JSON)
 - log         (append-only event log, JSONL)
 
-Sister module: `store/memory.py` (R83) holds per-agent **durable
+Sister module: `store/memory.py` holds per-agent **durable
 memory** — curated entries an agent re-reads on wake (via identity init
 prompt). Logs are audit trail (every action; verbose; not re-read);
 memory is the curated subset.
@@ -16,7 +16,7 @@ get isolation by setting the env, no monkey-patching required. All JSON
 writes go through `util.write_json` (atomic tmp+rename via flock).
 
 `list_logs` shares the same JSONL parser as `memory.list_recent` — both
-go through `util.read_jsonl` (R90), which silently drops corrupt lines
+go through `util.read_jsonl`, which silently drops corrupt lines
 left by a half-written previous crash so the file stays forward-readable.
 
 Originally pulled from the old `claudeteam.storage.local_facts` (~187 LOC).

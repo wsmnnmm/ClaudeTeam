@@ -3,7 +3,7 @@
 Install: `npm install -g qwen-code` or `brew install qwen-code`
 Auth: OAuth (qwen.ai) / API key (阿里云 Coding Plan / OpenAI-compat / Anthropic-compat)
 
-Same shape as gemini-cli (R85): Ink-based TUI, --yolo for auto-approve,
+Same shape as gemini-cli: Ink-based TUI, --yolo for auto-approve,
 agent identity tagged via env. Model selection is via env / config, not
 argv — drop the `model` parameter so a stale alias doesn't reach qwen.
 """

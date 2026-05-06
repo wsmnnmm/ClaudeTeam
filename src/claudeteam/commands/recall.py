@@ -11,7 +11,7 @@ Use cases:
   - debugging "agent forgot the task" — verify whether the memory entry
     was actually written.
   - kind filter: `claudeteam recall manager --kind decision` to scan
-    one slice (round-107). Cross-checks against `memory.KNOWN_KINDS`
+    one slice (kind-level filter). Cross-checks against `memory.KNOWN_KINDS`
     so a typo (`--kind decsion`) doesn't silently return [] — prints
     a hint with the closest known kind.
 

@@ -1,6 +1,6 @@
 """Live server-load data collection (subprocess layer).
 
-R166 ports `feat/messaging-fixes-block1` / `main`'s `runtime/health.py`
+Ports `feat/messaging-fixes-block1` / `main`'s `runtime/health.py`
 collector so the rebuild branch can render the same rich `/health`
 card the boss recognised — host CPU/mem/disk + docker container stats
 + per-agent process tree. Subprocess calls live here so
@@ -84,7 +84,7 @@ def _read_proc(path: str) -> str | None:
 def _host_cpu(run: Callable = _run, *,
               read_proc: Callable[[str], str | None] = _read_proc,
               cpu_count: Callable[[], int | None] = os.cpu_count) -> dict | None:
-    """R172: prefer `/proc/loadavg` + `os.cpu_count()` over the
+    """Prefer `/proc/loadavg` + `os.cpu_count()` over the
     `uptime` + `nproc` shell-outs because the slim Docker image doesn't
     ship `procps` (boss saw "无数据" in /health card 2026-05-04). Falls
     back to `uptime` for macOS hosts which lack `/proc`. `read_proc` and
@@ -123,7 +123,7 @@ def _host_cpu(run: Callable = _run, *,
 
 def _host_mem(run: Callable = _run, *,
               read_proc: Callable[[str], str | None] = _read_proc) -> dict | None:
-    """R172: parse `/proc/meminfo` directly so /health works inside
+    """Parse `/proc/meminfo` directly so /health works inside
     the slim image (no `free` binary). MemAvailable is a kernel-
     computed estimate of "memory that can be taken without swapping",
     matching `free -b`'s `available` column. Used = Total - Available

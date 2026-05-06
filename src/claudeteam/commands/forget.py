@@ -8,7 +8,7 @@ which entries are still useful.
 Two flavours:
 - `forget <agent> --yes`              — wipe ALL entries
 - `forget <agent> --kind K --yes`     — wipe only entries with kind=K
-                                          (round-111 scalpel-inside-scalpel)
+                                          (kind-level scalpel)
 
 Refuses without `--yes` so an operator typo doesn't take out hours of
 accumulated context. The reset command (`claudeteam reset`) already
