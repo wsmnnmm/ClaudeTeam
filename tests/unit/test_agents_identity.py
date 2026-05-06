@@ -115,6 +115,91 @@ def test_write_persists_file_and_creates_parents():
         assert "管理分发铁律" in text
 
 
+# ── Step 2: specialty / tone / notes 字段 ───────────────────────
+
+
+def test_render_includes_specialty_section_when_set():
+    team = {"agents": {"worker_cc": {
+        "cli": "claude-code", "model": "sonnet", "role": "员工",
+        "specialty": ["内容审核", "文案润色"],
+    }}}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    assert "## 专长" in text
+    assert "内容审核" in text
+    assert "文案润色" in text
+
+
+def test_render_omits_specialty_section_when_unset():
+    team = {"agents": {"worker_cc": {
+        "cli": "claude-code", "model": "sonnet", "role": "员工",
+    }}}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    assert "## 专长" not in text
+
+
+def test_render_includes_tone_section_when_set():
+    team = {"agents": {"worker_cc": {
+        "cli": "claude-code", "model": "sonnet", "role": "员工",
+        "tone": "细致、礼貌、详尽",
+    }}}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    assert "## 风格" in text
+    assert "细致、礼貌、详尽" in text
+
+
+def test_render_includes_notes_section_when_set():
+    team = {"agents": {"worker_cc": {
+        "cli": "claude-code", "model": "sonnet", "role": "员工",
+        "notes": "擅长长文本审阅; 不擅长数据工作",
+    }}}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    assert "## 备注" in text
+    assert "擅长长文本审阅" in text
+
+
+def test_manager_renders_team_specialties_block():
+    """Manager should see each non-manager agent's specialty so it can
+    dispatch with awareness."""
+    team = {"agents": {
+        "manager": {"cli": "claude-code", "model": "opus", "role": "主管"},
+        "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "策划",
+                      "specialty": ["文案", "排版"]},
+        "worker_codex": {"cli": "codex-cli", "model": "gpt-5.5", "role": "数据",
+                         "specialty": ["SQL", "数据可视化"]},
+    }}
+    with isolated_env(team=team):
+        text = identity.render("manager")
+    assert "## 团队成员专长" in text
+    assert "worker_cc" in text and "文案" in text
+    assert "worker_codex" in text and "SQL" in text
+
+
+def test_worker_does_not_get_team_specialties_block():
+    team = {"agents": {
+        "manager": {"cli": "claude-code", "model": "opus", "role": "主管"},
+        "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "策划",
+                      "specialty": ["文案"]},
+    }}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    assert "## 团队成员专长" not in text
+
+
+def test_manager_omits_team_specialties_block_when_no_worker_has_specialty():
+    team = {"agents": {
+        "manager": {"cli": "claude-code", "model": "opus", "role": "主管"},
+        "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "策划"},
+    }}
+    with isolated_env(team=team):
+        text = identity.render("manager")
+    # 没人有 specialty → block 也不出现
+    assert "## 团队成员专长" not in text
+
+
 def test_write_overwrites_existing_file():
     """Round-88 caught: worker body now mentions 'oldest auto-drop' so a
     naive 'old' substring leaks. Pin the role line explicitly so the

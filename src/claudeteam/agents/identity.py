@@ -259,20 +259,77 @@ losing it would slow you down on resume.
 """
 
 
+def _render_specialty_section(specialty: list[str]) -> str:
+    """Optional 专长 block. Empty list → empty string (no section)."""
+    if not specialty:
+        return ""
+    items = "\n".join(f"- {s}" for s in specialty)
+    return f"\n\n## 专长\n\n{items}"
+
+
+def _render_tone_section(tone: str) -> str:
+    if not tone:
+        return ""
+    return f"\n\n## 风格\n\n{tone}"
+
+
+def _render_notes_section(notes: str) -> str:
+    if not notes:
+        return ""
+    return f"\n\n## 备注\n\n{notes}"
+
+
+def _render_team_specialties_block() -> str:
+    """For manager prompt: list each non-manager agent's specialty so
+    manager can dispatch with awareness. Empty if no agent has specialty."""
+    try:
+        team = config.load_team()
+    except Exception:
+        return ""
+    rows = []
+    for name, cfg in (team.get("agents") or {}).items():
+        if name == "manager":
+            continue
+        spec = cfg.get("specialty") or []
+        if spec:
+            rows.append(f"- **{name}** 擅长: " + " / ".join(spec))
+    if not rows:
+        return ""
+    return "\n\n## 团队成员专长（派单参考）\n\n" + "\n".join(rows)
+
+
 def render(agent: str, *, role: str | None = None,
-           cli: str | None = None, model: str | None = None) -> str:
+           cli: str | None = None, model: str | None = None,
+           specialty: list[str] | None = None,
+           tone: str | None = None,
+           notes: str | None = None) -> str:
     """Return the identity markdown text for `agent`.
 
     Defaults missing fields from team.json so callers can call this with
     just the agent name in production, or override every field for tests.
+
+    `specialty` / `tone` / `notes` are optional team.agents.<X> fields
+    (Step 2 schema extension). Empty / absent → no section rendered;
+    keeps existing one-role-line agents' identity files unchanged.
     """
     cfg = config.agent_config(agent) if any(v is None for v in (role, cli, model)) else {}
     role = role if role is not None else (cfg.get("role") or agent)
     cli = cli if cli is not None else (cfg.get("cli") or "claude-code")
     model = model if model is not None else (cfg.get("model") or "")
+    specialty = specialty if specialty is not None else (cfg.get("specialty") or [])
+    tone = tone if tone is not None else (cfg.get("tone") or "")
+    notes = notes if notes is not None else (cfg.get("notes") or "")
     body = _MANAGER_BODY if agent == "manager" else _WORKER_BODY
-    return body.format(name=agent, role=role, cli=cli, model=model,
-                       workdir_rule=_WORKDIR_RULE)
+    rendered = body.format(name=agent, role=role, cli=cli, model=model,
+                           workdir_rule=_WORKDIR_RULE)
+    # Append optional sections at the end of the identity body. Manager
+    # also gets the team specialties block so it can pick the right worker.
+    rendered += _render_specialty_section(specialty)
+    rendered += _render_tone_section(tone)
+    rendered += _render_notes_section(notes)
+    if agent == "manager":
+        rendered += _render_team_specialties_block()
+    return rendered
 
 
 def init_prompt(agent: str) -> str:
@@ -320,8 +377,12 @@ def identity_path(agent: str) -> Path:
 
 
 def write(agent: str, *, role: str | None = None,
-          cli: str | None = None, model: str | None = None) -> Path:
+          cli: str | None = None, model: str | None = None,
+          specialty: list[str] | None = None,
+          tone: str | None = None,
+          notes: str | None = None) -> Path:
     """Render and persist the identity file; return its path."""
     target = identity_path(agent)
-    atomic_write_text(target, render(agent, role=role, cli=cli, model=model))
+    atomic_write_text(target, render(agent, role=role, cli=cli, model=model,
+                                      specialty=specialty, tone=tone, notes=notes))
     return target
