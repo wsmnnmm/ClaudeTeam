@@ -53,12 +53,20 @@ def main(argv: list[str]) -> int:
         if not tmux.has_window(target):
             return 0
         adapter = adapter_for_agent(to)
-        # Lazy worker: pane exists as a placeholder shell, CLI hasn't been
+        # Lazy worker only: pane exists as placeholder shell, CLI hasn't
         # spawned yet. Without wake_if_dormant the inject below would land
         # in the shell, not the CLI — agent never sees the message.
         # REGRESSION 2026-05-06 host_smoke §7: lazy worker_codex received
         # a manager dispatch but pane stayed at a bare shell prompt.
-        if not wake.is_ready(target, adapter):
+        # Non-lazy agents (typically manager + active workers) are
+        # ALREADY started by `claudeteam up`; injecting straight in is
+        # faster than the is_ready capture-pane round-trip and matches
+        # the boss preference 2026-05-06: "send 主管时不需要等待他空闲,
+        # 直接往 session 里面加告诉他就行了". Claude / Codex pane stash
+        # injected text into the input buffer if mid-thought; it's read
+        # on the next input-accept turn.
+        cfg = config.agent_config(to) if to in config.agent_names() else {}
+        if cfg.get("lazy") and not wake.is_ready(target, adapter):
             from claudeteam.runtime import tunables
             spawn_cmd = (f"{lifecycle.pane_env_prefix()} "
                          f"{adapter.spawn_cmd(to, config.agent_model(to))}")

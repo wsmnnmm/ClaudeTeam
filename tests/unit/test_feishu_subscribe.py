@@ -433,6 +433,114 @@ def test_normalises_sticker_message():
     assert "[sticker: stk_xxx]" in applied[0].text
 
 
+def test_normalises_post_text_only_message():
+    """Boss-flagged 2026-05-06: 飞书富文本 (post) 消息要被路由到 manager
+    inbox, 不能丢. 纯文字段落场景."""
+    line = json.dumps({
+        "message_id": "om_post1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": json.dumps({
+            "title": "标题",
+            "content": [
+                [{"tag": "text", "text": "第一段文字"}],
+                [{"tag": "text", "text": "第二段文字"}],
+            ],
+        }),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    text = applied[0].text
+    assert "标题" in text
+    assert "第一段文字" in text
+    assert "第二段文字" in text
+
+
+def test_normalises_post_text_plus_image_message():
+    """图 + 文混合: 老板典型场景 (发个截图 + 说 "看这个 bug")."""
+    line = json.dumps({
+        "message_id": "om_post2",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": json.dumps({
+            "title": "",
+            "content": [
+                [
+                    {"tag": "text", "text": "看这个 bug "},
+                    {"tag": "img", "image_key": "img_screenshot"},
+                ],
+            ],
+        }),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    text = applied[0].text
+    assert "看这个 bug" in text
+    assert "[image: image_key=img_screenshot]" in text
+
+
+def test_normalises_post_text_plus_file_message():
+    """文件 + 文字混合."""
+    line = json.dumps({
+        "message_id": "om_post3",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": json.dumps({
+            "title": "",
+            "content": [
+                [
+                    {"tag": "text", "text": "请评审这份: "},
+                    {"tag": "file", "file_name": "spec.pdf",
+                     "file_key": "file_v2_abc"},
+                ],
+            ],
+        }),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    text = applied[0].text
+    assert "请评审这份" in text
+    assert "spec.pdf" in text
+    assert "file_v2_abc" in text
+
+
+def test_normalises_post_with_link_and_at_mention():
+    """post 里的超链接 + @人 也要可见."""
+    line = json.dumps({
+        "message_id": "om_post4",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": json.dumps({
+            "title": "",
+            "content": [
+                [
+                    {"tag": "at", "user_id": "ou_xyz"},
+                    {"tag": "text", "text": " 看 "},
+                    {"tag": "a", "text": "这个文档", "href": "https://x.test/doc"},
+                ],
+            ],
+        }),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    text = applied[0].text
+    assert "@ou_xyz" in text
+    assert "这个文档" in text
+    assert "https://x.test/doc" in text
+
+
 def test_text_message_extraction_unchanged_after_b1():
     """Regression: text-message extraction still works after _extract_text
     refactor."""

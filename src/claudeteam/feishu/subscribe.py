@@ -125,9 +125,78 @@ def _extract_text(content, msg_type: str) -> str:
     if msg_type == "sticker":
         key = data.get("file_key", "")
         return f"[sticker: {key}]" if key else "[sticker]"
+    if msg_type == "post":
+        # 飞书富文本: 图片 + 文字混合. content 形如:
+        #   {"title": "...", "content": [[el, el], [el, ...], ...]}
+        # 每个 element 是 {"tag": "text"|"img"|"a"|"at"|"file"|..., ...}
+        # 把所有段落拼成多行文本, 图片 / 文件等非文字 element 用 placeholder
+        # 表达, 这样 LLM 能看到"老板发了一张图 + 这段文字"的全貌.
+        return _post_to_text(data)
     # Default: text or unknown — try common .text field, then .content,
     # then leave empty so callers can fall back to ev.get("text").
     return data.get("text") or data.get("content") or ""
+
+
+def _post_to_text(data: dict) -> str:
+    """Flatten a Feishu `post` (rich text) message body into plain text.
+
+    Mixed image/file + text messages come through as `msg_type=post`;
+    `_extract_text` delegates here. Each paragraph in `content` is a
+    list of inline elements (text / img / a / at / file / mention).
+    Returns one line per paragraph, with non-text elements rendered
+    as `[image: ...]` / `[file: ...]` / `<text> (<href>)` placeholders
+    so workers can either react to the text+image combo verbally or
+    fetch the binary via `lark-cli im +messages-resources-download
+    <message_id>` if they need the actual bytes.
+    """
+    title = (data.get("title") or "").strip()
+    paragraphs = data.get("content") or []
+    if not isinstance(paragraphs, list):
+        return title
+    lines: list[str] = []
+    for para in paragraphs:
+        if not isinstance(para, list):
+            continue
+        bits: list[str] = []
+        for el in para:
+            if not isinstance(el, dict):
+                continue
+            tag = el.get("tag", "")
+            if tag == "text" or tag == "md":
+                bits.append(str(el.get("text", "")))
+            elif tag == "img":
+                key = el.get("image_key", "")
+                bits.append(f"[image: image_key={key}]" if key else "[image]")
+            elif tag == "media":
+                key = el.get("file_key") or el.get("image_key", "")
+                bits.append(f"[media: {key}]" if key else "[media]")
+            elif tag == "file":
+                name = el.get("file_name") or ""
+                key = el.get("file_key", "")
+                if name and key:
+                    bits.append(f"[file: {name} (file_key={key})]")
+                elif name:
+                    bits.append(f"[file: {name}]")
+                else:
+                    bits.append(f"[file: file_key={key}]" if key else "[file]")
+            elif tag == "a":
+                t = el.get("text") or el.get("href", "")
+                href = el.get("href", "")
+                bits.append(f"{t} ({href})" if t and href else (t or href))
+            elif tag == "at":
+                uid = el.get("user_id", "") or el.get("user_name", "")
+                bits.append(f"@{uid}" if uid else "@?")
+            else:
+                # 未知 tag — 透传成 placeholder 别丢
+                txt = el.get("text") or ""
+                bits.append(txt or f"[{tag}]")
+        line = "".join(bits).strip()
+        if line:
+            lines.append(line)
+    body = "\n".join(lines).strip()
+    if title and body:
+        return f"{title}\n\n{body}"
+    return title or body
 
 
 def _record_drop(stats: LoopStats, reason: str) -> None:

@@ -178,6 +178,35 @@ def test_pending_lines_emits_subscribe_compatible_shape():
     assert line["event"]["sender"]["sender_id"]["open_id"] == "ou_42"
 
 
+def test_pending_lines_carries_post_message_through_to_subscribe():
+    """Catchup 拉历史时遇到 post (图+文混合) 消息也要转成 subscribe NDJSON
+    形状, msg_type=post 被 subscribe._normalise → _extract_text 处理."""
+    post_content = json.dumps({
+        "title": "",
+        "content": [[
+            {"tag": "text", "text": "看这个 "},
+            {"tag": "img", "image_key": "img_screenshot"},
+        ]],
+    })
+    history = [{
+        "message_id": "om_post",
+        "create_time": "1000",
+        "chat_id": "oc_x",
+        "msg_type": "post",
+        "sender": {"id": "ou_boss", "id_type": "user"},
+        "body": {"content": post_content},
+    }]
+    with isolated_env():
+        lines = catchup.pending_lines("oc_chat", list_fn=lambda: history)
+    line = json.loads(lines[0])
+    msg = line["event"]["message"]
+    assert msg["message_type"] == "post"
+    # subscribe._normalise + _extract_text 已经在 subscribe 单测里覆盖
+    # 把 post content → "[image: image_key=...]" + 文字, 这里 catchup
+    # 只要保证 content 透传即可
+    assert "img_screenshot" in msg["content"]
+
+
 def test_pending_lines_default_list_fn_uses_bot_when_env_says_bot():
     """Bot-only deploys (no `lark-cli auth login` user) trip
     `need_user_authorization` from chat.list_recent's historical

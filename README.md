@@ -1,22 +1,17 @@
-# ClaudeTeam (rebuild)
+# ClaudeTeam
 
 > *Harness your Claude Code.*
 
-A clean-slate rebuild of [ClaudeTeam](https://github.com/zylMozart/ClaudeTeam):
-multiple Claude Code agents in tmux, coordinated through a Feishu group
-chat, with one Python module per command and a small dependency
-footprint.
+Multiple Claude Code agents running in tmux, coordinated through a
+Feishu group chat. The boss talks to a manager agent in chat; the
+manager dispatches workers, watches their panes, and summarises back.
 
-This branch (`rebuild/minimal`) is ~9 K LOC + tests vs. ~33 K on the
-original `main`. Same UX, fewer moving parts.
-
-> **One-click deploy — paste this into a fresh `claude` session in this
-> repo:**
+> **One-click deploy — paste this prompt to your Claude Code agent:**
 >
 > ```
-> Read CLAUDE.md and docs/DEPLOYMENT.md, then walk me through bringing
-> up a ClaudeTeam deployment. Ask for the Feishu app credentials and
-> chat_id when you need them.
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md
+> and docs/DEPLOYMENT.md, then walk me through bringing up a team.
+> Ask for the Feishu app credentials and chat_id when you need them.
 > ```
 
 ---
@@ -63,22 +58,22 @@ nothing depends on a remote DB.
 
 ## Features
 
-- **One config file** — `claudeteam.toml` (Cargo-style, comment-friendly).
-  Replaces the old `team.json` + `runtime_config.json` split.
-- **R174 single-interface routing** — every group message goes to the
-  manager only; workers never get a raw boss message. Manager is the
+- **Single-interface routing** — every group message goes to the
+  manager only; workers never get raw boss messages. Manager is the
   sole orchestrator.
+- **One config file** — `claudeteam.toml` (Cargo-style, comment-friendly)
+  — chat_id, agents, models, card colors, publish filters, all in
+  one place.
 - **`[chat.publish]` filter** — sender→receiver visibility per channel.
   Silence noisy traffic without losing the audit log.
-- **Multi-CLI** — `claude-code` / `codex-cli` / `kimi-code` /
-  `gemini-cli` / `qwen-code` in the same team.
-- **Durable memory** — `claudeteam remember` / `recall` writes survive
-  `/clear` and pane respawn, auto-injected on next wake.
-- **Watchdog** — daemons respawn with cooldown + Feishu chat alert when
-  cooldown trips.
+- **Multi-CLI** — Claude Code, Codex CLI, Kimi Code, Gemini CLI,
+  Qwen Code can all run in the same team.
+- **Durable memory** — agent memory survives `/clear` and pane respawn,
+  auto-injected into the wake prompt.
+- **Watchdog** — crashed daemons respawn with cooldown + Feishu chat
+  alert when cooldown trips.
 - **Slash commands from chat** — `/help /team /health /usage /tmux
   /send /compact /clear /stop /peek /say /remember /recall`.
-- **Stdlib-only test runner** — `python3 tests/run.py` in 30 seconds.
 
 ---
 
@@ -100,7 +95,7 @@ container or via bind-mount).
 ## Quick start
 
 ```bash
-git clone https://github.com/zylMozart/ClaudeTeam.git --branch rebuild/minimal
+git clone https://github.com/zylMozart/ClaudeTeam.git
 cd ClaudeTeam
 
 # Shell env (per terminal — add to ~/.zshrc to persist)
@@ -166,28 +161,16 @@ role = "策划员工"
 | Doc | What's in it |
 | --- | ------------ |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host + Docker setup, config schema, multi-team isolation, troubleshooting |
-| [`CLAUDE.md`](CLAUDE.md) | Building rules + active work order — read before changing code |
-| [`tests/scenarios/host_smoke.md`](tests/scenarios/host_smoke.md) | One-minute smoke for fresh deploys |
-| [`tests/scenarios/round_c_real_task.md`](tests/scenarios/round_c_real_task.md) | Real-task end-to-end (manager dispatches, workers say-back) |
-| [`tests/scenarios/slash_matrix.md`](tests/scenarios/slash_matrix.md) | Per-slash expected card behaviour |
-| [`tests/scenarios/reidentify.md`](tests/scenarios/reidentify.md) | Identity re-injection after prompt change |
+| [`CLAUDE.md`](CLAUDE.md) | Building rules — read before changing code |
 
-For Feishu app setup itself (creating the bot, scopes, callbacks),
-see the original `main` branch's
-[Feishu bot setup guide](https://github.com/zylMozart/ClaudeTeam/blob/main/docs/setup_feishu_bots.md)
+For Feishu app setup itself (creating the bot, scopes, callbacks), see
+the [Feishu bot setup guide](https://github.com/zylMozart/ClaudeTeam/blob/main/docs/setup_feishu_bots.md)
 or the
 [Playwright auto-creator script](https://github.com/zylMozart/ClaudeTeam/tree/main/scripts/feishu_bot_creator).
 
 ---
 
 ## FAQ
-
-**Q: How does this differ from `main`?**
-A: Same UX, fewer files. `main` accumulated 33 K LOC across ~200
-files; this rebuild is ~9 K with one Python module per subcommand
-(`src/claudeteam/commands/<name>.py`). Single config file
-(`claudeteam.toml`), no Bitable / kanban projection, stdlib test
-runner, no compatibility shims.
 
 **Q: Does it work with non-Anthropic models?**
 A: Yes — the multi-CLI adapter table above shows the supported CLIs.
@@ -214,18 +197,8 @@ API usage. Feishu free tier and `lark-cli` are free.
 
 ## Contributing
 
-This is a rebuild branch — see [`CLAUDE.md`](CLAUDE.md) for the building
-rules (two-use rule, single-file ceiling ~300 LOC, every new module
-ships its own unit test in the same commit, etc.).
-
-Test gate must stay green:
-
-```bash
-python3 tests/run.py     # → tests: N passed, 0 failed
-```
-
-PRs welcome. Major changes please open an issue first to discuss the
-design — `rebuild/minimal` actively resists scope creep.
+PRs welcome. See [`CLAUDE.md`](CLAUDE.md) for the building rules; for
+substantial changes please open an issue first to discuss the design.
 
 ## License
 

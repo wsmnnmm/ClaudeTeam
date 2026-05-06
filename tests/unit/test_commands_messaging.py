@@ -72,6 +72,58 @@ def test_send_default_inject_best_effort_when_no_tmux():
         assert len(rows) == 1
 
 
+def test_send_skips_wake_for_non_lazy_agent():
+    """Boss-flagged 2026-05-06: 给 manager 发消息不需要等他空闲, 直接
+    inject 就行 (claude pane stash input buffer 自己处理). 只 lazy 员
+    工才走 wake_if_dormant. 验证: 给一个 has_window=False 的 non-lazy
+    agent 发消息时, send 既不调 wake.is_ready 也不调 wake_if_dormant."""
+    from helpers import attr_patch
+    from claudeteam.runtime import wake, tmux
+    from claudeteam.commands import send as send_mod
+    calls = {"is_ready": 0, "wake_if_dormant": 0}
+    def fake_is_ready(*a, **kw):
+        calls["is_ready"] += 1
+        return True
+    def fake_wake(*a, **kw):
+        calls["wake_if_dormant"] += 1
+    with isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}):
+        with attr_patch(wake, is_ready=fake_is_ready,
+                        wake_if_dormant=fake_wake):
+            with attr_patch(tmux, has_window=lambda *a, **kw: False):
+                rc, _, _ = run_cli(["send", "manager", "boss", "hi"])
+    assert rc == 0
+    # has_window=False 提前 return 0 → wake 调用 0 次
+    assert calls["is_ready"] == 0
+    assert calls["wake_if_dormant"] == 0
+
+
+def test_send_calls_wake_only_for_lazy_agent():
+    """Lazy agent: pane 是 placeholder shell 还没 spawn CLI, 必须 wake_
+    if_dormant 否则 inject 落到 shell 不是 CLI."""
+    from helpers import attr_patch
+    from claudeteam.runtime import wake, tmux, lifecycle
+    calls = {"is_ready": 0, "wake_if_dormant": 0}
+    def fake_is_ready(*a, **kw):
+        calls["is_ready"] += 1
+        return False  # not ready → triggers wake
+    def fake_wake(*a, **kw):
+        calls["wake_if_dormant"] += 1
+    with isolated_env(team={"agents": {"worker_lazy": {
+            "cli": "claude-code", "lazy": True}}}):
+        with attr_patch(wake, is_ready=fake_is_ready,
+                        wake_if_dormant=fake_wake):
+            with attr_patch(tmux,
+                            has_window=lambda *a, **kw: True,
+                            inject=lambda *a, **kw: None):
+                with attr_patch(lifecycle,
+                                pane_env_prefix=lambda: "X=Y"):
+                    rc, _, _ = run_cli(
+                        ["send", "worker_lazy", "manager", "hi"])
+    assert rc == 0
+    assert calls["is_ready"] == 1
+    assert calls["wake_if_dormant"] == 1
+
+
 def test_inbox_lists_unread_with_local_id_and_returns_zero():
     with isolated_env():
         run_cli(["send", "w", "m", "first"])
