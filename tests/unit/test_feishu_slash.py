@@ -97,6 +97,59 @@ def test_team_classifies_each_pane_state_with_emoji():
 _BASH_PROMPT = "root@abc123:/app# "  # matches pane_state._BASH_PROMPT_RE
 
 
+def test_team_card_reflects_live_toml_after_adding_agent():
+    """REGRESSION: previously /team handler used ctx.team_agents +
+    ctx.lazy_agents pre-computed at router startup, so editing
+    claudeteam.toml to add a new agent did NOT show up until restart.
+    Boss-flagged: a config file is meant to live-edit. Now /team
+    re-reads team config every call."""
+    from helpers import isolated_env
+    pane_buffers = {
+        "manager":      "...\n⏵⏵ bypass permissions on\n",
+        "worker_cc":    "...\n⏵⏵ bypass permissions on\n",
+        "worker_codex": "...\n⏵⏵ bypass permissions on\n",
+    }
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    # Initial config: 2 agents
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager":   {"cli": "claude-code"},
+        "worker_cc": {"cli": "claude-code"},
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        # ctx still has stale 2-agent list; but handler should ignore
+        # ctx and re-read from disk → see exactly the 2 agents.
+        reply1 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc")))
+        body1 = reply1["body"]["elements"][0]["content"]
+        assert "2 agents" in body1
+        assert "worker_codex" not in body1
+
+        # Now operator edits claudeteam.toml to add worker_codex.
+        from claudeteam.runtime import config as _config, paths
+        from claudeteam.runtime import tunables as _tun
+        team["agents"]["worker_codex"] = {"cli": "codex-cli"}
+        # Refresh whichever shape isolated_env wrote (json or toml). We
+        # write a minimal toml that load_team can pick up regardless.
+        cf = paths.config_file()
+        toml_lines = ['[team]\nsession = "ClaudeTeam"']
+        for n, c in team["agents"].items():
+            toml_lines.append(f'\n[team.agents.{n}]')
+            for k, v in c.items():
+                toml_lines.append(
+                    f'{k} = {repr(v) if not isinstance(v, str) else chr(34)+v+chr(34)}'.replace("'", '"'))
+        cf.write_text('\n'.join(toml_lines), encoding='utf-8')
+        _tun.reset_cache()
+
+        # Same ctx (stale 2-agent), but handler reads disk → 3 agents.
+        reply2 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc")))
+        body2 = reply2["body"]["elements"][0]["content"]
+        assert "3 agents" in body2
+        assert "worker_codex" in body2
+
+
 def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
     """Round-129: an agent configured `lazy: true` showing 🛑 because
     its CLI hasn't spawned yet is NOT a failure — flag it ⏸ and keep

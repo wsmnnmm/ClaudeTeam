@@ -15,7 +15,6 @@ not fail the check.
 """
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass, field
 
@@ -74,26 +73,6 @@ def _check_state_dir(rep: HealthReport) -> None:
     src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
     rep.note(f"state_dir: {paths.state_dir()}  ({src})")
 
-
-def _read_json_or_fail(rep: HealthReport, path, label: str) -> dict | None:
-    """Read `path` as JSON or log a red check + return None.
-
-    R140: extracted from `_check_team` + `_check_runtime_config` which
-    each inlined the same exists-then-parse-explicitly dance. Why
-    explicit? `config.load_team` / `config.load_runtime_config` are
-    lenient — they return defaults + stderr-warn on corrupt JSON so
-    callers don't crash. Health intentionally trades that for
-    surfaces — boss wants a red check on corruption, not a silent
-    fallback to defaults that hides the misconfig.
-    """
-    if not path.exists():
-        rep.fail(f"{label} missing at {path}")
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        rep.fail(f"{label} parse error: {e}")
-        return None
 
 
 def _check_team(rep: HealthReport) -> None:

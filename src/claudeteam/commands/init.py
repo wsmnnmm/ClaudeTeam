@@ -13,13 +13,10 @@ Refuses to overwrite an existing `claudeteam.toml` unless --force.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from claudeteam.runtime import config as _config, paths
 from claudeteam.util import (
     error_exit, maybe_print_help, pop_bool_flag, pop_flag,
-    reject_extra_args, write_json,
+    reject_extra_args,
 )
 
 

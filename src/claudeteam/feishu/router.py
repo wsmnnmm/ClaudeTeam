@@ -70,15 +70,6 @@ def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
     return m.group(1), text[m.end():].lstrip()
 
 
-def _parse_mentions(text: str, agents: set[str]) -> list[str]:
-    """Return @-mentioned team agents, in order, without duplicates."""
-    seen: list[str] = []
-    for m in _MENTION_RE.finditer(text):
-        name = m.group(1)
-        if name in agents and name not in seen:
-            seen.append(name)
-    return seen
-
 
 # R174: card-title sender-extraction. Worker `claudeteam say` posts
 # interactive cards with title `{emoji} {agent} · {role}`; the

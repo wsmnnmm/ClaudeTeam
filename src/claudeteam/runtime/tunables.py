@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib  # type: ignore[import-not-found]

@@ -174,16 +174,23 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     caught the wart: yellow team header for a worker that's just
     waiting for its first message looks like an alarm.
     """
-    # R158: lazy agents now come from ctx.lazy_agents, pre-computed at
-    # daemon startup. Was R144: one `load_team()` per /team event.
-    # Now: zero — every chat-side /team card render hits the disk
-    # exactly 0 times for config (capture_pane is the only per-agent
-    # I/O left, and that's a tmux subprocess, not a config read).
-    lazy_agents = ctx.lazy_agents
+    # Re-read team config on every /team so the operator sees the live
+    # set of agents — adding `[team.agents.<name>]` to claudeteam.toml
+    # is meant to take effect without restarting the router. The 1
+    # disk read per /team event is negligible vs the per-agent
+    # tmux capture_pane subprocesses below. (Earlier rounds cached
+    # this in ctx for "0 disk reads", but that broke the live-edit
+    # workflow the boss expects from a config file.)
+    from claudeteam.runtime import config as _config
+    team_data = _config.load_team()
+    agents_dict = team_data.get("agents", {})
+    team_agents = list(agents_dict.keys())
+    lazy_agents = frozenset(
+        n for n, c in agents_dict.items() if c.get("lazy"))
 
     rows = []
     tally: Counter[str] = Counter()
-    for agent in ctx.team_agents:
+    for agent in team_agents:
         target = tmux.Target(ctx.session, agent)
         try:
             buf = tmux.capture_pane(target, lines=80)
