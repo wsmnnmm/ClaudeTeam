@@ -59,6 +59,12 @@ class ProcessSpec:
     # parallel with the orphan and Feishu randomly splits events between
     # them. Empty tuple = no reap.
     orphan_markers: tuple[str, ...] = ()
+    # If set, respawn redirects the child's stdout+stderr (append) to this
+    # path instead of DEVNULL. Without this, transient failures inside the
+    # daemon are unobservable: the router silently dropping a slash event
+    # or the watchdog hitting a Popen error leaves no trace. Append-mode so
+    # multi-respawn history accumulates; operator rotates by hand.
+    log_file: Path | None = None
 
 
 @dataclass
@@ -181,13 +187,31 @@ def respawn(spec: ProcessSpec, *,
     """
     reap(spec)
     runner = popen if popen is not None else subprocess.Popen
+    log_fh = None
+    if spec.log_file is not None:
+        try:
+            spec.log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = open(spec.log_file, "a", buffering=1)
+        except OSError as e:
+            print(f"  ⚠️ {spec.name} log_file open failed ({e}); falling back to DEVNULL")
+            log_fh = None
+    stdout = log_fh if log_fh is not None else subprocess.DEVNULL
+    stderr = log_fh if log_fh is not None else subprocess.DEVNULL
     try:
         runner(spec.spawn_cmd, start_new_session=True,
-               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+               stdout=stdout, stderr=stderr)
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")
         return False
+    finally:
+        # Popen dup'd the fd at fork; closing our local handle is safe and
+        # keeps the watchdog from holding the file open across respawns.
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except OSError:
+                pass
 
 
 # ── one sweep ──────────────────────────────────────────────────────
@@ -258,7 +282,8 @@ def supervise(specs: list[ProcessSpec],
 
 
 def _claudeteam_spec(name: str, pid_file: Path, *,
-                     orphan_markers: tuple[str, ...] = ()) -> ProcessSpec:
+                     orphan_markers: tuple[str, ...] = (),
+                     log_file: Path | None = None) -> ProcessSpec:
     """Build a ProcessSpec for a `claudeteam <name>` daemon. The cmdline-match
     string is just `\"claudeteam\"` so any process whose argv contains the
     word counts — defends against PID reuse, doesn't lock to argv shape."""
@@ -268,6 +293,7 @@ def _claudeteam_spec(name: str, pid_file: Path, *,
         expected_cmdline="claudeteam",
         spawn_cmd=["claudeteam", name],
         orphan_markers=orphan_markers,
+        log_file=log_file,
     )
 
 
@@ -283,7 +309,8 @@ def default_specs() -> list[ProcessSpec]:
     """Specs the watchdog supervises. Just the router — the watchdog
     doesn't supervise itself."""
     return [_claudeteam_spec("router", paths.router_pid_file(),
-                             orphan_markers=_ROUTER_SUBSCRIBE_MARKERS)]
+                             orphan_markers=_ROUTER_SUBSCRIBE_MARKERS,
+                             log_file=paths.router_log_file())]
 
 
 def all_known_specs() -> list[ProcessSpec]:
@@ -292,6 +319,8 @@ def all_known_specs() -> list[ProcessSpec]:
     matches a live process."""
     return [
         _claudeteam_spec("router", paths.router_pid_file(),
-                         orphan_markers=_ROUTER_SUBSCRIBE_MARKERS),
-        _claudeteam_spec("watchdog", paths.watchdog_pid_file()),
+                         orphan_markers=_ROUTER_SUBSCRIBE_MARKERS,
+                         log_file=paths.router_log_file()),
+        _claudeteam_spec("watchdog", paths.watchdog_pid_file(),
+                         log_file=paths.watchdog_log_file()),
     ]

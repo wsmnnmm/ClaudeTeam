@@ -43,8 +43,16 @@ def router_cursor_file() -> Path:
     return state_file("router.cursor")
 
 
+def router_log_file() -> Path:
+    return state_file("router.log")
+
+
 def watchdog_pid_file() -> Path:
     return state_file("watchdog.pid")
+
+
+def watchdog_log_file() -> Path:
+    return state_file("watchdog.log")
 
 
 def ensure_state_dir() -> Path:

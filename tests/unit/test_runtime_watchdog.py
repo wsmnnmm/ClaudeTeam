@@ -119,6 +119,62 @@ def test_respawn_returns_false_on_oserror():
     assert respawn(spec, popen=bad) is False
 
 
+def test_respawn_uses_devnull_when_log_file_unset():
+    """Default behavior: no log_file → stdout/stderr both DEVNULL.
+    Mirrors pre-R178 contract for any spec that doesn't opt in."""
+    import subprocess
+    spec = _spec()
+    captured = {}
+    def spy(*a, **k):
+        captured["stdout"] = k.get("stdout")
+        captured["stderr"] = k.get("stderr")
+        return object()
+    assert respawn(spec, popen=spy) is True
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.DEVNULL
+
+
+def test_respawn_appends_to_log_file_when_set():
+    """When spec.log_file is set, both stdout and stderr go to that file
+    in append mode. Without this, transient daemon failures (router
+    silently drops a slash, watchdog hits a Popen error) leave no trace.
+    REGRESSION: 2026-05-06 /tmux worker_cc silent failures couldn't be
+    diagnosed because router stdout was DEVNULL."""
+    import os, tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        log_path = Path(tmp) / "logs" / "router.log"  # parent missing on purpose
+        spec = _spec(log_file=log_path)
+        captured = {}
+        def spy(*a, **k):
+            captured["stdout"] = k.get("stdout")
+            captured["stderr"] = k.get("stderr")
+            # Sanity: it's a file object opened in append mode for line buffering
+            return object()
+        assert respawn(spec, popen=spy) is True
+        # parent dir created, file exists, both fds point to the same file
+        assert log_path.parent.is_dir()
+        assert captured["stdout"] is captured["stderr"]
+        # subprocess passed it a real file-like with a fileno
+        assert hasattr(captured["stdout"], "fileno")
+
+
+def test_respawn_falls_back_to_devnull_when_log_file_open_fails():
+    """Permission denied / disk full / parent-dir on a read-only mount
+    shouldn't kill the respawn. Warn and use DEVNULL."""
+    import contextlib, io, subprocess
+    spec = _spec(log_file=Path("/dev/null/cant-write-here/router.log"))
+    captured = {}
+    def spy(*a, **k):
+        captured["stdout"] = k.get("stdout")
+        return object()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert respawn(spec, popen=spy) is True
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert "log_file open failed" in out.getvalue()
+
+
 # ── orphan reap (round-65) ───────────────────────────────────────
 
 
