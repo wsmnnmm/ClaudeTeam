@@ -75,7 +75,13 @@ def _extract_content(fei_msg: dict) -> str:
 
 def _msg_to_event_line(fei_msg: dict) -> str:
     """Convert a chat-messages-list row into one NDJSON line matching
-    `lark-cli event +subscribe --compact` shape."""
+    `lark-cli event +subscribe --compact` shape.
+
+    Carries sender.id_type into the event so subscribe._normalise can
+    surface sender_type to classify_event — without it, R174 bot-self
+    detection misses bot-sent cards on the catchup path and forwards
+    manager's own ack cards back into manager's inbox every restart
+    (host_smoke 2026-05-06: 7 loops in one session)."""
     sender = fei_msg.get("sender") or {}
     payload = {
         "event": {
@@ -88,6 +94,8 @@ def _msg_to_event_line(fei_msg: dict) -> str:
             },
             "sender": {
                 "sender_id": {"open_id": sender.get("id", "")},
+                "sender_type": sender.get("sender_type")
+                                or sender.get("id_type", ""),
             },
         }
     }

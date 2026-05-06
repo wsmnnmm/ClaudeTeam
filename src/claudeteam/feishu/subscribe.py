@@ -64,11 +64,22 @@ def _normalise(raw: dict) -> dict:
     content = msg.get("content") if msg else ev.get("content")
     text = _extract_text(content, msg_type) or ev.get("text", "")
 
+    # sender_type identifies bot vs human. Modern lark-cli payload has
+    # `sender_type: "user" | "app"` flat at top; webhook-shape and
+    # chat-messages-list both put it inside `sender.sender_type` /
+    # `sender.id_type`. Need it for R174 bot-self detection so manager's
+    # own cards don't loop back into manager's inbox via catchup
+    # (host_smoke 2026-05-06: 7 forward loops before this caught).
+    sender_type = (sender.get("sender_type")
+                   or sender.get("id_type")
+                   or ev.get("sender_type", ""))
     return {
         "message_id": msg.get("message_id") or ev.get("message_id", ""),
         "chat_id": msg.get("chat_id") or ev.get("chat_id", ""),
         "sender_id": (sender.get("sender_id", {}).get("open_id")
+                      or sender.get("id")
                       or ev.get("sender_id", "")),
+        "sender_type": sender_type,
         "text": text,
         "msg_type": msg_type,
         "create_time": msg.get("create_time") or ev.get("create_time", ""),

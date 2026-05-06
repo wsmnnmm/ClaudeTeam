@@ -51,6 +51,60 @@ def test_drop_when_sender_matches_bot_id():
     assert d.is_drop() and d.reason == "bot_self"
 
 
+def test_drop_when_sender_type_is_app_even_without_bot_id():
+    """REGRESSION: 2026-05-06 host_smoke caught manager's own ack cards
+    looping back into manager inbox every router restart. Root cause:
+    `commands/router.py` never passed bot_id to classify_event, so the
+    `bot_id == sender_id` check never fired. Modern lark-cli `--compact`
+    payload carries sender_type=app for bot-sent messages, and
+    chat-messages-list returns id_type=app_id — both surface as
+    sender_type here. R174 bot-self path now triggers on either signal.
+    """
+    d = classify_event(
+        _ev(sender_id="cli_xxx", sender_type="app",
+            text='<card title="🎯 manager">ack</card>'),
+        team_agents=_AGENTS,
+    )
+    assert d.is_drop() and d.reason == "bot_self"
+
+
+def test_drop_when_sender_id_type_is_app_id_from_catchup_path():
+    """chat-messages-list shape: sender.id_type='app_id' surfaces as
+    sender_type='app_id' after _msg_to_event_line + _normalise. Same
+    drop path as live `app` value."""
+    d = classify_event(
+        _ev(sender_id="cli_xxx", sender_type="app_id",
+            text='<card title="🎯 manager">ack</card>'),
+        team_agents=_AGENTS,
+    )
+    assert d.is_drop() and d.reason == "bot_self"
+
+
+def test_route_to_manager_when_worker_card_is_bot_sent():
+    """R174 exception still works under the new sender_type detection:
+    worker-sent cards (bot identity, but card title parses as worker_X)
+    route back to manager's inbox. Real card title shape includes ` · `
+    after the agent name, which `_card_sender_agent` keys on."""
+    d = classify_event(
+        _ev(sender_id="cli_xxx", sender_type="app",
+            text='<card title="💎 worker_cc · 内容策划">完工</card>'),
+        team_agents=_AGENTS,
+    )
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.sender == "worker_cc"
+
+
+def test_user_sender_type_does_not_trigger_bot_self():
+    """sender_type='user' — the human path. Must still route to manager."""
+    d = classify_event(
+        _ev(sender_id="ou_human", sender_type="user", text="hi"),
+        team_agents=_AGENTS,
+    )
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+
+
 def test_drop_when_text_empty():
     d = classify_event(_ev(text=""), team_agents=_AGENTS)
     assert d.is_drop() and d.reason == "empty"

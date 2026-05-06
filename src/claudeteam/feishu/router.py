@@ -171,12 +171,22 @@ def classify_event(event: dict, *,
 
     raw_text = (event.get("text") or "").strip()
 
-    # Bot self-talk: the app open_id sent this. Default = drop. R174
-    # exception: if the card was posted by a NON-manager worker (per
-    # card-title parse), route to manager's inbox so manager has
-    # visibility into worker chat replies. Self-loop guard: manager's
-    # own cards always drop here.
-    if bot_id and event.get("sender_id") == bot_id:
+    # Bot self-talk: the app sent this. Default = drop. R174 exception:
+    # if the card was posted by a NON-manager worker (per card-title
+    # parse), route to manager's inbox so manager has visibility into
+    # worker chat replies. Self-loop guard: manager's own cards always
+    # drop here.
+    #
+    # 2026-05-06: bot detection unified to `sender_type in {"app",
+    # "app_id"}` so production daemon doesn't have to learn the bot's
+    # open_id at startup. Live lark-cli `--compact` payloads carry
+    # sender_type=app, chat-messages-list returns id_type=app_id; both
+    # match. `bot_id == sender_id` kept as fallback for fixtures /
+    # legacy callers that still set it.
+    sender_type = event.get("sender_type", "")
+    is_bot = (sender_type in ("app", "app_id")
+              or (bot_id and event.get("sender_id") == bot_id))
+    if is_bot:
         card_agent = _card_sender_agent(raw_text, agents) if raw_text else ""
         if card_agent and card_agent != default_target:
             return Decision(Action.ROUTE, targets=[default_target],
