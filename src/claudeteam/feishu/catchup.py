@@ -167,6 +167,15 @@ def pending_lines(chat_id: str, *,
     """
     cursor = read_cursor()
     cursor_ct = str(cursor.get("create_time") or "")
+    # Fresh deploy (no cursor): don't replay arbitrary chat history.
+    # Otherwise a fresh `claudeteam up` would re-fire every message in
+    # the recent 50 — including dispatches from a previous team that
+    # would now have manager re-doing tasks the boss already cleared.
+    # The live subscribe stream picks up from "now" forward; the first
+    # real event writes a cursor so subsequent restarts correctly catch
+    # up just the gap between cursor and now.
+    if not cursor_ct:
+        return []
     if list_fn is None:
         # Honor send_as cascade so bot-only deployments don't trip
         # `need_user_authorization` from `chat-messages-list --as user`

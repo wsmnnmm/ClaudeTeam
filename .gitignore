@@ -44,3 +44,4 @@ AGENTS.md
 # source repo. Use the documented `claudeteam` commands instead.
 /Makefile
 /bin/
+/generated/

@@ -197,9 +197,17 @@ def respawn(spec: ProcessSpec, *,
             log_fh = None
     stdout = log_fh if log_fh is not None else subprocess.DEVNULL
     stderr = log_fh if log_fh is not None else subprocess.DEVNULL
+    # PYTHONUNBUFFERED forces line-buffer on the child's sys.stdout when
+    # it's a regular file. Without it, daemon prints stay stuck in
+    # Python's stdio block buffer and the operator sees an empty
+    # router.log even though the daemon is running fine. Round 2 host
+    # smoke caught this 2026-05-07: router PID alive, fd points at
+    # router.log, but file size 0 indefinitely.
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     try:
         runner(spec.spawn_cmd, start_new_session=True,
-               stdout=stdout, stderr=stderr)
+               stdout=stdout, stderr=stderr, env=env)
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")

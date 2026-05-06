@@ -149,16 +149,26 @@ def test_pending_lines_recovers_messages_at_same_minute_as_cursor():
     assert sorted(ids) == ["om_missed_a", "om_missed_b", "om_processed"]
 
 
-def test_pending_lines_returns_all_when_no_cursor():
+def test_pending_lines_returns_empty_when_no_cursor():
+    """Fresh deploy: catchup must NOT replay arbitrary chat history.
+    Otherwise `claudeteam up` re-fires every recent message including
+    old dispatches from a previous team. Round 2 host smoke caught
+    this 2026-05-07: a fresh up replayed a 30-min-old r1-mix dispatch
+    and manager re-dispatched workers for a task the boss had cleared.
+    Live subscribe picks up from "now" forward; first live event
+    writes the cursor so subsequent restarts catch up only the gap."""
     history = [_msg("om_a", "100"), _msg("om_b", "200")]
     with isolated_env():
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
-    assert len(lines) == 2
+    assert lines == []
 
 
 def test_pending_lines_sorts_oldest_first_even_when_history_newest_first():
     history = [_msg("om_c", "300"), _msg("om_a", "100"), _msg("om_b", "200")]
+    # Need a cursor so pending_lines doesn't take the fresh-deploy
+    # short-circuit; cursor at create_time=50 keeps everything.
     with isolated_env():
+        catchup.write_cursor("om_seed", "50")
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
     parsed = [json.loads(l) for l in lines]
     cts = [p["event"]["message"]["create_time"] for p in parsed]
@@ -168,6 +178,7 @@ def test_pending_lines_sorts_oldest_first_even_when_history_newest_first():
 def test_pending_lines_emits_subscribe_compatible_shape():
     history = [_msg("om_x", "500", text="hello world", sender="ou_42")]
     with isolated_env():
+        catchup.write_cursor("seed", "1")
         lines = catchup.pending_lines("oc_chat", list_fn=lambda: history)
     line = json.loads(lines[0])
     msg = line["event"]["message"]
@@ -197,6 +208,7 @@ def test_pending_lines_carries_post_message_through_to_subscribe():
         "body": {"content": post_content},
     }]
     with isolated_env():
+        catchup.write_cursor("seed", "1")
         lines = catchup.pending_lines("oc_chat", list_fn=lambda: history)
     line = json.loads(lines[0])
     msg = line["event"]["message"]
@@ -222,6 +234,7 @@ def test_pending_lines_default_list_fn_uses_bot_when_env_says_bot():
     try:
         from helpers import env_patch
         with isolated_env(), env_patch(CLAUDETEAM_LARK_SEND_AS="bot"):
+            catchup.write_cursor("seed", "1")
             catchup.pending_lines("oc_x")
         assert captured["as_user"] is False
     finally:
@@ -250,6 +263,7 @@ def test_pending_lines_default_list_fn_honors_toml_send_as_bot():
             tunables.reset_cache()
             with env_patch(CLAUDETEAM_LARK_SEND_AS=None,
                             CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+                catchup.write_cursor("seed", "1")
                 catchup.pending_lines("oc_x")
         assert captured["as_user"] is False
     finally:
@@ -267,6 +281,7 @@ def test_pending_lines_default_list_fn_keeps_user_default_when_env_unset():
     try:
         from helpers import env_patch
         with isolated_env(), env_patch(CLAUDETEAM_LARK_SEND_AS=None):
+            catchup.write_cursor("seed", "1")
             catchup.pending_lines("oc_x")
         assert captured["as_user"] is True
     finally:
@@ -288,6 +303,7 @@ def test_pending_lines_skips_messages_with_bad_create_time():
          "sender": {"id": "ou_x"}, "body": {"content": "{}"}},
     ]
     with isolated_env():
+        catchup.write_cursor("seed", "1")
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
     parsed = [json.loads(l) for l in lines]
     ids = [p["event"]["message"]["message_id"] for p in parsed]
@@ -301,6 +317,7 @@ def test_pending_lines_round_trip_through_process_lines():
     """Ensure the lines we emit can be eaten by subscribe.process_lines."""
     history = [_msg("om_replay", "5000", text="catch this")]
     with isolated_env():
+        catchup.write_cursor("seed", "1")
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
         applies = []
         stats = process_lines(
@@ -384,6 +401,7 @@ def test_pending_lines_round_trip_with_live_shape_through_process_lines():
     history = [_msg_live("om_replay_live", "2026-05-03 19:00",
                           text="catch this live")]
     with isolated_env():
+        catchup.write_cursor("seed", "1")
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
         applies = []
         stats = process_lines(
