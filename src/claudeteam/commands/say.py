@@ -23,7 +23,8 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 USAGE = (
     "usage: claudeteam say <agent> <message> "
-    "[--reply <message_id>] [--as user|bot] [--no-local]"
+    "[--reply <message_id>] [--as user|bot] [--no-local] "
+    "[--to user|manager|worker_<name>]"
 )
 
 
@@ -48,6 +49,42 @@ _DEFAULT_AGENT_EMOJI = {
     "worker_gemini": "🟩",
     "worker_qwen": "🟪",
 }
+
+
+def _role_of(name: str) -> str:
+    """Map agent name → role bucket used by chat.publish keys.
+    Convention: 'manager' → manager; 'worker_*' → worker; 'user' → user;
+    anything else → user (safe default; "对老板说" is the most common
+    intent when receiver is unrecognized)."""
+    if name == "manager":
+        return "manager"
+    if name == "user" or not name:
+        return "user"
+    if name.startswith("worker"):
+        return "worker"
+    return "user"
+
+
+def _publish_allowed(sender: str, to_target: str) -> bool:
+    """Look up `chat.publish.{sender_role}_to_{receiver_role}` in toml.
+
+    Default for any unset key is True (preserves the pre-Step-3 behavior
+    where every `say` posted to chat). Operators turn keys to false to
+    silence specific channels (e.g. manager_to_worker = false makes
+    派单卡只走 send/inbox 不进群).
+
+    "always" is treated as True — the schema uses "always" as a hint
+    that this lane shouldn't be silenced (老板↔manager 必显), but the
+    semantic is just "send".
+    """
+    from claudeteam.runtime import tunables
+    sender_role = _role_of(sender)
+    receiver_role = _role_of(to_target)
+    key = f"chat.publish.{sender_role}_to_{receiver_role}"
+    val = tunables.tunable(key, True)
+    if val == "always":
+        return True
+    return bool(val)
 
 
 def _color_for(agent: str, cfg_color: str | None = None) -> str:
@@ -87,6 +124,10 @@ class _Args:
     reply_to: str = ""
     as_user: bool = False
     local: bool = True
+    to: str = "user"   # receiver hint for chat.publish filter; default
+                       # "user" preserves backwards-compat for callers
+                       # that don't pass --to (manager → user is the
+                       # typical case)
 
 
 def _parse(argv: list[str]) -> _Args | None:
@@ -102,7 +143,8 @@ def _parse(argv: list[str]) -> _Args | None:
     no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
     as_explicit = pop_flag(rest, "--as")
-    if "--reply" in rest or "--as" in rest:
+    to_explicit = pop_flag(rest, "--to") or "user"
+    if "--reply" in rest or "--as" in rest or "--to" in rest:
         return None  # flag present but value missing
     if len(rest) < 2:
         return None
@@ -126,6 +168,7 @@ def _parse(argv: list[str]) -> _Args | None:
         reply_to=reply_to,
         as_user=(as_value == "user"),
         local=not no_local,
+        to=to_explicit,
     )
 
 
@@ -175,6 +218,20 @@ def main(argv: list[str]) -> int:
     cfg_color = agent_cfg.get("card_color") or agent_cfg.get("color")
     card = simple_card(title, args.message,
                         color=_color_for(args.agent, cfg_color))
+
+    # Step 3: chat.publish filter — operator can silence specific
+    # sender→receiver channels via toml (default all true = preserve
+    # pre-Step-3 behavior). Audit log was already written above
+    # regardless of publish state, so silenced messages still leave a
+    # trail.
+    if not _publish_allowed(args.agent, args.to):
+        from claudeteam.runtime import tunables
+        sender_role = _role_of(args.agent)
+        receiver_role = _role_of(args.to)
+        key = f"chat.publish.{sender_role}_to_{receiver_role}"
+        print(f"📝 {args.agent} → silenced by [{key}]=false; logged only")
+        return 0
+
     result = feishu_chat.send_card(
         chat, card,
         profile=profile,

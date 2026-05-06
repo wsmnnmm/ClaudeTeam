@@ -139,3 +139,32 @@ def test_garbage_toml_returns_default_does_not_raise():
         with _with_config_dir(tmp):
             tunables.reset_cache()
             assert tunables.tunable("router.stale_event_threshold_s", 180.0) == 180.0
+
+
+def test_garbage_toml_warns_to_stderr():
+    """On parse error, surface a one-line stderr warning so operator
+    knows their toml changes aren't taking effect (vs silent fallback
+    that hides the misconfig)."""
+    import contextlib, io
+    err = io.StringIO()
+    with isolated_env() as tmp:
+        _write_toml(tmp, "[chat.publish]\nfoo = false\n[chat.publish]\nbar = true\n")  # duplicate section
+        with _with_config_dir(tmp), contextlib.redirect_stderr(err):
+            tunables.reset_cache()
+            tunables.tunable("router.stale_event_threshold_s", 180.0)
+    assert "解析失败" in err.getvalue()
+
+
+def test_garbage_toml_warning_dedups_per_mtime():
+    """Repeated tunable() calls on the same broken toml shouldn't spam
+    stderr — warn once per (path, mtime)."""
+    import contextlib, io
+    err = io.StringIO()
+    with isolated_env() as tmp:
+        _write_toml(tmp, "this is not [valid\n")
+        with _with_config_dir(tmp), contextlib.redirect_stderr(err):
+            tunables.reset_cache()
+            tunables.tunable("a", "x")
+            tunables.tunable("b", "y")
+            tunables.tunable("c", "z")
+    assert err.getvalue().count("解析失败") == 1

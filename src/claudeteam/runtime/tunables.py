@@ -43,11 +43,22 @@ def _env_var_for(dotted_path: str) -> str:
 _CACHE: dict[Path, tuple[float, dict]] = {}
 
 
+_PARSE_WARN_SHOWN: dict[Path, float] = {}  # path → mtime we already warned about
+
+
 def _load_toml() -> dict:
     """Read `claudeteam.toml` from `paths.config_file()`. Returns `{}` if
     the file is missing. Cached per file mtime so hot-loop callers don't
     pound the disk.
+
+    On TOML parse error: log a one-line stderr warning (per (path, mtime)
+    so we don't spam the same error repeatedly) and return `{}`. The
+    fallback to `{}` lets the daemon continue with hardcoded defaults
+    rather than crash on a malformed config; the warning makes the
+    failure visible rather than silent (operator must know they have
+    a bad toml or their changes won't take effect).
     """
+    import sys
     path = paths.config_file()
     try:
         mtime = path.stat().st_mtime
@@ -59,7 +70,13 @@ def _load_toml() -> dict:
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError:
+        return {}
+    except tomllib.TOMLDecodeError as e:
+        if _PARSE_WARN_SHOWN.get(path) != mtime:
+            print(f"  ⚠️ {path} 解析失败 ({e}); 回退默认值",
+                  file=sys.stderr)
+            _PARSE_WARN_SHOWN[path] = mtime
         return {}
     _CACHE[path] = (mtime, data)
     return data
@@ -145,6 +162,7 @@ def reset_cache() -> None:
     """Clear the toml load cache. Tests call this between cases that
     munge the config file."""
     _CACHE.clear()
+    _PARSE_WARN_SHOWN.clear()
 
 
 def load() -> dict:

@@ -297,3 +297,96 @@ def test_say_audit_log_failure_does_not_block_chat_send():
     assert len(send["calls"]) == 1
     # Stderr surfaced the audit-log warning so operator knows
     assert "audit log write failed" in err
+
+
+# ── Step 3: --to + chat.publish 过滤 ───────────────────────────
+
+
+def _toml_with_publish(tmp_path, **kv):
+    """Drop a claudeteam.toml with [chat.publish] = kv into tmp_path."""
+    from claudeteam.runtime import tunables
+    lines = ["[chat.publish]"]
+    for k, v in kv.items():
+        if v == "always":
+            lines.append(f'{k} = "always"')
+        elif v is True:
+            lines.append(f"{k} = true")
+        elif v is False:
+            lines.append(f"{k} = false")
+    (tmp_path / "claudeteam.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tunables.reset_cache()
+
+
+def test_say_default_to_is_user_when_unset():
+    """No --to flag → default 'user' (老板)。chat.publish.manager_to_user
+    默认 True → send_card 被调。"""
+    with _isolated() as tmp, _fake_send() as send:
+        rc, _, _ = run_cli(["say", "manager", "hi 老板"])
+    assert rc == 0
+    assert len(send["calls"]) == 1
+
+
+def test_say_silenced_when_publish_false():
+    """publish[manager_to_worker]=false → say --to worker_cc 不发卡，
+    只 log 审计。"""
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, manager_to_worker=False)
+        rc, out, _ = run_cli(["say", "manager", "派单消息", "--to", "worker_cc"])
+        assert rc == 0
+        assert len(send["calls"]) == 0
+        assert "silenced" in out
+        # Audit log 仍然写（必须在 isolated_env 内查，state_dir 才是 tmp）
+        rows = local_facts.list_logs("manager")
+        assert len(rows) == 1
+        assert rows[0]["content"] == "派单消息"
+
+
+def test_say_passes_through_when_publish_true():
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, manager_to_worker=True)
+        rc, _, _ = run_cli(["say", "manager", "派单", "--to", "worker_cc"])
+    assert rc == 0
+    assert len(send["calls"]) == 1
+
+
+def test_say_passes_through_when_publish_always():
+    """`always` is a hint, treated as True at runtime."""
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, manager_to_user="always")
+        rc, _, _ = run_cli(["say", "manager", "答老板", "--to", "user"])
+    assert rc == 0
+    assert len(send["calls"]) == 1
+
+
+def test_say_worker_to_user_default_true():
+    """worker → user (worker 完工卡) — 默认 True (preserve current behavior)."""
+    with _isolated() as tmp, _fake_send() as send:
+        rc, _, _ = run_cli(["say", "worker_cc", "完工 ✅", "--to", "user"])
+    assert rc == 0
+    assert len(send["calls"]) == 1
+
+
+def test_say_worker_to_manager_silenced_when_false():
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, worker_to_manager=False)
+        rc, out, _ = run_cli(["say", "worker_cc", "进度更新", "--to", "manager"])
+    assert rc == 0
+    assert len(send["calls"]) == 0
+    assert "silenced" in out
+
+
+def test_say_unknown_to_falls_back_to_user_role():
+    """`--to foobar` → receiver_role='user' fallback (safest default)."""
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, manager_to_user="always")
+        rc, _, _ = run_cli(["say", "manager", "msg", "--to", "foobar"])
+    assert rc == 0
+    assert len(send["calls"]) == 1   # user_to_user → default True
+
+
+def test_say_to_arg_value_required():
+    """`--to` without a value should usage-error."""
+    with _isolated():
+        rc, _, err = run_cli(["say", "manager", "msg", "--to"])
+    assert rc == 1
+    assert "usage: claudeteam say" in err
