@@ -212,6 +212,36 @@ def test_say_card_for_worker_uses_team_json_color_after_R169():
     assert card["header"]["title"]["content"] == "💎 worker_cc · Claude Code 员工"
 
 
+def test_say_card_color_reflects_live_toml_edit():
+    """REGRESSION: editing a worker's `card_color` in claudeteam.toml
+    should change the very next `say` card without a router restart.
+    config.agent_config goes through the lenient JSON / mtime-cached
+    TOML path, so a live edit takes effect on the next call."""
+    from claudeteam.runtime import paths, tunables as _tun
+    with _isolated() as tmp, _fake_send_card() as st:
+        # First call: default fixture has worker_cc card_color=purple
+        rc, _, _ = run_cli(["say", "worker_cc", "first"])
+        assert rc == 0
+        first_color = st["card_calls"][0]["card"]["header"]["template"]
+        assert first_color == "purple"
+
+        # Operator edits claudeteam.toml — flip worker_cc to red
+        cf = paths.config_file()
+        cf.write_text(
+            '[team]\nsession = "ClaudeTeam"\n\n'
+            '[team.agents.manager]\ncli = "claude-code"\nrole = "主管"\n\n'
+            '[team.agents.worker_cc]\ncli = "claude-code"\nrole = "Claude Code 员工"\n'
+            'card_color = "red"\n',
+            encoding='utf-8')
+        _tun.reset_cache()
+
+        rc, _, _ = run_cli(["say", "worker_cc", "second"])
+        assert rc == 0
+        second_color = st["card_calls"][1]["card"]["header"]["template"]
+        assert second_color == "red", \
+            f"card_color edit didn't take effect: still {second_color}"
+
+
 def test_say_with_reply_warns_and_sends_card_anyway():
     """Cards don't thread; `--reply` prints a stderr warning but
     still sends the card. R169: the warn message is generic

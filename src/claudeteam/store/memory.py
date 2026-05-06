@@ -1,21 +1,21 @@
 """Per-agent durable memory.
 
-Round-83: each agent gets a `memory.jsonl` under their state dir
+Each agent gets a `memory.jsonl` under their state dir
 (`facts/<agent>/memory.jsonl`) — append-only structured notes that
 survive across tmux pane restarts and `/clear` cycles.
 
 Why not reuse `local_facts.append_log`? Logs are an audit trail
 (every action). Memory is a curated subset — what an agent should
 *re-read* on wake to keep continuity. Keeping them separate lets us:
-  - inject memory (NOT logs) into identity init prompt without
-    flooding the worker with audit minutiae (R84).
-  - rate-limit memory growth without forcing log truncation
-    (`_MAX_PER_AGENT = 200`).
+  - inject memory (NOT logs) into the identity init prompt without
+    flooding the worker with audit minutiae.
+  - rate-limit memory growth (`_MAX_PER_AGENT = 200`) without
+    forcing log truncation.
 
 Each entry is a tiny dict:
   {kind, content, ref?, created_at}
 
-`kind` is a short tag (R106 KNOWN_KINDS):
+`kind` is a short tag (see `KNOWN_KINDS`):
   `task_assigned` / `task_completed` / `learning` / `blocker` /
   `decision` / `note`
 Convention, not enforced — `append` accepts any string but soft-warns
@@ -23,20 +23,14 @@ to stderr when `kind` falls outside KNOWN_KINDS so the schema doesn't
 fragment into free-form labels (`fyi`, `important!!!`, `mood-of-day`)
 that hurt `recall` scannability.
 
-Helpers for callers:
-  `kinds_summary()` — `' / '`-joined for CLI USAGE strings (R119)
-  `kinds_sorted()`  — alphabetical list for slash-card display (R120)
-
 API surface:
   `append(agent, kind, content, *, ref="")`  → write 1 entry
   `list_recent(agent, *, limit=20)`          → list, oldest-first
   `clear(agent)`                              → drop all entries
-  `clear_kind(agent, kind)`                   → drop one slice (R111)
+  `clear_kind(agent, kind)`                   → drop one slice
   `render_for_prompt(agent, *, limit=20)`     → markdown for init prompt
-  `all_agents_with_memory()`                  → iterator for health audit
-                                                 (R132: wired into
-                                                 `claudeteam health`'s
-                                                 memory: section)
+  `all_agents_with_memory()`                  → iterator for /health audit
+  `kinds_summary()` / `kinds_sorted()`        → KNOWN_KINDS pretty-prints
 """
 from __future__ import annotations
 

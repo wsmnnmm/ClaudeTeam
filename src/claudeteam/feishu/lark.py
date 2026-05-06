@@ -32,13 +32,14 @@ from claudeteam.util import env_str
 
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 
-# R161: container-deploy token bootstrap. lark-cli on macOS host pulls
-# app secrets from the keychain; in a Linux container that path doesn't
-# work and lark-cli answers "no access token available for bot" even
-# when FEISHU_APP_SECRET / FEISHU_APP_ID are set in env. Auto-fetching
-# `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` from app_id+app_secret here means
-# every `lark.call()` and the long-running `event +subscribe` daemon
-# both pick up a fresh token without an entrypoint script.
+# Container-deploy token bootstrap. lark-cli on macOS host reads app
+# secrets from the system keychain; that path doesn't work in a
+# Linux container and lark-cli answers "no access token available
+# for bot" even when FEISHU_APP_SECRET / FEISHU_APP_ID are set in
+# env. Auto-fetching `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` from
+# app_id+app_secret here means both one-shot `lark.call()` and the
+# long-running `event +subscribe` daemon pick up a fresh token
+# without an entrypoint script.
 _TENANT_TOKEN_URL = (
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
 _TENANT_TOKEN_CACHE = "/tmp/claudeteam_tenant_token.json"
@@ -93,10 +94,10 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     """
     import json as _json
     import time as _time
-    # R161: resolve cache_path at call time so attr_patch on the
-    # module-level _TENANT_TOKEN_CACHE constant takes effect in tests.
-    # Default args bind at function-definition time, which would have
-    # frozen the original /tmp path before any test patch could land.
+    # Resolve cache_path at call time so test patches of the
+    # module-level _TENANT_TOKEN_CACHE constant take effect; default
+    # args bind at function-definition time and would freeze the
+    # original /tmp path before any patch could land.
     if cache_path is None:
         cache_path = _TENANT_TOKEN_CACHE
     existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
@@ -133,10 +134,10 @@ def subprocess_env() -> dict[str, str]:
     LARK_CLI_NO_PROXY is truthy, since lark-cli doesn't honor that variable
     itself — it's a wrapper-side flag.
 
-    R161: also injects `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` when env vars
-    supply app_id+app_secret but lark-cli has no keychain access (the
-    Linux container case). No-op on macOS host where the token is empty
-    and lark-cli's keychain path takes over.
+    Also injects `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` when env vars
+    supply app_id+app_secret but lark-cli has no keychain access
+    (the Linux container case). No-op on macOS host where the token
+    is empty and lark-cli's keychain path takes over.
 
     Pins HOME to the host user's pw_dir so lark-cli finds
     `~/.lark-cli/config.json` regardless of caller HOME. Claude panes
@@ -174,20 +175,14 @@ def resolve_cli_prefix() -> list[str]:
     Resolution order (first hit wins):
       1. `CLAUDETEAM_LARK_CLI_BIN` env — operator explicit override.
       2. `lark-cli` on PATH — npm global install (`npm i -g @larksuite/cli`).
-      3. The npx cache binary at `~/.npm/_npx/<hash>/node_modules/.bin/lark-cli`
-         (auto-installed once when npx ran). Direct invocation skips
-         npx's lookup but uses the same code.
-      4. `npx @larksuite/cli` — fallback when nothing direct is on disk
-         (round-86 introduced this whole chain; before it was always npx).
+      3. The npx cache binary at
+         `~/.npm/_npx/<hash>/node_modules/.bin/lark-cli` (auto-installed
+         once when npx ran).
+      4. `npx @larksuite/cli` — fallback when nothing direct is on disk.
 
     Resolved fresh on each call so a newly-installed lark-cli takes
-    effect without restarting daemons. Round 64 / round-86 perf:
-    direct binary saves ~250–500 ms per send vs the npx fork.
-
-    Round-139: name no longer underscore-prefixed — `commands/router.py`
-    needed the same logic for the long-running `event +subscribe`
-    daemon, which had been hardcoded to npx since before R86 (docstring
-    claimed direct-binary preference, code didn't).
+    effect without restarting daemons. Direct binary saves ~250–500
+    ms per send vs going through `npx`.
     """
     # `feishu.cli_bin` cascade: legacy env first, then tunable lookup.
     override = env_str("CLAUDETEAM_LARK_CLI_BIN")
