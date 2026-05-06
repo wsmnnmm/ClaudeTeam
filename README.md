@@ -164,9 +164,9 @@ permissions, event subscriptions, and callbacks. Two ways to set it up:
 ### Automated (recommended)
 
 The bundled Playwright script creates and fully configures a Feishu
-bot in one command — app creation, bot capability, ~480 permission
-scopes, event subscriptions (persistent connection + message events),
-card callbacks, and version publishing.
+bot — app creation, bot capability, ~480 permission scopes, event
+subscriptions (persistent connection + message events), card
+callbacks, and version publishing. It runs in two modes:
 
 ```bash
 cd scripts/feishu_bot_creator
@@ -175,17 +175,40 @@ npx playwright install chromium
 
 # One-time login (scan QR code with Feishu mobile)
 node create_feishu_bot.js login
-
-# Create one bot
-node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
-
-# Or batch-create from a JSON list
-node create_feishu_bot.js batch bots.json
 ```
 
+**Auto mode** (single shot, all 7 stages back-to-back — fastest):
+
+```bash
+node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
+node create_feishu_bot.js batch bots.json     # [{name, description}, ...]
+```
+
+**Staged mode** (recommended when an agent is driving — pauses between
+each stage so the agent can sanity-check the live page and decide
+whether to continue or fix something before moving on):
+
+```bash
+# Stage 1 — create app, capture appId
+node create_feishu_bot.js stage create-app --name my-bot --desc "My bot"
+
+# Look at the page, run `status` to see progress, then advance:
+node create_feishu_bot.js status --app my-bot
+node create_feishu_bot.js next   --app my-bot   # runs the next incomplete stage
+
+# Repeat `next` until publish is done. Or jump to a specific stage if
+# you need to redo one (re-run will overwrite the prior completion):
+node create_feishu_bot.js stage events --app my-bot
+```
+
+Stages: `create-app → add-bot → import-scopes → data-range → events
+→ callbacks → publish`. State is persisted to
+`scripts/feishu_bot_creator/.state/<app-name>.json`; delete the file
+to start fresh.
+
 When done, paste the `App ID` + `App Secret` into your `.env` (Docker)
-or `claudeteam.toml` and the `chat_id` of the group the bot was added
-to.
+or `claudeteam.toml`, plus the `chat_id` of the group the bot was
+added to.
 
 ### Manual
 
