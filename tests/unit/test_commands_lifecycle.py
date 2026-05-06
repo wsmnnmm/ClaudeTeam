@@ -16,6 +16,19 @@ def _isolated_team(team_data):
     return isolated_env(team=team_data)
 
 
+# All ready-marker strings across every adapter. capture_pane returns this
+# blob so wake.wait_until_ready short-circuits on the first poll regardless
+# of which CLI the test team uses. Without it each spawn paid the 60s
+# wake timeout (R172.b raised it from 20s for fresh-launch dialog headroom),
+# and a 3-agent test took 180s of pure idle sleep.
+_ALL_READY_MARKERS = (
+    "bypass permissions on\n? for shortcuts\n"        # claude-code
+    "OpenAI Codex\npermissions: YOLO\n"                # codex-cli
+    "Welcome to Kimi Code CLI\nSend /help for help\n"  # kimi-code
+    ">\nType your request\n"                            # gemini-cli / qwen-code
+)
+
+
 @contextlib.contextmanager
 def _fake_tmux():
     """Recording fake for every tmux function used by start/hire/fire.
@@ -59,10 +72,18 @@ def _fake_tmux():
         state["calls"].append(("send_keys", str(t), *keys))
         return True
 
+    def capture_pane(target, lines=80):
+        return _ALL_READY_MARKERS
+
+    def inject(t, text, *, submit_keys=("Enter",)):
+        state["calls"].append(("inject", str(t), text))
+        return True
+
     with tmux_patch(has_session=has_session, has_window=has_window,
                     new_session=new_session, new_window=new_window,
                     kill_window=kill_window, spawn_agent=spawn_agent,
-                    send_keys=send_keys):
+                    send_keys=send_keys, capture_pane=capture_pane,
+                    inject=inject):
         yield state
 
 
