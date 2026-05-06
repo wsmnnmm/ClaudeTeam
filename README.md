@@ -178,28 +178,33 @@ npm install               # also installs playwright chromium (postinstall)
 node create_feishu_bot.js login
 ```
 
-**Drive mode (recommended for agents)** — chromium opens **once**
-and stays open across all 7 stages. After each stage finishes the
-script writes the result to `.state/<bot>.json` and waits on a
-command file. The driving agent reads the state, decides whether to
-advance, and writes `next` (or `redo <stage>`, or `quit`) to that
-file. The user only logs in once at the very start (QR scan); after
-that they're hands-off until the script announces App ID/Secret.
+**Drive mode (recommended for agents)** — `drive` is the single
+entry point: it opens chromium **once**, asks the user to scan QR if
+no saved cookies, then runs the first incomplete stage and blocks
+waiting for the next agent command. Browser stays open across all 7
+stages.
 
 ```bash
-# Terminal A — start drive in the background
+# Start drive in the background. If first run, user scans QR (~30 s);
+# cookies persist so subsequent drives skip this.
 node create_feishu_bot.js drive my-bot "My ClaudeTeam bot" \
   > /tmp/drive.log 2>&1 &
 
 # Agent watches /tmp/drive.log + .state/my-bot.json. After each
-# stage settles, agent advances:
-echo next > scripts/feishu_bot_creator/.state/my-bot.cmd
-
-# Or re-run a stage that the agent thinks went wrong:
-echo "redo events" > scripts/feishu_bot_creator/.state/my-bot.cmd
-
-# Drive auto-exits after publish; or send `quit` to bail early.
+# stage settles, agent advances by writing one of:
+echo next             > scripts/feishu_bot_creator/.state/my-bot.cmd
+echo skip             > scripts/feishu_bot_creator/.state/my-bot.cmd
+echo "redo events"    > scripts/feishu_bot_creator/.state/my-bot.cmd
+echo quit             > scripts/feishu_bot_creator/.state/my-bot.cmd
 ```
+
+Command meanings:
+- `next` — run the next incomplete stage (happy path)
+- `skip` — agent finished the current failed stage **manually in the
+  open browser**; mark it done and move on (key escape hatch when
+  Feishu UI changes break a Playwright selector)
+- `redo <stage-id>` — un-mark that stage so the next iteration re-runs it
+- `quit` — close browser and exit
 
 Stages: `create-app → add-bot → import-scopes → data-range → events
 → callbacks → publish`. Each one is described in

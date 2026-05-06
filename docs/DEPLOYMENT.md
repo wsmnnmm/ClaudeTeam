@@ -19,19 +19,21 @@ deployment, the flow is the same:
    ```bash
    cd scripts/feishu_bot_creator
    npm install                                          # one-time
-   node create_feishu_bot.js login                      # one-time, user scans QR
-
-   # Start drive (chromium opens once, stays open all 7 stages):
+   # drive does login + all 7 stages in ONE chromium session
    node create_feishu_bot.js drive <bot-name> "<description>" \
      > /tmp/drive.log 2>&1 &
+   # First run prompts the user to scan QR (~30 s); cookies persist.
 
    # After each stage drive blocks waiting on .state/<bot>.cmd.
-   # Read the log + state, then advance:
-   echo next > .state/<bot-name>.cmd
-
-   # If a stage looked wrong, redo it instead of advancing:
-   echo "redo events" > .state/<bot-name>.cmd
+   # Read the log + state, then advance with one of:
+   echo next             > .state/<bot-name>.cmd   # next stage
+   echo skip             > .state/<bot-name>.cmd   # agent did it manually
+   echo "redo events"    > .state/<bot-name>.cmd   # redo a stage
    ```
+
+   `skip` is the key escape hatch when a Playwright selector breaks
+   on a Feishu UI update — fix the page in the open browser
+   yourself, then `skip` to advance.
 
    Per-stage details (what Playwright does, equivalent manual UI,
    how to recover) are in [`setup_feishu_bot.md`](setup_feishu_bot.md).

@@ -420,19 +420,27 @@ function printHelp() {
   console.log(`
 Feishu Bot Creator
 
-Login (one-time, user scans QR):
-  node create_feishu_bot.js login
-
-Drive mode — RECOMMENDED for AI agents:
+Drive mode — RECOMMENDED entry point for AI agents:
   node create_feishu_bot.js drive <name> <desc>
-                  Opens chromium ONCE, runs the first incomplete
-                  stage, then waits on .state/<name>.cmd for the
-                  agent's next instruction. Agent advances with:
+                  Opens chromium ONCE. If cookies are missing the
+                  user scans QR (~30 s); cookies persist so future
+                  drives skip this. Then runs the first incomplete
+                  stage and blocks on .state/<name>.cmd. Agent
+                  advances by writing one of:
                     echo next            > .state/<name>.cmd
+                    echo skip            > .state/<name>.cmd
                     echo "redo events"   > .state/<name>.cmd
                     echo quit            > .state/<name>.cmd
-                  Browser stays open across all 7 stages — no
-                  re-launch overhead, no Feishu login churn.
+                  - next: run the next incomplete stage
+                  - skip: agent finished current stage manually in
+                          the open browser; mark it done and move on
+                  - redo X: re-run stage X (un-mark, then loop picks
+                            it again)
+                  - quit: close browser, exit
+                  Browser stays open the whole time.
+
+Login only (rarely needed; drive auto-logs in):
+  node create_feishu_bot.js login
 
 Unattended mode (no pauses, no agent involvement):
   node create_feishu_bot.js create <name> <desc>
@@ -510,13 +518,28 @@ async function cmd_drive(name, desc) {
         await runStage(page, context, next, state);
       } catch (e) {
         log(`❌ Stage [${next.id}] failed: ${e.message}`);
-        log(`   Browser stays open — agent can fix the page manually,`);
-        log(`   then send 'next' (skip this stage as done) or 'redo ${next.id}'.`);
+        log(`   Browser stays open — fix the page manually, then send:`);
+        log(`     'skip' if you completed [${next.id}] by hand → drive moves on`);
+        log(`     'redo ${next.id}' if you want drive to re-try the same stage`);
+        log(`     'next' if you want to skip without doing it (UNSAFE)`);
       }
-      const cmd = await waitForCmd(name);
+      const cmd = await waitForCmd(name, ['next', 'skip', 'redo', 'quit']);
       if (cmd === 'quit') {
         log('👋 Quitting drive (browser closing).');
         break;
+      }
+      if (cmd === 'skip') {
+        // Agent took over and finished `next.id` manually in the live
+        // browser (e.g. stage 3 import-scopes Monaco click failed and
+        // they pasted the JSON by hand). Mark it done so the loop
+        // moves to the next stage.
+        if (!state.completedStages.includes(next.id)) {
+          state.completedStages.push(next.id);
+        }
+        state.lastError = null;
+        saveState(state);
+        log(`⏭  Marked [${next.id}] as done (manual takeover).`);
+        continue;
       }
       if (cmd.startsWith('redo ')) {
         const redoId = cmd.substring(5).trim();
