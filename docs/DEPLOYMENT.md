@@ -8,28 +8,30 @@ multi-team isolation, and common failures.
 Whether you're a human reading this or an AI agent driving the
 deployment, the flow is the same:
 
-1. **Feishu app** — does the user already have an enterprise custom
-   app + bot in their Feishu workspace? If **yes**, ask them for
-   `App ID`, `App Secret`, and the `chat_id` of the group the bot
-   is in. If **no**, drive
-   [`scripts/feishu_bot_creator/`](../scripts/feishu_bot_creator/)
-   in staged mode — it pauses between each of the 7 steps so the
-   user can spot-check the live browser before continuing:
+1. **Feishu app** — ask the user whether they already have an
+   enterprise custom app + bot. If **yes**, just collect `App ID`,
+   `App Secret`, and the `chat_id` of the group the bot is in. If
+   **no**, drive [`scripts/feishu_bot_creator/`](../scripts/feishu_bot_creator/)
+   yourself in staged mode. The user logs in once (QR scan); after
+   that **the agent runs all 7 stages without further user
+   involvement** — `status` after each stage to verify it landed,
+   `next` to advance, re-run a stage if the prior result looks
+   wrong. Don't poll the user between stages.
 
    ```bash
    cd scripts/feishu_bot_creator
    npm install                                            # one-time
-   node create_feishu_bot.js login                        # one-time, scan QR
+   node create_feishu_bot.js login                        # one-time, user scans QR
    node create_feishu_bot.js stage create-app --name <bot> --desc "..."
-   # inspect the page, then:
-   node create_feishu_bot.js next --app <bot>             # repeat until publish
-   node create_feishu_bot.js status --app <bot>           # check progress
+   node create_feishu_bot.js status --app <bot>           # agent verifies
+   node create_feishu_bot.js next --app <bot>             # agent advances
+   # ...repeat status + next until publish
    ```
 
    After `publish`, read `App ID` + `App Secret` from the Feishu open
-   platform's **Credentials & Basic Info** page; the user adds the
-   bot to a group and finds the `chat_id` via
-   `lark-cli im +chat-search --query "<group name>" --as user`.
+   platform's **Credentials & Basic Info** page. The user adds the
+   bot to a group and tells you the group name; find the `chat_id`
+   via `lark-cli im +chat-search --query "<group name>" --as user`.
 
 2. **Pick host or Docker** — Docker is the simpler path (no Python on
    the host, just `docker compose`). Host is faster iteration but

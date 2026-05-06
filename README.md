@@ -178,34 +178,40 @@ npm install               # also installs playwright chromium (postinstall)
 node create_feishu_bot.js login
 ```
 
-**Auto mode** (single shot, all 7 stages back-to-back — fastest):
-
-```bash
-node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
-node create_feishu_bot.js batch bots.json     # [{name, description}, ...]
-```
-
-**Staged mode** (recommended when an agent is driving — pauses between
-each stage so the agent can sanity-check the live page and decide
-whether to continue or fix something before moving on):
+**Staged mode (recommended for agents)** — each of the 7 stages
+runs as one batch of Playwright actions, then the script returns
+between stages. The driving agent (not the user) reads the
+state, sanity-checks the result, and decides whether to advance or
+re-run a stage. The user only logs in once at the start (QR scan)
+and reads off `App ID`/`App Secret` at the end — they're hands-off
+in between.
 
 ```bash
 # Stage 1 — create app, capture appId
 node create_feishu_bot.js stage create-app --name my-bot --desc "My bot"
 
-# Look at the page, run `status` to see progress, then advance:
-node create_feishu_bot.js status --app my-bot
+# Agent runs `status` to verify the stage landed, then advances:
+node create_feishu_bot.js status --app my-bot   # which stages are done
 node create_feishu_bot.js next   --app my-bot   # runs the next incomplete stage
 
-# Repeat `next` until publish is done. Or jump to a specific stage if
-# you need to redo one (re-run will overwrite the prior completion):
+# Repeat `next` until publish is done. Re-run a single stage if the
+# agent decides the prior result is wrong (re-running overwrites it):
 node create_feishu_bot.js stage events --app my-bot
 ```
 
 Stages: `create-app → add-bot → import-scopes → data-range → events
-→ callbacks → publish`. State is persisted to
-`scripts/feishu_bot_creator/.state/<app-name>.json`; delete the file
-to start fresh.
+→ callbacks → publish`. State persists to
+`scripts/feishu_bot_creator/.state/<app-name>.json`, so a crashed or
+killed agent can resume.
+
+**Unattended mode** — runs all 7 stages straight through without
+returning between them. Use only when you trust the selectors fully
+(e.g. recreating a known-good bot, or batching across many test apps):
+
+```bash
+node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
+node create_feishu_bot.js batch bots.json     # [{name, description}, ...]
+```
 
 When done, paste the `App ID` + `App Secret` into your `.env` (Docker)
 or `claudeteam.toml`, plus the `chat_id` of the group the bot was

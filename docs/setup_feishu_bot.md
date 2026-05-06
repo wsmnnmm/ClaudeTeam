@@ -2,7 +2,7 @@
 
 本文档介绍如何在飞书开放平台手动创建一个企业自建应用，并配置机器人能力、权限、事件订阅、回调及版本发布。
 
-> **自动化方案：** 可使用 [`scripts/feishu_bot_creator/create_feishu_bot.js`](../scripts/feishu_bot_creator/create_feishu_bot.js) 脚本一键完成以下所有步骤，详见脚本顶部注释。
+> **自动化方案：** 让 AI agent 驱动 [`scripts/feishu_bot_creator/create_feishu_bot.js`](../scripts/feishu_bot_creator/create_feishu_bot.js) 脚本即可——分 7 个 stage（create-app / add-bot / import-scopes / data-range / events / callbacks / publish），每个 stage 内部 Playwright 自动跑完，stage 之间 agent 用 `status` 自检结果再 `next` 推进。**用户只在最开始扫码 login 一次，之后全程不参与，直到 agent 跑完拿到 App ID / Secret 报回**。命令用法见脚本顶部注释。
 
 ---
 
