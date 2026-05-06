@@ -65,7 +65,11 @@ def test_init_emits_chat_publish_section():
             run_cli(["init"])
         cfg = _read_toml(tmp / "claudeteam.toml")
         assert cfg["chat"]["publish"]["user_to_manager"] == "always"
-        assert cfg["chat"]["publish"]["manager_to_worker"] is False
+        # 2026-05-06: defaults flipped to True/always — boss-flagged
+        # "测试阶段多看到一些东西" — see init.py header comment.
+        assert cfg["chat"]["publish"]["manager_to_worker"] is True
+        assert cfg["chat"]["publish"]["worker_to_manager"] is True
+        assert cfg["chat"]["publish"]["worker_to_worker"] is True
 
 
 def test_init_session_flag_overrides_default():

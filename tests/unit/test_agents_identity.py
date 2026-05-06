@@ -232,9 +232,10 @@ def test_worker_identity_teaches_both_to_targets():
     assert "--to manager" in text
 
 
-def test_identity_say_no_to_means_user_documented():
-    """两个 body 都要明说"省略 --to 等价 --to user"，避免老脚本不带 --to 时
-    LLM 困惑。"""
+def test_identity_requires_to_explicit():
+    """两个 body 都要明确告诉 LLM "每条 say 都必须显式带 --to" — 避免 LLM
+    偷懒省略。Step 4b 烟测发现 prompt 里"省略等价"豁免句让 LLM 不再带
+    --to，于是改成强约束。"""
     team = {"agents": {
         "manager": {"cli": "claude-code", "model": "opus", "role": "主管"},
         "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "员工"},
@@ -242,8 +243,12 @@ def test_identity_say_no_to_means_user_documented():
     with isolated_env(team=team):
         mgr = identity.render("manager")
         wkr = identity.render("worker_cc")
-    assert "省略 `--to` 等价" in mgr
-    assert "省略 `--to` 等价" in wkr
+    # 强约束句出现在两个 body 中
+    assert "必须显式带" in mgr or "必须" in mgr and "--to" in mgr
+    assert "必须显式带" in wkr or "必须" in wkr and "--to" in wkr
+    # 不再有"省略等价"的豁免句
+    assert "省略 `--to` 等价" not in mgr
+    assert "省略 `--to` 等价" not in wkr
 
 
 def test_write_overwrites_existing_file():
@@ -275,11 +280,34 @@ def test_init_prompt_omits_memory_section_when_empty():
         assert "既往记忆" not in prompt
 
 
+def test_init_prompt_teaches_to_explicit_say():
+    """Step 4c: init prompt 也要强调 --to 必带。烟测 (step4-llm-1778077887)
+    发现仅靠 identity body 不够 — LLM 处理 inbox 时直接看 init prompt 的
+    say 例子。例子不带 --to → LLM 跟着省略。"""
+    with isolated_env():
+        prompt = identity.init_prompt("worker_cc")
+    # 例子带 --to user
+    assert "--to user" in prompt
+    # 强约束语出现
+    assert "MUST" in prompt or "必须" in prompt
+    # 提示 manager / user 两个目标
+    assert "manager" in prompt and "user" in prompt
+
+
+def test_init_prompt_manager_targets_user_only_in_hint():
+    """manager 的 init prompt 提示只列 --to user（manager 没有"对自己说"
+    的场景）。"""
+    with isolated_env():
+        prompt = identity.init_prompt("manager")
+    assert "--to user" in prompt
+
+
 def test_init_prompt_teaches_inbox_processing_after_R168():
     """R168: the prompt now tells agents to PROCESS unread messages
     (post a chat response when it's a status / 报道, mark each read),
     not just count them. Boss-flagged after the 全员报道 e2e where
-    worker_cc read its inbox but didn't follow up with a chat reply."""
+    worker_cc read its inbox but didn't follow up with a chat reply.
+    Step 4c: --no-card teaching dropped (R169 made it a no-op)."""
     with isolated_env():
         prompt = identity.init_prompt("worker_cc")
         # Per-message processing instruction
@@ -288,8 +316,6 @@ def test_init_prompt_teaches_inbox_processing_after_R168():
         assert "claudeteam say worker_cc" in prompt
         # Tells agent to mark each message read
         assert "claudeteam read" in prompt
-        # Mentions card-by-default + --no-card escape hatch
-        assert "--no-card" in prompt
 
 
 def test_init_prompt_appends_memory_when_present():

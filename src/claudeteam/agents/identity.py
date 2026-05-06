@@ -74,8 +74,8 @@ claudeteam inbox manager
 # 给团队成员派任务
 claudeteam send <recipient> manager "<指令>" 高
 
-# 在群里回复老板（重要！老板在飞书群里跟你说话用这个）
-claudeteam say manager "<回复内容>"
+# 在群里回复老板（重要！老板在飞书群里跟你说话用这个；务必带 --to user）
+claudeteam say manager "<回复内容>" --to user
 
 # 更新自己的状态
 claudeteam status manager 进行中 "<当前在做什么>"
@@ -107,14 +107,17 @@ claudeteam team
 ❌ 不要把 send 的 recipient / sender 顺序搞反。
 ❌ 不要漏掉 say 的 agent 名（第一个位置参数）。
 
-### `--to` 参数（让 chat.publish 知道你的意图）
+### `--to` 参数（**必须显式带**，让 chat.publish 知道你的意图）
 
 - `claudeteam say manager "<回复>" --to user`
   ← **答老板**（最常见）；chat.publish.manager_to_user 通常 "always"
 - `claudeteam say manager "<派单公告>" --to worker_cc`
   ← 派单时附带的群里公告；老板若配 manager_to_worker=false 则**不进群只 audit**
 
-省略 `--to` 等价于 `--to user`（兼容老脚本）。
+⚠️ **每条 `say` 都必须带 `--to`**。不带 `--to` 默认 fallback `user`，
+但这是兼容老脚本的退路，**LLM 不能偷懒**——publish 过滤器靠 `--to` 区分
+意图（答老板 / 内部沟通 / 派单公告）；漏带 = 老板换 publish 配置后你的
+消息会乱。每次 say 想清楚接收对象再写命令。
 
 {workdir_rule}
 
@@ -183,11 +186,11 @@ claudeteam team
 
 ### 例子：老板说"全体员工现在报道"
 
-- 你 say "收到，已派给 worker_cc 和 worker_kimi（如有）报道"
+- 你 `claudeteam say manager "收到，已派给 worker_cc 和 worker_kimi（如有）报道" --to user`
 - `claudeteam send worker_cc manager "请报道一句" 高`
 - `claudeteam send worker_kimi manager "请报道一句" 高`
-- 等员工各自 `claudeteam say` "在线" 之类（你 inbox 会收到）
-- 你 say "全员 N 位已报道：worker_cc / worker_kimi"
+- 等员工各自 `claudeteam say worker_X "在线" --to user` 之类（你 inbox 会收到）
+- 你 `claudeteam say manager "全员 N 位已报道：worker_cc / worker_kimi" --to user`
 
 ### 关键规则
 
@@ -228,6 +231,8 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
 - Mark them read once you start: `claudeteam read <local_id>`.
 - Report progress to the manager: `claudeteam send manager {name} "<update>"`.
 - Update your own status: `claudeteam status {name} 进行中 "<task>"`.
+- Group chat: `claudeteam say {name} "<msg>" --to user` (or --to manager).
+  ⚠️ ALWAYS pass `--to`; see the section below for why.
 - When done, `claudeteam task done <T-id>` if a task tracker entry is open.
 
 ## Argument-order contract (READ CAREFULLY)
@@ -247,16 +252,17 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
    command rejects with `usage:` line.
 ❌ Do NOT swap recipient/sender on `send`.
 
-### `--to` 参数
+### `--to` 参数（**必须显式带**）
 
 标注 say 的接收对象, 让 chat.publish 知道意图:
 - `--to user`     ← 对老板说（完工里程碑、对外可见的产出）
 - `--to manager`  ← 对 manager 说（进度报告、内部沟通）
-- 省略 `--to` 等价 `--to user`（兼容老脚本）
 
-老板可以在 claudeteam.toml 的 [chat.publish] 段配置哪些 sender→receiver
-组合进群、哪些只 audit 不进群——你**永远**应该带正确的 --to，让过滤器
-能区分。
+⚠️ **每条 `say` 都必须带 `--to`**。漏带会 fallback 到 `user`，但这是
+退路，不是常规——老板可以在 claudeteam.toml 的 [chat.publish] 段单独
+关掉 `worker_to_user` 或 `worker_to_manager`，**漏 `--to` 让过滤器
+分不清意图**。每次写 `claudeteam say {name} ...` 想清楚是对谁说，
+然后**显式带上 `--to user` 或 `--to manager`**。
 
 {workdir_rule}
 
@@ -372,6 +378,10 @@ def init_prompt(agent: str) -> str:
     but only acked the init line and stopped. Adding the processing
     contract closes the autonomy gap.
     """
+    say_target_hint = (
+        "--to user (对老板)" if agent == "manager"
+        else "--to user (完工/对老板可见) 或 --to manager (内部进度)"
+    )
     base = (
         f"You are {agent}. Read agents/{agent}/identity.md, then run:\n"
         f"  claudeteam inbox {agent}\n"
@@ -381,8 +391,12 @@ def init_prompt(agent: str) -> str:
         f"  1. Do what it asks (group reports go in chat; peer questions\n"
         f"     get answered via `claudeteam send <from> {agent} ...`).\n"
         f"  2. If it's a status / 报道 / 完工 / progress update, post your\n"
-        f"     response to the group with `claudeteam say {agent} \"<msg>\"`\n"
-        f"     (defaults to card; one-line acks like 收到 use --no-card).\n"
+        f"     response to the group with\n"
+        f"     `claudeteam say {agent} \"<msg>\" --to user`\n"
+        f"     (or --to manager for internal progress reports).\n"
+        f"     ⚠️ every `say` MUST include `--to`: {say_target_hint}.\n"
+        f"     Skipping --to silently falls back to user but defeats\n"
+        f"     chat.publish filtering — don't be lazy.\n"
         f"  3. Mark each one read: `claudeteam read <local_id>`.\n"
         f"\n"
         f"After processing, ack with one line: name, state, processed count."

@@ -90,6 +90,39 @@ up, OR `claudeteam say <peer>` posts a chat message that mentions the
 target). Pure `claudeteam send` writes to the inbox file but does not
 touch tmux — that's a deliberate split between persistence and delivery.
 
+### `say --to <role>` and `[chat.publish]`
+
+`claudeteam say <agent> "<msg>" --to <role>` labels the receiver so the
+group filter knows the intent. `--to` accepts `user` (the boss),
+`manager`, or `worker_<name>`; the audit log keeps every `say` regardless,
+but whether the card actually posts to the Feishu group is decided by:
+
+```toml
+# claudeteam.toml — `claudeteam init` defaults (everything visible)
+[chat.publish]
+user_to_manager   = "always"   # boss → manager always lands
+manager_to_user   = "always"   # manager → boss always lands
+manager_to_worker = true       # show dispatch cards in group
+worker_to_manager = true       # show worker progress in group
+worker_to_user    = true       # show worker completions in group
+worker_to_worker  = true       # show inter-worker pings in group
+```
+
+Keys are `{sender_role}_to_{receiver_role}`. Defaults are all true / always
+(boss preference: "测试阶段多看到一些东西比较好"). Flip a key to `false`
+when you want that channel silenced — audit log still keeps it, the
+Feishu group just doesn't get the card. Per-agent overrides go on the
+agent itself:
+
+```toml
+[team.agents.worker_codex]
+publish_overrides = { worker_to_user = false }   # this one worker silent;
+                                                  # other workers still post
+```
+
+Agents are taught (via their identity.md) to **always pass `--to`** so
+the filter can distinguish answer-the-boss vs internal-progress traffic.
+
 ### Closed-loop end-to-end test
 
 To verify the whole pipeline (Feishu → router → pane → worker reply):
@@ -187,7 +220,8 @@ team lifecycle
                                                 (eval the output to switch shells)
 
 feishu transport
-  claudeteam say <agent> <message> [--reply <message_id>] [--as user|bot] [--no-local]
+  claudeteam say <agent> <message> [--reply <message_id>] [--as user|bot]
+                                   [--no-local] [--to user|manager|worker_<name>]
   claudeteam router                             daemon: chat events → inbox + pane
 
 supervision

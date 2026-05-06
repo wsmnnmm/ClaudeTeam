@@ -304,7 +304,52 @@ fuser ~/.lark-cli/locks/subscribe_<app_id>.lock
 rm -rf /tmp/test-conflict
 ```
 
-## 9. 收尾
+## 9. `chat.publish` 过滤 + `say --to`
+
+证明 `[chat.publish]` toml 配置真正影响群里能看到什么消息——把某通道设为
+`false` 后，对应 sender→receiver 的 say 走 audit log 但**不**进群。
+
+```bash
+# 验证默认全 true：worker_cc 各 --to 目标都进群
+ANCHOR="publish-default-$(date +%s)"
+claudeteam say worker_cc "test→user [$ANCHOR]" --to user
+claudeteam say worker_cc "test→manager [$ANCHOR]" --to manager
+sleep 5
+# 群里应当看到两张绿卡，都含 $ANCHOR
+```
+
+**通过条件（看群里）**：
+
+1. 两张卡都进群（默认 publish 全 true / always）
+2. 把 `claudeteam.toml` 的 `worker_to_manager = false`，重启 router：
+   ```bash
+   sed -i.bak 's/worker_to_manager = true/worker_to_manager = false/' claudeteam.toml
+   kill $(cat state/router.pid); claudeteam up
+   ANCHOR2="publish-silenced-$(date +%s)"
+   claudeteam say worker_cc "test→manager silenced [$ANCHOR2]" --to manager
+   claudeteam say worker_cc "test→user OK [$ANCHOR2]" --to user
+   ```
+3. 群里**只看到 →user 那张卡**，→manager 那条不进群（CLI 会打
+   `📝 worker_cc → silenced by [chat.publish.worker_to_manager]=false; logged only`）
+4. 还原：`mv claudeteam.toml.bak claudeteam.toml; kill $(cat state/router.pid); claudeteam up`
+
+**LLM 是否真带 `--to`**（Step 4c 的 prompt 强化目标）：
+
+```bash
+ANCHOR3="publish-llm-$(date +%s)"
+LARK_CLI_NO_PROXY=1 lark-cli im +messages-send --chat-id "$CHAT" \
+  --text "数 src/claudeteam/feishu/ 下 .py 个数 [$ANCHOR3]" --as user
+sleep 90
+tmux capture-pane -t ClaudeTeam:manager -p -S -50 | grep -A1 "claudeteam say"
+tmux capture-pane -t ClaudeTeam:worker_cc -p -S -50 | grep -A1 "claudeteam say"
+```
+
+**通过条件**：两个 pane 的 `claudeteam say ...` 命令行尾都有 `--to user`
+或 `--to manager`，不是裸 `claudeteam say <agent> "..."`。如果发现裸 say，
+identity prompt 没生效；rerun `claudeteam reidentify --all` 后再试，
+仍然不带就是 prompt 工程需要再加强。
+
+## 10. 收尾
 
 冒烟通过则不需清理；如果想回到干净状态：
 

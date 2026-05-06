@@ -75,13 +75,15 @@ card_color = "purple"
 # ── [chat.publish]  群里能看到什么消息 ─────────────────────
 # sender→receiver 维度过滤; 角色: user (老板) / manager / worker
 # 值: true=进群发卡  false=只走 send/inbox 不进群  "always"=不可关
+# 默认全 true / "always" — 测试 / 早期阶段尽量多看到事实, 减少静默漏消息
+# 的认知盲区。生产化后再针对噪声大的通道 (worker_to_manager 等) 调 false。
 [chat.publish]
 user_to_manager   = "always"
 manager_to_user   = "always"
-manager_to_worker = false
-worker_to_manager = false
+manager_to_worker = true
+worker_to_manager = true
 worker_to_user    = true
-worker_to_worker  = false
+worker_to_worker  = true
 
 # ── [limits]  消息长度上限 ────────────────────────────────
 [limits]
