@@ -269,36 +269,34 @@ claudeteam down && claudeteam up
 
 ## 8. 多部署冲突（同一个 App 抢订阅）
 
-这一节没有"群里通过条件"——冲突的本质就是第二个 router 起不来。
-通过条件是**第一个 deploy 的群里继续正常工作**，第二个 router stderr
-报错并退出。
+⚠️ **2026-05-06 重测发现实际行为与本节描述不符**——下文仅为说明 lark-cli 1.0.23
+之后的真实情况：
+
+**lark-cli 单实例锁是 fcntl-advisory**（`~/.lark-cli/locks/subscribe_<app_id>.lock`），
+进程死后锁立即释放。**lark 服务端层面也允许多个 WebSocket 同时连接**——只是
+事件会**随机分散**给已连接的多个 subscribe（每个连接收到部分事件）。
+
+实际表现：
+- 第二个 daemon 启动**不会被立刻拒绝**（除非第一个 daemon 此刻持有锁）
+- 真实危害是**事件被 lark 服务端随机切片**——两个 daemon 各收到一半，
+  造成 host 部署下 router 时不时 silent-stall（自己分到了 0 事件）
+
+本节烟测**不再可靠**。改用如下规程：
+
+1. **每个 deploy 单独跑**（host 部署 vs 容器部署互斥使用，不要同时活）
+2. **本机 vs 容器同 lark App 的常见坑**：docker-compose 默认 mount
+   `~/.lark-cli` 整个目录，host 与容器共享 lock 文件——互相干扰。修法：
+   测前手动停另一方，或 docker-compose 改 mount 只共享 config 不共享 locks
+3. **容器 + host 共用同一 chat 的部署**没有意义（事件会乱抢），生产规划时
+   每个 deploy 应独立 chat
 
 ```bash
-# 当前 deploy 在 /path/to/ClaudeTeam，已 up
-cd /tmp && mkdir -p test-conflict && cd test-conflict
-cp /path/to/ClaudeTeam/team.json /path/to/ClaudeTeam/runtime_config.json .
-export CLAUDETEAM_STATE_DIR="$PWD/state"
-claudeteam router 2>&1 | head -10
+# 验证 lark-cli 锁状态
+ls -la ~/.lark-cli/locks/
+fuser ~/.lark-cli/locks/subscribe_<app_id>.lock
+# → 拿到锁的 PID 是当前持有 subscribe 的那个进程；含容器进程在 host
+#   namespace 里的真实 PID
 ```
-
-期望第二个 router 立刻打印：
-
-```
-🚀 router subscribing on chat oc_xxx (profile=<default>)
-  ⚠️ lark-cli failed (rc=1): Error: another event +subscribe instance is already running for app cli_xxx
-```
-
-并退出。
-
-```bash
-# 回到原 deploy 验证它没受影响
-cd /path/to/ClaudeTeam
-unset CLAUDETEAM_STATE_DIR
-export CLAUDETEAM_STATE_DIR="$PWD/state"
-SEND "/team"
-```
-
-**通过条件（看群里）**：原 deploy 还能正常回 `/team` 卡。
 
 **清理**：
 
