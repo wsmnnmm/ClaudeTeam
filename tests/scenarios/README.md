@@ -72,16 +72,21 @@
 
 ## 已知滞后于代码的剧本
 
-代码改了但没回头修文档。跑剧本前先核对这张表：
+跑剧本前先核对这张表。已修的会被移除。
 
 | 文件 | 滞后内容 | 涉及提交 |
 |---|---|---|
-| `slash_matrix.md` 的 R3-R8 | 仍写 `@worker_cc` / `@team` 分流。**实际 R174 之后所有人话只路由到 manager** | `9e43309 feat(router,identity): manager 成为唯一接口` |
-| `router_event_to_pane.md` | 描述里"@ 提到的 worker 进对应 pane"。同样 R174 已改 | 同上 |
-| `round_c_real_task.md` | 假设 4 个 pane 的团队（含 worker_kimi），任务拆 3 份。当前默认部署是 3 个 pane，没有 kimi | `claudeteam init` 默认配置 |
-| `round_c_real_task.md` 的凭证字段 | profile 与 chat_id 写死成 `cli_a961274ccb385cc4` / `oc_989...`，与当前部署不一致 | 各部署互相独立 |
-| 全部本机相关剧本 | macOS 特有路径（keychain、HOME 兜底、`~/.lark-cli/`）没有文档落盘 | `780fd08 fix(host-deploy)` |
-| 缺失主题 | `state/router.log` 和 `state/watchdog.log` 落盘行为是新加的 | `c0996a5 feat(watchdog): 守护进程日志写入文件` |
+| `cards_memory_and_speed.md` | 一篇 189 行混了 4 个不相关主题（卡片样式、按 agent 记忆、看门狗告警、lark-cli 速度），TODO 拆 | R79-R112 多波累积 |
+
+历史上修过的（保留作 changelog）：
+
+| 文件 | 修订 | 在 commit |
+|---|---|---|
+| `slash_matrix.md` | R3-R8 改写为 R174「manager 是唯一接口」；新增 W1/W2 验证 worker → manager 反向路由；补本机部署 macOS keychain 三套凭证一节 | `ccf90b6` |
+| `router_event_to_pane.md` | 重写为 5 用例覆盖 R174 默认路由 / R174 例外 / dedup / cross_team / 守护进程退出；提 `state/router.log` 观察方式 | （本轮） |
+| `round_c_real_task.md` | profile/chat_id 改成从 `runtime_config.json` 读，不再硬编码；团队规模适配 N（默认 3、按需 4）；新增 G6/G10 验证 worker→manager 反向路由与 catchup；macOS 凭证过期风险落知识 | （本轮） |
+| `health_check.md` | 团队规模描述去掉 "4 agents" 假设；补 `state/router.log` / `state/watchdog.log` 观察方式 | （本轮） |
+| `router_catchup.md` | R174 后 @worker_codex 也只到 manager；catchup `--as bot` 修复说明；`router.log` 观察 | （本轮） |
 
 ## 命名规则
 
