@@ -83,8 +83,29 @@ async function loadCookies(context) {
   return true;
 }
 
+async function gotoWithRetry(page, url, opts = {}) {
+  // Feishu open-platform has flaky load behavior under chromium —
+  // first goto after launch occasionally returns ERR_CONNECTION_CLOSED
+  // or hangs past `load`. Retry 3× with `domcontentloaded` so a single
+  // glitch doesn't kill the whole drive session.
+  const options = { waitUntil: 'domcontentloaded', timeout: 60000, ...opts };
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await page.goto(url, options);
+      return;
+    } catch (e) {
+      lastErr = e;
+      const oneLine = (e.message || '').split('\n')[0];
+      log(`page.goto ${url} failed (attempt ${attempt}/3): ${oneLine}`);
+      if (attempt < 3) await page.waitForTimeout(3000);
+    }
+  }
+  throw lastErr;
+}
+
 async function ensureLoggedIn(page, context) {
-  await page.goto('https://open.feishu.cn/app');
+  await gotoWithRetry(page, 'https://open.feishu.cn/app');
   await page.waitForTimeout(2000);
   if (page.url().includes('accounts.feishu.cn')) {
     log('Not logged in. Please scan QR code...');
@@ -149,7 +170,7 @@ async function scrollToBottom(page) {
 
 async function stage_create_app(page, _ctx, state) {
   log('Stage 1/7 create-app: creating custom app...');
-  await page.goto('https://open.feishu.cn/app');
+  await gotoWithRetry(page, 'https://open.feishu.cn/app');
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Create Custom App' }).click();
   await page.waitForTimeout(1000);
@@ -165,7 +186,7 @@ async function stage_create_app(page, _ctx, state) {
 
 async function stage_add_bot(page, _ctx, state) {
   log('Stage 2/7 add-bot: adding Bot capability...');
-  await page.goto(`https://open.feishu.cn/app/${state.appId}/capability`);
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/capability`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Add' }).first().click();
   await page.waitForURL('**/bot**', { timeout: 5000 });
@@ -174,16 +195,26 @@ async function stage_add_bot(page, _ctx, state) {
 
 async function stage_import_scopes(page, _ctx, state) {
   // Opens "Batch import/export scopes" → Monaco editor → paste full JSON →
-  // "Next, Review New Scopes" → "Add". Monaco's textarea is overlaid by
-  // spans so click .view-lines instead, then keyboard-paste.
+  // "Next, Review New Scopes" → "Add". Monaco's structure:
+  //   .monaco-editor
+  //     .view-lines   (the visible text layer; aria-hidden="true")
+  //     textarea.inputarea  (the actual input target; covered by spans)
+  // Click on .view-lines fails Playwright actionability checks because
+  // of the aria-hidden attribute (round 2026-05-07: "element is not
+  // visible" 60s retry timeout). Solution: focus the inputarea
+  // directly via JS, then keyboard-paste — no click needed at all.
   log('Stage 3/7 import-scopes: importing ~480 permissions...');
-  await page.goto(`https://open.feishu.cn/app/${state.appId}/auth`);
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/auth`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Batch import/export scopes' }).click();
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1500);
   const dialog = page.locator('[role="dialog"]').first();
-  const editorArea = dialog.locator('.monaco-editor .view-lines').first();
-  await editorArea.click();
+  // Focus Monaco's inputarea programmatically. Trying to click it
+  // hits the overlay; .focus() on the underlying textarea bypasses
+  // the overlay because focus is a non-pointer-event API.
+  await dialog.locator('.monaco-editor textarea.inputarea').first()
+    .evaluate(el => el.focus());
+  await page.waitForTimeout(200);
   await page.keyboard.press('Meta+a');
   await page.waitForTimeout(200);
   await page.keyboard.press('Backspace');
@@ -192,7 +223,7 @@ async function stage_import_scopes(page, _ctx, state) {
     await navigator.clipboard.writeText(text);
   }, SCOPES_JSON);
   await page.keyboard.press('Meta+v');
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(800);
   await page.getByRole('button', { name: 'Next, Review New Scopes' }).click();
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Add', exact: true }).click();
@@ -230,7 +261,7 @@ async function stage_events(page, _ctx, state) {
   //    Tenant Token and User Token tabs.
   // 3. Dismiss the "Suggested scopes to add" dialog if it appears.
   log('Stage 5/7 events: subscribing message events on persistent connection...');
-  await page.goto(`https://open.feishu.cn/app/${state.appId}/event`);
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/event`);
   await page.waitForTimeout(2000);
 
   const editBtn = page.locator('text=Subscription mode').first()
@@ -278,7 +309,7 @@ async function stage_callbacks(page, _ctx, state) {
   // subscription → Save → "Add callback" → check the (only) checkbox →
   // Add. The single available callback is card.action.trigger.
   log('Stage 6/7 callbacks: enabling card.action.trigger...');
-  await page.goto(`https://open.feishu.cn/app/${state.appId}/event`);
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/event`);
   await page.waitForTimeout(2000);
   await page.getByText('Callback Configuration').click();
   await page.waitForTimeout(1000);
@@ -304,7 +335,7 @@ async function stage_publish(page, _ctx, state) {
   // Version page → "Create Version" → defaults Save → Publish (in
   // confirmation dialog; .last() to skip the disabled main-page button).
   log('Stage 7/7 publish: creating version + publishing...');
-  await page.goto(`https://open.feishu.cn/app/${state.appId}/version`);
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/version`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Create Version' }).first().click();
   await page.waitForURL('**/version/create**', { timeout: 5000 });
@@ -510,8 +541,24 @@ async function cmd_drive(name, desc) {
     while (true) {
       const next = nextIncompleteStage(state);
       if (!next) {
-        log(`🎉 All stages complete for ${name} (${state.appId})`);
-        log(`   Read App ID + App Secret from open.feishu.cn/app/${state.appId}/safe`);
+        log(`🎉 All 7 stages complete for ${name} (${state.appId})`);
+        // Navigate to the credentials page so the user / agent can
+        // copy App ID + App Secret out of the open browser without
+        // re-launching anywhere. Then stay parked here until the
+        // agent sends `quit` — closing chromium prematurely would
+        // force the user to re-login somewhere else just to read
+        // the secret, which defeats "drive does it all in one go".
+        try {
+          await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/safe`);
+          log(`   📋 Browser is now on the Credentials page.`);
+          log(`      Click "Show" next to App Secret in the open chromium`);
+          log(`      window, copy both values, then send 'quit' to close.`);
+        } catch (e) {
+          log(`   ⚠️ Could not auto-navigate to safe page: ${e.message.split('\n')[0]}`);
+          log(`      Open https://open.feishu.cn/app/${state.appId}/safe manually.`);
+        }
+        const cmd = await waitForCmd(name, ['quit']);
+        if (cmd === 'quit') log('👋 Quitting drive (browser closing).');
         break;
       }
       try {
