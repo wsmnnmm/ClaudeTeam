@@ -366,6 +366,35 @@ def test_say_worker_to_user_default_true():
     assert len(send["calls"]) == 1
 
 
+def test_say_publish_live_edit_takes_effect_without_restart():
+    """REGRESSION: editing claudeteam.toml [chat.publish] should
+    affect the very next `say` call without needing to restart any
+    daemon. Boss requirement: a config file is meant to live-edit.
+
+    Verifies the tunables mtime-cache invalidation actually works
+    end-to-end through commands/say.py."""
+    with _isolated() as tmp, _fake_send() as send:
+        # Round 1: worker_to_user = true → say goes through
+        _toml_with_publish(tmp, worker_to_user=True)
+        rc, _, _ = run_cli(["say", "worker_cc", "完工 1", "--to", "user"])
+        assert rc == 0
+        assert len(send["calls"]) == 1
+
+        # Operator edits toml live → flip to false
+        _toml_with_publish(tmp, worker_to_user=False)
+        rc, out, _ = run_cli(["say", "worker_cc", "完工 2", "--to", "user"])
+        assert rc == 0
+        # Next call must see the new value: silenced, no chat send
+        assert len(send["calls"]) == 1, "publish=false didn't take effect"
+        assert "silenced" in out
+
+        # Flip back to true → goes through again
+        _toml_with_publish(tmp, worker_to_user=True)
+        rc, _, _ = run_cli(["say", "worker_cc", "完工 3", "--to", "user"])
+        assert rc == 0
+        assert len(send["calls"]) == 2
+
+
 def test_say_worker_to_manager_silenced_when_false():
     with _isolated() as tmp, _fake_send() as send:
         _toml_with_publish(tmp, worker_to_manager=False)

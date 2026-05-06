@@ -150,6 +150,50 @@ def test_team_card_reflects_live_toml_after_adding_agent():
         assert "worker_codex" in body2
 
 
+def test_team_card_reflects_lazy_flag_added_to_toml_live():
+    """Adding `lazy = true` to an agent in claudeteam.toml should
+    flip its /team glyph to ⏸ immediately — no router restart.
+    The team card stays green because lazy is by design."""
+    from helpers import isolated_env
+    from claudeteam.runtime import paths, tunables as _tun
+
+    pane_buffers = {
+        "manager":   "...\n⏵⏵ bypass permissions on\n",
+        "worker_cc": _BASH_PROMPT,  # bare shell → 🛑 unless lazy
+    }
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager":   {"cli": "claude-code"},
+        "worker_cc": {"cli": "claude-code"},
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        # Before: worker_cc is not lazy, bash prompt → 🛑 → yellow team
+        reply1 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc")))
+        assert reply1["header"]["template"] == "yellow"
+        body1 = reply1["body"]["elements"][0]["content"]
+        assert "🛑" in body1
+
+        # Operator edits toml: mark worker_cc lazy
+        cf = paths.config_file()
+        cf.write_text(
+            '[team]\nsession = "ClaudeTeam"\n\n'
+            '[team.agents.manager]\ncli = "claude-code"\n\n'
+            '[team.agents.worker_cc]\ncli = "claude-code"\nlazy = true\n',
+            encoding='utf-8')
+        _tun.reset_cache()
+
+        # After: lazy flag picked up live → ⏸ glyph + green team
+        reply2 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc")))
+        assert reply2["header"]["template"] == "green"
+        body2 = reply2["body"]["elements"][0]["content"]
+        assert "⏸" in body2
+        assert "🛑" not in body2
+
+
 def test_tmux_recognises_agent_added_to_toml_without_restart():
     """REGRESSION: /tmux <new_agent> previously rejected agents added
     to claudeteam.toml after router started, because _bad_agent used
