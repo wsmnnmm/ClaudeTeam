@@ -6,8 +6,8 @@ Given a Feishu message event dict and the team's agent list, decide one of:
   - SLASH:     text starts with `/` after stripping any `[<sender>] `
                prefix → router-level zero-LLM dispatch
                (handled by `feishu/slash.dispatch`)
-  - BROADCAST: `@team` / `@all` / `全体X` triggers fan-out to every
-               non-sender agent (R36 + R42 token-boundary fix to include
+  - BROADCAST: `@team` / `@all` triggers fan-out to every
+               non-sender agent (token-boundary handling includes
                ASCII period in the @-name terminator set)
   - ROUTE:     `@<agent>` mention → deliver to those agents, OR
                unrecognised sender (= human, defaults to `default_target`)
@@ -54,10 +54,10 @@ class Decision:
 _SENDER_RE = re.compile(r"^\s*\[([A-Za-z0-9_\-]+)\]\s*")
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
 
-# Broadcast trigger tokens. R174 之后路由不再依赖这些做分发——所有人话
-# 都到 manager；这里保留只是为了 manager identity 模板能引用，让 manager
-# 看到这些关键词时知道老板有"全员"意图（具体怎么派由 manager 决定）。
-# 中文 "全体" prefix 已删——"广播规则用关键词硬匹配"是反 R174 设计。
+# Broadcast trigger tokens. Routing no longer fans out on these —
+# every human message goes to manager only. Kept so the manager
+# identity template can teach: "when the boss says @team / @all,
+# you (manager) dispatch each worker individually".
 _BROADCAST_TOKENS = ("@team", "@all", "@everyone")
 
 
@@ -71,13 +71,13 @@ def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
 
 
 
-# R174: card-title sender-extraction. Worker `claudeteam say` posts
+# Card-title sender-extraction. Worker `claudeteam say` posts
 # interactive cards with title `{emoji} {agent} · {role}`; the
-# subscribe layer's text-extractor for interactive messages embeds the
-# card title at the start of the extracted text. Match it here so we
-# can identify which agent sent a chat message even though the
-# inbound `sender_id` is the bot's open_id (one app, all agents share
-# it). Manager's own messages still get dropped to avoid self-loops.
+# subscribe layer's text extractor embeds the card title at the
+# start of the extracted text. Match it here so we can attribute a
+# chat message to the originating worker even though the inbound
+# `sender_id` is the bot's open_id (one app, all agents share it).
+# Manager's own messages still get dropped to avoid self-loops.
 _CARD_TITLE_AGENT_RE = re.compile(
     r"(?:^|<card title=\")[^\">\n]*?(?<![\w])([A-Za-z][A-Za-z0-9_\-]+)\s*·"
 )
@@ -103,12 +103,12 @@ def classify_event(event: dict, *,
                    default_target: str = "manager") -> Decision:
     """Classify one inbound Feishu message event.
 
-    R174: ALL human chat messages route to `default_target` (manager).
-    `@worker_cc` and `@team` / `全体X` no longer fan out from the
-    router — boss-flagged design: manager is the sole interface to
-    boss; worker dispatch must go through `claudeteam send`. Bot-sent
+    Single-interface routing model: ALL human chat messages route to
+    `default_target` (manager). `@worker_cc` / `@team` no longer fan
+    out at the router — manager is the sole interface to the boss
+    and dispatches workers via `claudeteam send` herself. Bot-sent
     interactive cards from non-manager workers also route to
-    manager's inbox so manager can see worker chat replies and
+    manager's inbox so she can see worker chat replies and
     summarize. Manager's own bot messages still drop (avoid loop).
 
     Args:
@@ -146,18 +146,16 @@ def classify_event(event: dict, *,
 
     raw_text = (event.get("text") or "").strip()
 
-    # Bot self-talk: the app sent this. Default = drop. R174 exception:
+    # Bot self-talk: the app sent this. Default = drop. Exception:
     # if the card was posted by a NON-manager worker (per card-title
     # parse), route to manager's inbox so manager has visibility into
     # worker chat replies. Self-loop guard: manager's own cards always
     # drop here.
     #
-    # 2026-05-06: bot detection unified to `sender_type in {"app",
-    # "app_id"}` so production daemon doesn't have to learn the bot's
-    # open_id at startup. Live lark-cli `--compact` payloads carry
-    # sender_type=app, chat-messages-list returns id_type=app_id; both
-    # match. `bot_id == sender_id` kept as fallback for fixtures /
-    # legacy callers that still set it.
+    # Bot detection: `sender_type in {"app", "app_id"}` covers both
+    # live lark-cli `--compact` payloads (sender_type=app) and
+    # chat-messages-list responses (id_type=app_id). `bot_id ==
+    # sender_id` kept as fallback for fixtures / legacy callers.
     sender_type = event.get("sender_type", "")
     is_bot = (sender_type in ("app", "app_id")
               or (bot_id and event.get("sender_id") == bot_id))
@@ -180,9 +178,9 @@ def classify_event(event: dict, *,
 
     sender, text = _parse_sender(raw_text, agents)
 
-    # R174: human / unknown sender → manager only. `@worker_cc` and
-    # `全体X` are no longer routing instructions; they're text content
-    # for manager to read and decide how to dispatch.
+    # Human / unknown sender → manager only. `@worker_cc` and
+    # `@team` are no longer routing instructions; they're text
+    # content for manager to read and decide how to dispatch.
     if not sender:
         return Decision(Action.ROUTE, targets=[default_target], text=text, **common)
 

@@ -1,26 +1,20 @@
 """`claudeteam usage` — token / credit consumption snapshot.
 
-R170: every CLI we ship an adapter for now has *some* visibility:
-  - claude-code → `npx ccusage <view>` (community ccusage CLI; reads
-    `~/.claude/projects` logs)
-  - codex       → shell out to `codex-cli-usage` (Python tool, installed
-    in container via `uv tool install`) for real % consumed per limit
-    window (5h / Weekly / etc). R173 replaced the earlier JWT-decode-
-    only path because boss flagged it as useless without real %.
+Each supported CLI has its own data source:
+  - claude-code → `npx ccusage <view>` (community ccusage CLI;
+    reads `~/.claude/projects` logs)
+  - codex       → shell out to `codex-cli-usage` (Python tool,
+    installed in container via `uv tool install`) for real % consumed
+    per limit window (5h / Weekly / etc).
   - kimi-code   → `https://api.kimi.com/coding/v1/usages` with the
     bearer token from `~/.kimi/credentials/kimi-code.json`. Returns
-    weekly + 5h sliding window quotas.
-  - codex-cli / kimi-cli (legacy aliases) / others → no upstream tool;
-    we say so and skip.
+    weekly + 5h sliding-window quotas.
+  - other CLIs (codex-cli legacy alias, gemini, qwen) → no upstream
+    tool; report "unsupported" and skip.
 
-Pure shell-out / direct HTTP wrapper, no caching. Add new CLI types
-here as their ecosystems grow tools.
-
-Useful when the boss asks "how much did this team burn today?" or
-when planning lazy-wake configuration. With `--json`, dump a
-machine-readable record so `slash._handle_usage` (Feishu /usage card)
-and dashboards can ingest the same numbers without re-parsing the
-formatted output.
+Pure shell-out / direct HTTP wrapper, no caching. With `--json`,
+dump a machine-readable record so `slash._handle_usage` and
+dashboards can ingest the same numbers without re-parsing.
 """
 from __future__ import annotations
 
@@ -48,12 +42,10 @@ _VIEWS = ("daily", "monthly", "session", "blocks")
 
 _KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 
-# R173: Claude Max OAuth usage endpoint. Same one main's
-# `scripts/usage_snapshot.py` hits — bypasses Cloudflare on
-# claude.ai by going through api.anthropic.com with the OAuth beta
-# header. Returns JSON: five_hour / seven_day / seven_day_sonnet /
-# seven_day_opus / extra_usage. Each block has utilization (0-100)
-# + resets_at (ISO).
+# Claude Max OAuth usage endpoint. Hits api.anthropic.com (bypasses
+# Cloudflare on claude.ai) with the OAuth beta header. Returns
+# JSON: five_hour / seven_day / seven_day_sonnet / seven_day_opus /
+# extra_usage; each block has utilization (0-100) + resets_at (ISO).
 _CC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _CC_USAGE_BETA = "oauth-2025-04-20"
 
@@ -142,11 +134,11 @@ def _query_cc_usage(home: Path | None = None,
 # `_query_cc_usage` above.
 def _run_ccusage(view: str, days: str = "",
                  *, runner: Callable | None = None) -> tuple[int, str]:
-    """DEPRECATED in R173. ccusage only returns cumulative cost
-    ('Total: $X') — boss flagged this as wrong-data. Real quota %
-    comes from `_query_cc_usage` (Anthropic OAuth API). Kept only so
-    older callers get a clear deprecation note rather than a NameError."""
-    return 1, "(R173: ccusage replaced by _query_cc_usage / api.anthropic.com)"
+    """DEPRECATED. ccusage only returns cumulative cost ('Total: $X'),
+    which is wrong data for quota planning. Real quota % comes from
+    `_query_cc_usage` (Anthropic OAuth API). Kept so older callers
+    get a clear deprecation note rather than a NameError."""
+    return 1, "(ccusage replaced by _query_cc_usage / api.anthropic.com)"
 
 
 _CODEX_USAGE_RE = re.compile(
@@ -157,14 +149,11 @@ _CODEX_USAGE_RE = re.compile(
 
 def _query_codex_usage(home: Path | None = None,
                        *, runner: Callable | None = None) -> dict:
-    """Shell out to `codex-cli-usage` for real % consumed (R173 fix).
+    """Shell out to `codex-cli-usage` for real % consumed.
 
-    Earlier R170 only decoded `~/.codex/auth.json` JWT and surfaced
-    plan + email + valid_until — boss flagged 2026-05-05 as useless
-    ("登录账号有屁用啊"). Real usage requires the `codex-cli-usage`
-    Python tool (installed in container via `uv tool install`,
-    symlinked to /usr/local/bin), which queries OpenAI's actual
-    quota endpoints and prints lines like:
+    The `codex-cli-usage` Python tool (installed via `uv tool
+    install`, symlinked to /usr/local/bin in our container) queries
+    OpenAI's actual quota endpoints and prints lines like:
         Plan: ChatGPT Pro
         5h limit  20% resets 4h
         Weekly limit  35% resets 5d
@@ -333,13 +322,12 @@ def _build_data(view: str, days: str, clis: set[str],
     Used by both the text renderer (formatted lines) and the --json
     renderer (slash._handle_usage card).
 
-    R170: codex + kimi sections render whenever EITHER
+    Codex + Kimi sections render whenever EITHER
     (a) a team agent declares `cli: codex-cli|kimi-code|kimi-cli`, OR
-    (b) the corresponding host cred file is present (~/.codex/auth.json
-    or ~/.kimi/credentials/kimi-code.json). The cred-file fallback is
-    so the `/usage` card surfaces "is my Codex Pro seat still valid"
-    even before a worker_codex pane is wired up — useful in single-CLI
-    deployments like the test_a container."""
+    (b) the corresponding host cred file is present
+    (~/.codex/auth.json or ~/.kimi/credentials/kimi-code.json).
+    The cred-file fallback lets `/usage` surface "is my Codex Pro
+    seat still valid" even before a worker_codex pane is wired up."""
     data: dict[str, Any] = {
         "view": view,
         "days": days or None,
@@ -350,10 +338,10 @@ def _build_data(view: str, days: str, clis: set[str],
         "other_clis": [],
     }
     if "claude-code" in clis:
-        # R173: real per-window utilization via Anthropic OAuth API
+        # Real per-window utilization via Anthropic OAuth API
         # (api.anthropic.com/api/oauth/usage). Replaces the older
-        # `npx ccusage <view>` shell-out which only returned cumulative
-        # cost, not actual quota %. Mirrors main's usage_snapshot.
+        # `npx ccusage <view>` shell-out which only returned
+        # cumulative cost, not actual quota %.
         data["claude_code"] = _query_cc_usage(home, opener=opener)
     home_dir = home or Path.home()
     if ("codex-cli" in clis or "codex" in clis
