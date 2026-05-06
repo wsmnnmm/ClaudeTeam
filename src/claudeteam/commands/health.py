@@ -128,12 +128,11 @@ def _check_session(rep: HealthReport, session: str) -> bool:
 def _check_agents(rep: HealthReport, session: str, agents: list[str],
                   session_alive: bool) -> None:
     heartbeats = local_facts.all_heartbeats()
-    # R145: hoist team load out of the loop. Each `config.agent_cli` /
-    # `config.agent_config` call internally re-reads team.json from disk;
-    # the previous shape paid 2-3 disk reads per agent in this loop. One
-    # `load_team()` here, bare-dict probes inside the loop. Same defensive
-    # behavior — agents_dict.get(agent, {}) returns {} for an unknown
-    # agent (matches the empty `cli` / no `lazy` defaults below).
+    # Hoist load_team() out of the per-agent loop — each
+    # `config.agent_cli` / `agent_config` would otherwise re-read
+    # the team config (2-3 disk reads per agent). One read here, dict
+    # probes inside the loop with `agents_dict.get(agent, {})` for
+    # unknown-agent defaults.
     agents_dict = config.load_team().get("agents", {})
     for agent in agents:
         target = tmux.Target(session, agent)
@@ -148,10 +147,9 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
         cfg = agents_dict.get(agent, {})
         cli = cfg.get("cli", "claude-code")
         try:
-            # R152: resolve adapter from the cli we already have, not via
-            # `adapter_for_agent(agent)` which re-reads team.json. R145
-            # only fixed the explicit config.agent_cli / agent_config
-            # calls in this loop; this implicit one slipped through.
+            # Resolve adapter from `cli` directly — not via
+            # `adapter_for_agent(agent)`, which would re-read the team
+            # config inside the loop.
             adapter = get_adapter(cli)
             text = tmux.capture_pane(target, lines=80)
             if any(m in text for m in adapter.ready_markers()):
@@ -178,11 +176,9 @@ def _check_binaries(rep: HealthReport, agents: list[str]) -> None:
     """For each unique CLI process_name (claude/codex/kimi/...), verify the
     binary is on PATH. Missing binaries don't crash claudeteam, but every
     pane spawn will fail to launch its CLI."""
-    # R150: hoist team.json read out of the loop. `adapter_for_agent`
-    # internally calls `config.agent_cli(agent) → config.agent_config →
-    # load_team()`, so the previous shape paid one disk read per agent
-    # to discover its `cli` string. One read here, then `get_adapter`
-    # by cli string skips the redundant config bounce.
+    # Same hoist as `_check_agents` — load team config once, look up
+    # each agent's `cli` from the cached dict, get_adapter(cli)
+    # skips the per-agent config bounce.
     from claudeteam.agents import get_adapter
     agents_dict = config.load_team().get("agents", {})
     seen: dict[str, list[str]] = {}

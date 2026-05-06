@@ -37,10 +37,9 @@ _AGENT_CARD_COLORS = {
     "manager": "blue",
 }
 
-# R169: default emoji per role keyword. Used when team.json doesn't
-# provide an explicit `emoji` field for the agent. Mirrors `main`'s
-# AGENTS dict shape (each role gets a glyph) so the card sender header
-# at-a-glance signals who's talking.
+# Default emoji per agent name. Used when claudeteam.toml doesn't
+# provide an explicit `emoji` field. The card sender header
+# (`{emoji} {agent} · {role}`) signals who's talking at a glance.
 _DEFAULT_AGENT_EMOJI = {
     "manager": "🎯",
     "worker_cc": "💎",
@@ -151,10 +150,9 @@ def _parse(argv: list[str]) -> _Args | None:
     if len(argv) < 2:
         return None
     rest = list(argv)
-    # R169: `--card` and `--no-card` are now no-ops — boss-flagged
-    # convention is "all agent chat messages are cards, no escape hatch".
-    # Consuming both flags keeps backwards-compat with operators /
-    # docs that still pass them; the actual behaviour is always card.
+    # `--card` / `--no-card` are accepted but ignored — every
+    # `claudeteam say` posts a v2 card. The flags are consumed for
+    # backwards-compat with operators / docs that still pass them.
     pop_bool_flag(rest, "--card")
     pop_bool_flag(rest, "--no-card")
     no_local = pop_bool_flag(rest, "--no-local")
@@ -212,20 +210,17 @@ def main(argv: list[str]) -> int:
             print(f"  ⚠️ audit log write failed for {args.agent}: {e}",
                   file=sys.stderr)
 
-    # Resolve agent's role + emoji + color from team.json — used for
-    # the card title (R169 mirrors main's `{emoji} {agent} · {role}`
-    # shape) and for color override. Missing config falls back to
-    # the per-agent default tables above.
+    # Resolve agent's role + emoji + color from claudeteam.toml. Used
+    # for the card title (`{emoji} {agent} · {role}`) and for color
+    # override. Missing config falls back to the per-agent default
+    # tables defined at the top of this file.
     try:
         agent_cfg = config.agent_config(args.agent)
     except KeyError:
         agent_cfg = {}
 
-    # R169: card-only — every `claudeteam say` sends a v2 card with
-    # `{emoji} {agent} · {role}` title (ported from main). No more
-    # plain-text path; boss-flagged convention is "all agent chat is
-    # cards, no escape hatch". reply_to is silently ignored (cards
-    # don't thread).
+    # Every `claudeteam say` sends a v2 card. `reply_to` is silently
+    # ignored because Feishu interactive cards don't thread.
     if args.reply_to:
         print(f"  ⚠️ --reply ignored (Feishu cards don't thread)",
               file=sys.stderr)

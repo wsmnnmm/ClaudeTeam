@@ -1,31 +1,29 @@
 """Single-file process supervisor.
 
-Replaces the old `supervision/` 11-file decomposition (~580 LOC) with one
-module (now ~280 LOC after R65 orphan-reap + R82 alerting + R98 card
-alerts grew it past the original ~200).  Each ProcessSpec describes a
-daemon to keep alive; a single `supervise()` sweep checks every spec,
-spawns or backs off as appropriate, and writes one heartbeat line.
+Each ProcessSpec describes a daemon to keep alive; a single
+`supervise()` sweep checks every spec, spawns or backs off as
+appropriate, and writes one heartbeat line.
 
 State machine per spec:
-    alive            → noop
+    alive             → noop
     dead, ok-to-spawn → respawn
     dead, in cooldown → noop, count down
     respawn fails N times → enter cooldown for cooldown_secs
                             + alert_fn(name, fail_count, cooldown_secs)
-                            (R82, optional — `commands/watchdog.py`
-                            wires this to a red Feishu card via R98)
+                            (optional — `commands/watchdog.py` wires
+                            this to a red Feishu card)
 
-Liveness is `kill(pid, 0) AND cmdline contains expected_cmdline`.  The
-cmdline check defends against PID reuse (memory: ClaudeTeam Bug 14).
+Liveness is `kill(pid, 0) AND cmdline contains expected_cmdline`.
+The cmdline check defends against PID reuse.
 
-Orphan reap (R65): Each ProcessSpec carries `orphan_markers: tuple[str,
-...]`. Before `respawn` Popen's the new daemon, `reap_orphans(spec)`
-scans `ps -eo pid,ppid,command` for processes with PPID=1 whose cmdline
-contains all markers, and SIGTERMs them. Kills lark-cli `+subscribe`
-zombies left by a SIGKILL'd predecessor router so the new daemon's
-subscribe doesn't race the orphan for events. Best-effort: any subprocess
-error / missing ps / non-zero return / fake Popen yields no orphans;
-ProcessLookupError + PermissionError swallowed.
+Orphan reap: each ProcessSpec carries `orphan_markers: tuple[str, ...]`.
+Before `respawn` Popen's the new daemon, `reap_orphans(spec)` scans
+`ps -eo pid,ppid,command` for processes with PPID=1 whose cmdline
+contains all markers, and SIGTERMs them. This kills lark-cli
+`+subscribe` zombies left by a SIGKILL'd predecessor router so the
+new daemon's subscribe doesn't race the orphan for events.
+Best-effort: any subprocess error / missing ps / non-zero return /
+fake Popen yields no orphans.
 """
 from __future__ import annotations
 

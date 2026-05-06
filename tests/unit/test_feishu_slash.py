@@ -150,6 +150,52 @@ def test_team_card_reflects_live_toml_after_adding_agent():
         assert "worker_codex" in body2
 
 
+def test_team_card_drops_agent_removed_from_toml_live():
+    """REGRESSION (reverse direction): removing an agent block from
+    claudeteam.toml should make the next /team stop listing it.
+    Without _live_agents() reading config fresh, the daemon's startup
+    cache would keep showing the now-deleted agent forever."""
+    from helpers import isolated_env
+    from claudeteam.runtime import paths, tunables as _tun
+
+    pane_buffers = {
+        "manager":   "...\n⏵⏵ bypass permissions on\n",
+        "worker_cc": "...\n⏵⏵ bypass permissions on\n",
+        "worker_codex": "...\n⏵⏵ bypass permissions on\n",
+    }
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager":      {"cli": "claude-code"},
+        "worker_cc":    {"cli": "claude-code"},
+        "worker_codex": {"cli": "codex-cli"},
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        # 3 agents
+        reply1 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc", "worker_codex")))
+        body1 = reply1["body"]["elements"][0]["content"]
+        assert "3 agents" in body1
+        assert "worker_codex" in body1
+
+        # Operator deletes worker_codex from claudeteam.toml live
+        cf = paths.config_file()
+        cf.write_text(
+            '[team]\nsession = "ClaudeTeam"\n\n'
+            '[team.agents.manager]\ncli = "claude-code"\n\n'
+            '[team.agents.worker_cc]\ncli = "claude-code"\n',
+            encoding='utf-8')
+        _tun.reset_cache()
+
+        # Stale ctx still says 3 agents, but live read sees 2
+        reply2 = slash.dispatch("/team",
+                                _ctx(agents=("manager", "worker_cc", "worker_codex")))
+        body2 = reply2["body"]["elements"][0]["content"]
+        assert "2 agents" in body2
+        assert "worker_codex" not in body2
+
+
 def test_team_card_reflects_lazy_flag_added_to_toml_live():
     """Adding `lazy = true` to an agent in claudeteam.toml should
     flip its /team glyph to ⏸ immediately — no router restart.

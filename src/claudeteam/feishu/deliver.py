@@ -8,8 +8,9 @@ touches the store and tmux.
 
   DROP       no-op (`DeliveryReport(skipped=True)`)
   SLASH      `_apply_slash`: dispatch via `feishu/slash.dispatch` →
-             reply is `str` or `dict` (R79 cards). dict → `chat.send_card`,
-             str → `chat.send_text`. Pane never touched, no LLM runs.
+             reply is `str` or `dict` (interactive cards). dict →
+             `chat.send_card`, str → `chat.send_text`. Pane never
+             touched, no LLM runs.
   BROADCAST  same as ROUTE but targets are all non-sender agents
   ROUTE      per-target: `_write_inbox` (always; flock-serialised) +
              `_inject_to_pane` (best-effort; skipped when `wake.is_rate_limited`
@@ -65,8 +66,8 @@ def _resolve_deps(adapter_lookup, tmux_inject, append_message, session) -> _Deps
 
 def _write_inbox(agent: str, sender: str, decision: Decision,
                  deps: _Deps, report: DeliveryReport) -> str:
-    """Returns the local_id on success, "" on failure (failure is also
-    logged to the report). R172.b: caller threads the local_id into
+    """Returns the local_id on success, "" on failure (failure is
+    also logged to the report). The caller threads the local_id into
     the pane-inject wrapper so the agent knows which row to mark
     `claudeteam read` after replying."""
     try:
@@ -123,18 +124,18 @@ def _compose_inject_text(agent: str, decision: Decision,
     """Prepend a short routing-context header to the chat message before
     injecting it into the agent's pane.
 
-    R172.b: claude in the pane treats raw injected text as a regular
-    user prompt and answers IN PANE. The hint primes the agent to:
+    Without this header, claude treats raw injected text as a normal
+    user prompt and replies in-pane (which the boss can't see). The
+    hint primes the agent to:
       1. Reply via the correct channel (`claudeteam say` for chat-
          originated; `claudeteam send` for peer messages).
       2. Mark the inbox row `read` afterward (deliver knows the
-         local_id since it just appended the row) — keeps the inbox
-         from accumulating unread rows.
-      3. R173: if the message hints at manager-summary follow-up,
-         non-manager agents are told to ALSO `claudeteam send manager`
-         so manager's inbox pings (manager pane is blind to chat-only
-         say events). Without this, Round C dispatch + summarize loops
-         stall after worker posts result."""
+         local_id since it just appended the row) so the inbox
+         doesn't accumulate unread rows.
+      3. If the message hints at manager-summary follow-up, non-
+         manager agents are also told to `claudeteam send manager`
+         so manager's inbox pings — manager's pane is blind to
+         chat-only `say` events otherwise."""
     sender = decision.sender or "user"
     read_hint = (f" 完成后用 `claudeteam read {local_id}` 销 inbox。"
                  if local_id else "")
