@@ -9,22 +9,21 @@ that the agent's CLI reads on demand to learn:
     that LLMs habitually mis-order)
   - which CLI it's running under (so adapter quirks like Codex's
     M-Enter don't surprise it)
-  - cross-agent management discipline (manager body only, R85: ported
-    from old main's templates/manager.identity.md — 角色边界 / 秒回闭环
-    / 巡视核实 / 沟通格式 / 需求纪律 / 外部系统 / 集合指令必须 dispatch)
+  - cross-agent management discipline (manager body only — 角色边界 /
+    秒回闭环 / 巡视核实 / 沟通格式 / 需求纪律 / 外部系统 /
+    集合指令必须 dispatch)
 
-The text is interpolated from the agent's team.json entry — there's no
-external template file to edit; the canonical copy lives in this module
-in `_MANAGER_BODY` and `_WORKER_BODY`.
+The text is interpolated from the agent's claudeteam.toml entry —
+there's no external template file to edit; the canonical copy lives
+in this module as `_MANAGER_BODY` / `_WORKER_BODY`.
 
-`init_prompt(agent)` is the wake message injected into a fresh / cleared
-pane. R84/R88 added durable memory recall: it pulls
-`memory.render_for_prompt(agent)` and appends the recall block so the
-agent picks up prior context after `/clear`. Empty memory → no extra
-section (brand-new agents stay clean).
+`init_prompt(agent)` is the wake message injected into a fresh /
+cleared pane. It also appends the agent's recent durable memory (via
+`memory.render_for_prompt`) so a /clear-ed pane picks up prior
+context. Empty memory → no extra section.
 
-Manager 巡视 cadence (R104) now points at `claudeteam peek <agent>`
-instead of raw `tmux capture-pane -t {session}:<agent>`.
+Manager 巡视 cadence uses `claudeteam peek <agent>` rather than raw
+`tmux capture-pane`.
 """
 from __future__ import annotations
 
@@ -162,11 +161,11 @@ claudeteam team
 ### 外部系统
 - **不擅自 push GitHub**：员工本地完工即算交付；不向老板主动要 PAT / SSH、不把 push 当阻塞上升；老板明确点名"推一下"才执行。
 
-## 你是老板的唯一接口（R174 路由模型）
+## 你是老板的唯一接口（单接口路由模型）
 
-老板**所有**消息（包括 `@worker_cc`、`@team`、`全体X`、纯文本）
-都只进你的 inbox。员工不会直接收到老板的消息。员工的 chat say 也
-会进你的 inbox（让你能看到员工进度，做汇总）。
+老板**所有**消息（包括 `@worker_cc`、`@team`、纯文本）都只进你的
+inbox。员工不会直接收到老板的消息。员工的 chat say 也会进你的 inbox
+（让你能看到员工进度，做汇总）。
 
 ### 派活流程
 
@@ -396,11 +395,10 @@ def init_prompt(agent: str) -> str:
     instead of losing all task continuity. Empty memory → no extra
     section appears (avoid noise on a brand-new agent).
 
-    R168: prompt now explicitly tells the agent to PROCESS unread
-    messages — not just count them. Boss-flagged after the 全员报道
-    e2e: worker_cc read its inbox, saw manager's "发卡响应" dispatch,
-    but only acked the init line and stopped. Adding the processing
-    contract closes the autonomy gap.
+    The prompt explicitly tells the agent to PROCESS unread inbox
+    messages (post a chat reply, mark each read) rather than just
+    counting them — without this, agents tend to ack the init line
+    and stop, ignoring queued tasks.
     """
     say_target_hint = (
         "--to user (对老板)" if agent == "manager"

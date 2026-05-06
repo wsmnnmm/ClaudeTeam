@@ -2,17 +2,10 @@
 
 Writes `.claude/commands/{name}.md` files at cwd so any Claude Code
 pane spawned in this directory gets the matching `/<name>` slash
-command wired to the corresponding `claudeteam` subcommand. Live set
-(9 hooks as of R104):
+command wired to the corresponding `claudeteam` subcommand. Live set:
 
     /inbox     /team      /status    /say     /task
     /health    /remember  /recall    /peek
-
-Hooks added since the original 5-hook list:
-- /health    R-original (operational visibility)
-- /remember  R94  durable memory write from agent pane
-- /recall    R94  durable memory read from agent pane
-- /peek      R104 5-min 巡视 cadence (replaces raw tmux capture-pane)
 
 Each markdown instructs the agent to first read its own identity.md
 (written by `agents/identity.py` on hire/start) so it knows which
@@ -66,11 +59,10 @@ _COMMANDS: dict[str, str] = {
     "say": (
         "Take the user's argument as the message to post in the Feishu chat as you.\n"
         "\n"
-        "**R169: every `claudeteam say` posts a v2 card** with a\n"
-        "color-coded header (manager → blue, worker_cc → purple, worker_* →\n"
-        "green) and `{emoji} {your-name} · {your role}` title. There is no\n"
-        "plain-text path — every chat message you send goes as a structured\n"
-        "card so the group reads as clean per-role updates.\n"
+        "Every `claudeteam say` posts a v2 card with a color-coded header\n"
+        "(manager → blue, worker_cc → purple, worker_* → green) and a\n"
+        "`{emoji} {your-name} · {your role}` title. Group chat reads as\n"
+        "structured per-role updates rather than raw text.\n"
         "\n"
         "    claudeteam say <your-name> \"【报道】当前状态：在线 ✅，正在做 X\"\n"
         "    claudeteam say <your-name> \"收到\"\n"
@@ -88,10 +80,9 @@ _COMMANDS: dict[str, str] = {
         "Run `claudeteam health` and summarize: any red checks? any agent with "
         "no heartbeat in the last 30 minutes?\n"
     ),
-    # Round-94: durable agent memory (R83/R87/R92). Without these hooks
-    # `/remember` and `/recall` go through claude-code's LLM parse path
-    # instead of router/CLI dispatch, which is slower and inconsistent
-    # with the other slash commands.
+    # Durable per-agent memory hooks. Without these `/remember` and
+    # `/recall` would go through claude-code's LLM parse path instead
+    # of CLI dispatch, slower and inconsistent with the other hooks.
     "remember": (
         "Take the user's argument as a memory note for yourself. "
         "Run `claudeteam remember <your-name> <kind> \"<content>\" [--ref <ref>]` "

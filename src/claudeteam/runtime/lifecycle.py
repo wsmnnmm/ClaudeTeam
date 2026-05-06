@@ -14,10 +14,10 @@ Returns one of five outcome strings (callers render differently):
   READY_NO_INIT   CLI spawned but ready marker didn't appear in 20s;
                   identity init skipped (caller surfaces a warning)
   SPAWN_FAILED    `tmux.spawn_agent` returned False (tmux send-keys failed)
-  CONFIG_ERROR    R61: bad `cli` value in team.json (typo, dropped adapter)
-                  caught as KeyError on adapter lookup; caller logs +
-                  skips this agent, keeps going for the rest of the team
-                  rather than aborting the whole `claudeteam start`.
+  CONFIG_ERROR    bad `cli` value (typo, dropped adapter) caught as
+                  KeyError on adapter lookup; caller logs + skips this
+                  agent, keeps going for the rest of the team rather
+                  than aborting the whole `claudeteam start`.
 
 Also home for `pane_env_prefix()` — the shell env-var prefix prepended
 to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR` and
@@ -51,20 +51,18 @@ _PROPAGATED_ENV = (
 def _ensure_claude_agent_home(agent: str) -> None:
     """Materialise a per-agent claude state dir at /data/agent-home/<agent>.
 
-    R172.b: each claude pane spawns with HOME=/data/agent-home/<agent>
-    so each agent has its own ~/.claude.json (avoids the shared-file
-    write-race that corrupted the previous single-mount setup). The
-    directory contains:
-      .claude/settings.json           — silent-launch flags (theme, perms)
-      .claude/.credentials.json       — symlink to /root/.claude/.credentials.json
-                                        so OAuth tokens stay bind-mount shared
-      .claude/projects                — symlink to /root/.claude/projects
-                                        so ccusage in /usage finds session logs
+    Each claude pane spawns with `HOME=/data/agent-home/<agent>` so
+    each agent has its own `~/.claude.json` (avoids the shared-file
+    write-race that corrupts a single-mount setup). The directory
+    contains:
+      .claude/settings.json     — silent-launch flags (theme, perms)
+      .claude/.credentials.json — symlink to /root/.claude/.credentials.json
+                                  so OAuth tokens stay bind-mount shared
+      .claude/projects          — symlink to /root/.claude/projects
+                                  so ccusage in /usage finds session logs
     Best-effort: if /data isn't writable (host tests where the path
-    doesn't exist), silently skip. The pane spawn won't crash, claude
-    will fall back to its default discovery against `$HOME` and the
-    boss-flagged setup gets exercised only in real container
-    deployments where /data is mounted.
+    doesn't exist), silently skip and let claude fall back to its
+    default `$HOME` discovery.
     """
     from claudeteam.agents.claude_code import agent_home as _agent_home
     home = Path(_agent_home(agent))
@@ -199,11 +197,10 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
                         missing adapter); caller should warn + continue
                         with the rest of the team, NOT kill the whole start.
     """
-    # R154: load team.json once. Previously called `config.agent_config`,
-    # `adapter_for_agent`, and `config.agent_model` separately — each
-    # triggered its own load_team() bounce, so this helper paid 3-4
-    # team.json parses per call. start.py loops over N agents → 3-4N
-    # reads. Now: 1 read here, derive cfg / cli / model from cached team.
+    # Load team config once. start.py loops over N agents calling this
+    # helper, so paying 3-4 disk reads here per agent (one for cfg, one
+    # for adapter resolution, one for model fallback) compounds. Cache
+    # locally and derive cfg / cli / model from the same dict.
     team = config.load_team()
     cfg = team.get("agents", {}).get(agent)
     if cfg is None:
@@ -217,11 +214,10 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     model = (cfg.get("model")
              or env_str("CLAUDETEAM_DEFAULT_MODEL")
              or team.get("default_model", "opus"))
-    # R155: pass resolved fields to identity.write so its internal
-    # `render()` skips its own `config.agent_config(agent)` fallback —
-    # one more team.json read removed from the per-agent boot path.
-    # `role` defaulted to `agent` matches render's cfg.get("role") or
-    # agent fallback, so the rendered file is byte-identical.
+    # Pass resolved fields to identity.write so its internal render()
+    # skips a redundant config.agent_config() fallback. `role`
+    # defaulting to `agent` matches render's own fallback so the
+    # rendered file is byte-identical.
     identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
@@ -242,11 +238,11 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
-    # R172.b: 20s → 60s. Fresh container claude panes go through up to
-    # 3 first-launch dialogs (theme picker / auth-method picker /
-    # bypass-permissions confirm) before the ready marker appears. The
-    # poll loop auto-Enters each dialog at ~1Hz, so a 3-dialog chain
-    # plus claude's own boot time can run 30-40s. 60s gives headroom.
+    # 60s ready timeout (was 20s): fresh container claude panes go
+    # through up to 3 first-launch dialogs (theme picker / auth-method
+    # picker / bypass-permissions confirm) before the ready marker
+    # appears. The poll loop auto-Enters each dialog at ~1Hz, so a
+    # 3-dialog chain plus boot time can run 30-40s; 60s gives headroom.
     from claudeteam.runtime import tunables
     ready_timeout = float(tunables.tunable("wake.ready_marker_timeout_s", 60.0))
     if wake.wait_until_ready(target, adapter, timeout_s=ready_timeout):

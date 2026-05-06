@@ -7,21 +7,21 @@ until SIGTERM / Ctrl-C.
 Self-locks via state_dir/watchdog.pid so two watchdogs can't fight.
 
 Cooldown alerts:
-- R82 added alert_fn: when a supervised daemon enters cooldown
-  (max_retries respawns failed) the watchdog posts to Feishu chat so
-  the boss sees the death without tailing the watchdog log.
-- R98 upgraded the alert from plain text to a red Feishu card with a
-  3-step recovery checklist (`claudeteam health` / read daemon log /
-  `claudeteam down && up` after fix). Falls back to send_text on card
-  schema rejection so the alert still lands.
-- Returns None alert_fn when chat_id is unset — alerts are pointless
-  without a delivery target. Boot banner says "no chat alerts" in
-  that case so operator knows.
+- When a supervised daemon enters cooldown (max_retries respawns
+  failed), the watchdog posts to Feishu chat so the boss sees the
+  death without tailing the watchdog log.
+- The alert is a red Feishu card with a 3-step recovery checklist
+  (`claudeteam health` / read daemon log / `claudeteam down && up`
+  after fix). Falls back to plain `send_text` on card schema
+  rejection so the alert still lands.
+- alert_fn is None when chat_id is unset — alerts are pointless
+  without a delivery target; boot banner says "no chat alerts" so
+  the operator knows.
 
-R173: claude OAuth keep-alive
-- Boss flagged 2026-05-05 that boss-message routing died because the
-  bind-mounted claude .credentials.json expired during idle and the
-  in-pane claude only refreshes on-API-call (not idle). Watchdog now
+Claude OAuth keep-alive:
+- Bind-mounted claude .credentials.json expires during idle and
+  the in-pane claude only refreshes on API call (not idle), which
+  killed boss-message routing after long silences. Watchdog now
   proactively reads `expiresAt` every CRED_CHECK_INTERVAL_SECS; if
   the token's < CRED_REFRESH_AHEAD seconds from expiry, run
   `claude -p "Return only OK"` once. That triggers claude to refresh
@@ -50,7 +50,7 @@ from claudeteam.util import maybe_print_help
 
 
 CHECK_INTERVAL_SECS = 30
-# R173: keep-alive cadence for claude OAuth refresh. Claude tokens
+# Keep-alive cadence for claude OAuth refresh. Claude tokens
 # typically expire ~12h; we refresh whenever < 30min remain so we
 # never serve a request to an expired token. Check every 5min so the
 # refresh fires within ±5min of the threshold.
@@ -67,9 +67,9 @@ def _make_alert_fn():
     Returns None when chat_id is unset — alerts are pointless without a
     delivery target, and a None alert_fn is the supervise default.
 
-    Round-98: send as red Feishu card (was plain text in R82) so the
-    cooldown event is visually distinct from normal /team / /health
-    cards in the chat. Falls back to text if send_card raises.
+    Sends as a red Feishu card so the cooldown event is visually
+    distinct from normal /team / /health cards. Falls back to plain
+    text if send_card raises (schema mismatch on older lark builds).
     """
     chat_id = config.chat_id()
     if not chat_id:
