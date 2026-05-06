@@ -108,9 +108,16 @@ def _parse(argv: list[str]) -> _Args | None:
         return None
     agent = rest[0]
     rest = rest[1:]
-    # If --as wasn't passed, fall back to CLAUDETEAM_LARK_SEND_AS env var,
-    # then to the bot default. Lets operators "set once per shell".
-    as_value = as_explicit if as_explicit is not None else env_str("CLAUDETEAM_LARK_SEND_AS")
+    # `feishu.send_as` cascade: --as flag > legacy env > tunable > "bot" default.
+    if as_explicit is not None:
+        as_value = as_explicit
+    else:
+        legacy = env_str("CLAUDETEAM_LARK_SEND_AS")
+        if legacy:
+            as_value = legacy
+        else:
+            from claudeteam.runtime import tunables
+            as_value = str(tunables.tunable("feishu.send_as", "bot"))
     if not rest:
         return None
     return _Args(
@@ -163,8 +170,11 @@ def main(argv: list[str]) -> int:
         print(f"  ⚠️ --reply ignored (Feishu cards don't thread)",
               file=sys.stderr)
     title = _agent_card_title(args.agent, agent_cfg)
+    # `card_color` is the new field name (more specific than just "color");
+    # fall back to legacy "color" so old team.json keeps working.
+    cfg_color = agent_cfg.get("card_color") or agent_cfg.get("color")
     card = simple_card(title, args.message,
-                        color=_color_for(args.agent, agent_cfg.get("color")))
+                        color=_color_for(args.agent, cfg_color))
     result = feishu_chat.send_card(
         chat, card,
         profile=profile,

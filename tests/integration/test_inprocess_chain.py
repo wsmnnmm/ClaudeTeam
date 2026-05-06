@@ -404,7 +404,8 @@ def test_lazy_pane_wake_fn_invoked_then_inject_proceeds():
     from claudeteam.feishu.router import Action, Decision
     wake_calls = []
 
-    def fake_wake(target, adapter, *, spawn_cmd, init_msg, on_woken):
+    def fake_wake(target, adapter, *, spawn_cmd, init_msg, on_woken,
+                  timeout_s=None, **_kw):
         wake_calls.append({
             "target": str(target),
             "spawn_cmd": spawn_cmd,

@@ -247,7 +247,9 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     # bypass-permissions confirm) before the ready marker appears. The
     # poll loop auto-Enters each dialog at ~1Hz, so a 3-dialog chain
     # plus claude's own boot time can run 30-40s. 60s gives headroom.
-    if wake.wait_until_ready(target, adapter, timeout_s=60):
+    from claudeteam.runtime import tunables
+    ready_timeout = float(tunables.tunable("wake.ready_marker_timeout_s", 60.0))
+    if wake.wait_until_ready(target, adapter, timeout_s=ready_timeout):
         tmux.inject(target, identity.init_prompt(agent),
                     submit_keys=adapter.submit_keys())
         outcome = READY

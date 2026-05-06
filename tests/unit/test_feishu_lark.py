@@ -267,8 +267,15 @@ def test_run_strips_https_proxy_when_no_proxy_env_set():
 
 
 def test_run_keeps_proxy_env_when_no_proxy_unset():
+    """When LARK_CLI_NO_PROXY env var unset AND no toml override,
+    HTTPS_PROXY must be preserved. Pin CLAUDETEAM_CONFIG_FILE to a
+    non-existent path so the project root's claudeteam.toml (which
+    sets feishu.no_proxy=true) doesn't leak into this test."""
+    from claudeteam.runtime import tunables
+    tunables.reset_cache()
     rec = _Recorder(FakeProc(stdout="{}"))
-    with env_patch(HTTPS_PROXY="http://x"):
+    with env_patch(HTTPS_PROXY="http://x", LARK_CLI_NO_PROXY=None,
+                   CLAUDETEAM_CONFIG_FILE="/nonexistent/claudeteam.toml"):
         lark.call(["x"], run=rec)
         assert rec.calls[0]["kwargs"]["env"].get("HTTPS_PROXY") == "http://x"
 
@@ -291,7 +298,10 @@ def test_subprocess_env_strips_proxy_when_no_proxy_set():
 
 
 def test_subprocess_env_keeps_proxy_when_no_proxy_unset():
-    with env_patch(HTTPS_PROXY="http://x", LARK_CLI_NO_PROXY=None):
+    from claudeteam.runtime import tunables
+    tunables.reset_cache()
+    with env_patch(HTTPS_PROXY="http://x", LARK_CLI_NO_PROXY=None,
+                   CLAUDETEAM_CONFIG_FILE="/nonexistent/claudeteam.toml"):
         env = lark.subprocess_env()
     assert env.get("HTTPS_PROXY") == "http://x"
 

@@ -97,8 +97,19 @@ class SlashContext:
 
 
 _AGENT_NAME_RE = re.compile(r"[A-Za-z0-9_\-]+")
-_MAX_TMUX_LINES = 2000
 _REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
+
+
+def _tmux_default_lines() -> int:
+    """Default `/tmux` capture window (config-driven; was hardcoded 10)."""
+    from claudeteam.runtime import tunables
+    return int(tunables.tunable("limits.tmux_capture_default_lines", 10))
+
+
+def _tmux_max_lines() -> int:
+    """Hard upper bound for `/tmux N` (config-driven; was hardcoded 2000)."""
+    from claudeteam.runtime import tunables
+    return int(tunables.tunable("limits.tmux_capture_max_lines", 2000))
 
 
 def _default_agent(ctx: SlashContext) -> str:
@@ -549,8 +560,9 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     one-line — a card here would be over-formatting)."""
     parts = args.split()
     agent = parts[0] if parts else _default_agent(ctx)
-    raw_lines = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 10
-    n_lines = max(1, min(raw_lines, _MAX_TMUX_LINES))
+    raw_lines = (int(parts[1]) if len(parts) >= 2 and parts[1].isdigit()
+                 else _tmux_default_lines())
+    n_lines = max(1, min(raw_lines, _tmux_max_lines()))
     if agent not in ctx.agent_set:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
     target = tmux.Target(ctx.session, agent)

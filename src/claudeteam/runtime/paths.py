@@ -51,6 +51,14 @@ def router_seen_file() -> Path:
     return state_file("router.seen")
 
 
+def config_file() -> Path:
+    """Path to the unified TOML config file (replaces team.json +
+    runtime_config.json). Override via CLAUDETEAM_CONFIG_FILE env, else
+    looks for `./claudeteam.toml` relative to cwd."""
+    from claudeteam.util import env_path
+    return env_path("CLAUDETEAM_CONFIG_FILE") or Path.cwd() / "claudeteam.toml"
+
+
 def watchdog_pid_file() -> Path:
     return state_file("watchdog.pid")
 

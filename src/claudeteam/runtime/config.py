@@ -72,6 +72,20 @@ def _read_json_lenient(path: Path, default: dict, label: str) -> dict:
 
 
 def load_team() -> dict:
+    """Return team config in legacy shape `{session, agents, default_model}`.
+
+    Prefers `claudeteam.toml` `[team]` section; falls back to legacy
+    `team.json` so existing deployments keep working until they migrate
+    via `claudeteam init --upgrade`.
+    """
+    from claudeteam.runtime import tunables
+    toml_team = tunables.load().get("team")
+    if isinstance(toml_team, dict) and toml_team:
+        return {
+            "session": toml_team.get("session", "ClaudeTeam"),
+            "agents": dict(toml_team.get("agents", {})),
+            "default_model": toml_team.get("default_model", "opus"),
+        }
     return _read_json_lenient(team_file(), _DEFAULT_TEAM, "team.json")
 
 
@@ -116,9 +130,21 @@ def save_runtime_config(cfg: dict) -> None:
 
 
 def chat_id() -> str:
+    """Prefer claudeteam.toml `chat_id` (top-level), fall back to legacy
+    runtime_config.json."""
+    from claudeteam.runtime import tunables
+    toml_val = tunables.load().get("chat_id")
+    if toml_val:
+        return str(toml_val)
     return load_runtime_config().get("chat_id", "")
 
 
 def lark_profile() -> str:
-    """Resolve the lark-cli profile name; env beats file."""
-    return env_str("LARK_CLI_PROFILE") or load_runtime_config().get("lark_profile", "")
+    """Resolve the lark-cli profile name. Priority: env > toml > legacy json."""
+    if env := env_str("LARK_CLI_PROFILE"):
+        return env
+    from claudeteam.runtime import tunables
+    toml_val = tunables.load().get("lark_profile")
+    if toml_val is not None:
+        return str(toml_val)
+    return load_runtime_config().get("lark_profile", "")

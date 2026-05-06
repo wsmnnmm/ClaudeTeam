@@ -54,27 +54,11 @@ class Decision:
 _SENDER_RE = re.compile(r"^\s*\[([A-Za-z0-9_\-]+)\]\s*")
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
 
-# Broadcast triggers — match exactly these tokens or 全体 prefix.
+# Broadcast trigger tokens. R174 之后路由不再依赖这些做分发——所有人话
+# 都到 manager；这里保留只是为了 manager identity 模板能引用，让 manager
+# 看到这些关键词时知道老板有"全员"意图（具体怎么派由 manager 决定）。
+# 中文 "全体" prefix 已删——"广播规则用关键词硬匹配"是反 R174 设计。
 _BROADCAST_TOKENS = ("@team", "@all", "@everyone")
-_BROADCAST_PREFIX = "全体"   # matches "全体成员", "全体注意" etc.
-
-
-def _is_broadcast(text: str) -> bool:
-    """Detect operator broadcast: `@team` / `@all` / `@everyone` or
-    a Chinese 全体X phrase."""
-    if not text:
-        return False
-    if _BROADCAST_PREFIX in text:
-        return True
-    # Token-aware check (avoid matching @teammate or @allowance) — the
-    # token must end at whitespace, EOL, or punctuation. Both ASCII and
-    # full-width punct counts: an operator ending a sentence with
-    # "@team." (period) should still broadcast, not just "@team!" /
-    # "@team,". Round-42 caught the missing ASCII period.
-    for tok in _BROADCAST_TOKENS:
-        if re.search(rf"(^|\s){re.escape(tok)}(\s|$|[，。,.!?])", text):
-            return True
-    return False
 
 
 def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:

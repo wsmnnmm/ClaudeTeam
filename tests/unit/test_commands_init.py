@@ -1,80 +1,155 @@
-"""Tests for `claudeteam init` — first-time bootstrap."""
+"""Tests for `claudeteam init` — first-time bootstrap.
+
+Post-config-unification: writes a single `claudeteam.toml` instead of
+team.json + runtime_config.json. `--upgrade` reads existing legacy
+files and merges them into a toml (legacy left as backup).
+"""
 from __future__ import annotations
 
-import json
+import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover
+    import tomli as tomllib
 
 from helpers import env_patch, isolated_env, run_cli
 
 
 def _tmp_env():
-    """init only cares about team.json + runtime_config.json paths;
-    isolated_env (no team= / runtime_config= args) already gives a fresh
-    tempdir with those env vars pointing at non-existent files."""
+    """isolated_env points CLAUDETEAM_CONFIG_FILE at a fresh tempdir's
+    claudeteam.toml that doesn't exist yet (init writes it)."""
     return isolated_env()
 
 
-def test_init_writes_both_files_and_returns_zero():
+def _read_toml(path):
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+# ── happy path ───────────────────────────────────────────────────
+
+
+def test_init_writes_toml_and_returns_zero():
     with _tmp_env() as tmp:
-        rc, out, _ = run_cli(["init"])
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            rc, out, _ = run_cli(["init"])
         assert rc == 0
-        assert (tmp / "team.json").exists()
-        assert (tmp / "runtime_config.json").exists()
+        assert (tmp / "claudeteam.toml").exists()
         assert "wrote" in out
         assert "Next:" in out
 
 
-def test_init_default_team_has_three_workers_and_a_manager():
+def test_init_default_team_has_three_agents():
     with _tmp_env() as tmp:
-        run_cli(["init"])
-        team = json.loads((tmp / "team.json").read_text(encoding="utf-8"))
-        assert team["session"] == "ClaudeTeam"
-        assert team["default_model"] == "opus"
-        assert set(team["agents"]) == {"manager", "worker_cc", "worker_codex", "worker_kimi"}
-        assert team["agents"]["worker_codex"]["cli"] == "codex-cli"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        agents = cfg["team"]["agents"]
+        assert set(agents) == {"manager", "worker_cc", "worker_codex"}
+        assert agents["manager"]["cli"] == "claude-code"
+        assert agents["worker_codex"]["cli"] == "codex-cli"
 
 
-def test_init_runtime_config_has_empty_chat_and_profile():
+def test_init_default_chat_id_and_profile_empty():
     with _tmp_env() as tmp:
-        run_cli(["init"])
-        rt = json.loads((tmp / "runtime_config.json").read_text(encoding="utf-8"))
-        assert rt == {"chat_id": "", "lark_profile": ""}
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["chat_id"] == ""
+        assert cfg["lark_profile"] == ""
+
+
+def test_init_emits_chat_publish_section():
+    with _tmp_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["chat"]["publish"]["user_to_manager"] == "always"
+        assert cfg["chat"]["publish"]["manager_to_worker"] is False
 
 
 def test_init_session_flag_overrides_default():
     with _tmp_env() as tmp:
-        run_cli(["init", "--session", "Alpha"])
-        team = json.loads((tmp / "team.json").read_text(encoding="utf-8"))
-        assert team["session"] == "Alpha"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init", "--session", "Alpha"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["team"]["session"] == "Alpha"
 
 
-def test_init_refuses_to_overwrite_existing_team():
+# ── overwrite protection ─────────────────────────────────────────
+
+
+def test_init_refuses_to_overwrite_existing_toml():
     with _tmp_env() as tmp:
-        (tmp / "team.json").write_text('{"agents":{"x":{}}}', encoding="utf-8")
-        rc, _, err = run_cli(["init"])
+        toml_path = tmp / "claudeteam.toml"
+        toml_path.write_text('chat_id = "preserved"\n', encoding="utf-8")
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(toml_path)):
+            rc, _, err = run_cli(["init"])
         assert rc == 1
-        assert "team.json already exists" in err
-        # the existing file is untouched
-        assert "x" in (tmp / "team.json").read_text(encoding="utf-8")
+        assert "already exists" in err
+        # untouched
+        assert "preserved" in toml_path.read_text(encoding="utf-8")
 
 
-def test_init_refuses_to_overwrite_existing_runtime_config():
+def test_init_force_overwrites():
     with _tmp_env() as tmp:
-        (tmp / "runtime_config.json").write_text('{"chat_id":"oc_existing"}', encoding="utf-8")
-        rc, _, err = run_cli(["init"])
-        assert rc == 1
-        assert "runtime_config.json already exists" in err
-
-
-def test_init_force_overwrites_both():
-    with _tmp_env() as tmp:
-        (tmp / "team.json").write_text('{"agents":{"x":{}}}', encoding="utf-8")
-        (tmp / "runtime_config.json").write_text('{"chat_id":"old"}', encoding="utf-8")
-        rc, _, _ = run_cli(["init", "--force"])
+        toml_path = tmp / "claudeteam.toml"
+        toml_path.write_text('chat_id = "old"\n', encoding="utf-8")
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(toml_path)):
+            rc, _, _ = run_cli(["init", "--force"])
         assert rc == 0
-        team = json.loads((tmp / "team.json").read_text(encoding="utf-8"))
-        assert "manager" in team["agents"]
-        rt = json.loads((tmp / "runtime_config.json").read_text(encoding="utf-8"))
-        assert rt["chat_id"] == ""
+        cfg = _read_toml(toml_path)
+        assert cfg["chat_id"] == ""
+        assert "manager" in cfg["team"]["agents"]
+
+
+# ── --upgrade migration ──────────────────────────────────────────
+
+
+def test_upgrade_merges_legacy_team_json():
+    """Existing team.json + runtime_config.json → claudeteam.toml with
+    the legacy team's agents, chat_id, profile preserved."""
+    legacy_team = {
+        "session": "OldTeam",
+        "agents": {
+            "boss": {"cli": "claude-code", "model": "opus", "role": "老大"},
+            "alice": {"cli": "codex-cli", "model": "gpt-5.5", "role": "数据"},
+        },
+        "default_model": "sonnet",
+    }
+    legacy_runtime = {"chat_id": "oc_legacy", "lark_profile": "old-profile"}
+    with isolated_env(team=legacy_team, runtime_config=legacy_runtime) as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            rc, out, _ = run_cli(["init", "--upgrade"])
+        assert rc == 0, out
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["chat_id"] == "oc_legacy"
+        assert cfg["lark_profile"] == "old-profile"
+        assert cfg["default_model"] == "sonnet"
+        assert cfg["team"]["session"] == "OldTeam"
+        assert set(cfg["team"]["agents"]) == {"boss", "alice"}
+        assert cfg["team"]["agents"]["alice"]["cli"] == "codex-cli"
+
+
+def test_upgrade_errors_when_no_legacy_files():
+    with isolated_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            rc, _, err = run_cli(["init", "--upgrade"])
+        assert rc == 1
+        assert "nothing to migrate" in err
+
+
+def test_upgrade_emits_legacy_preserved_note():
+    legacy_team = {"session": "X", "agents": {"a": {"cli": "claude-code"}}}
+    legacy_runtime = {"chat_id": "oc_x"}
+    with isolated_env(team=legacy_team, runtime_config=legacy_runtime) as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            rc, out, _ = run_cli(["init", "--upgrade"])
+        assert rc == 0
+        assert "preserved as backup" in out
+
+
+# ── help / arg validation ────────────────────────────────────────
 
 
 def test_init_help_returns_zero():
@@ -90,24 +165,22 @@ def test_init_unknown_arg_returns_one():
         assert "unexpected args" in err
 
 
-def test_init_session_flag_combines_with_force():
+# ── template self-check ──────────────────────────────────────────
+
+
+def test_init_template_passes_tomllib_parse():
+    """The string template is hand-written; this is a sanity check it
+    actually parses via stdlib tomllib (catches typos at test time
+    before they break production deploys)."""
     with _tmp_env() as tmp:
-        (tmp / "team.json").write_text("{}", encoding="utf-8")
-        (tmp / "runtime_config.json").write_text("{}", encoding="utf-8")
-        rc, _, _ = run_cli(["init", "--force", "--session", "Beta"])
-        assert rc == 0
-        team = json.loads((tmp / "team.json").read_text(encoding="utf-8"))
-        assert team["session"] == "Beta"
-
-
-def test_init_writes_files_in_subdirs_when_envs_point_there():
-    with isolated_env() as tmp:
-        nested = tmp / "configs" / "team-alpha"
-        with env_patch(
-            CLAUDETEAM_TEAM_FILE=str(nested / "team.json"),
-            CLAUDETEAM_RUNTIME_CONFIG=str(nested / "rc.json"),
-        ):
-            rc, _, _ = run_cli(["init"])
-            assert rc == 0
-            assert (nested / "team.json").exists()
-            assert (nested / "rc.json").exists()
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        # Just parsing without raising = passes
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        # Spot-check a few required keys are present
+        assert "chat_id" in cfg
+        assert "team" in cfg
+        assert "chat" in cfg
+        assert "limits" in cfg
+        assert "router" in cfg
+        assert "feishu" in cfg

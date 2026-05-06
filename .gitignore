@@ -35,3 +35,6 @@ runtime_config.json
 
 # unrelated tool caches that drift into the repo root
 /.playwright-mcp/
+# claudeteam unified config — per-deploy file, like runtime_config.json
+/claudeteam.toml
+/claudeteam.toml.bak

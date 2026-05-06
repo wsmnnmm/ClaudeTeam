@@ -85,10 +85,12 @@ def _build_wake_args(agent: str, adapter) -> dict:
     actual job (deliver text) and isolates the cross-module wiring
     (lifecycle.pane_env_prefix, identity.init_prompt, status upsert).
     """
+    from claudeteam.runtime import tunables
     spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     return {
         "spawn_cmd": spawn_cmd,
         "init_msg": _identity.init_prompt(agent),
+        "timeout_s": float(tunables.tunable("wake.lazy_wake_timeout_s", 30.0)),
         # Flip status from "待命" to "进行中" so `claudeteam team` reflects
         # reality once the lazy pane actually wakes up.
         "on_woken": lambda: local_facts.upsert_status(

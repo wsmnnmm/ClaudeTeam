@@ -138,6 +138,75 @@ def test_lark_profile_falls_back_to_file_when_env_unset():
         assert config.lark_profile() == "from-file"
 
 
+# ── claudeteam.toml unified config (preferred over legacy json) ──
+
+
+def _write_toml(tmp_dir, content: str):
+    """Drop a claudeteam.toml in tmp + reset tunables cache."""
+    from claudeteam.runtime import tunables
+    (tmp_dir / "claudeteam.toml").write_text(content, encoding="utf-8")
+    tunables.reset_cache()
+
+
+def test_load_team_prefers_toml_over_legacy_json():
+    """Both files exist → toml wins. Lets ops migrate without deleting
+    old json; old json sticks around as a backup."""
+    legacy = {"session": "from-legacy", "agents": {"old": {"cli": "claude-code"}}}
+    with _team_env(legacy) as tmp:
+        _write_toml(tmp, """
+[team]
+session = "from-toml"
+default_model = "opus"
+
+[team.agents.new]
+cli = "claude-code"
+role = "新员工"
+""")
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            loaded = config.load_team()
+        assert loaded["session"] == "from-toml"
+        assert "new" in loaded["agents"]
+        assert "old" not in loaded["agents"]
+
+
+def test_load_team_falls_back_to_json_when_toml_missing():
+    legacy = {"session": "S", "agents": {"a": {"cli": "claude-code"}}}
+    with _team_env(legacy) as tmp:
+        # No toml written. CONFIG_FILE points at non-existent path.
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml")):
+            loaded = config.load_team()
+        assert loaded["session"] == "S"
+        assert "a" in loaded["agents"]
+
+
+def test_chat_id_prefers_toml():
+    with _team_env({"agents": {}}, runtime_data={"chat_id": "oc_legacy"}) as tmp:
+        _write_toml(tmp, 'chat_id = "oc_from_toml"\n')
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            assert config.chat_id() == "oc_from_toml"
+
+
+def test_chat_id_falls_back_to_legacy_runtime_config():
+    with _team_env({"agents": {}}, runtime_data={"chat_id": "oc_legacy"}) as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml")):
+            assert config.chat_id() == "oc_legacy"
+
+
+def test_lark_profile_priority_env_then_toml_then_legacy():
+    """Three-way priority. env beats both; toml beats legacy json."""
+    with _team_env({"agents": {}}, runtime_data={"lark_profile": "legacy"}) as tmp:
+        _write_toml(tmp, 'lark_profile = "from-toml"\n')
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
+                       LARK_CLI_PROFILE="from-env"):
+            assert config.lark_profile() == "from-env"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
+                       LARK_CLI_PROFILE=None):
+            assert config.lark_profile() == "from-toml"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml"),
+                       LARK_CLI_PROFILE=None):
+            assert config.lark_profile() == "legacy"
+
+
 def test_save_runtime_config_roundtrip():
     with _team_env({"agents": {}}):
         config.save_runtime_config({"chat_id": "oc_new", "lark_profile": "p"})

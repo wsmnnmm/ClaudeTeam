@@ -235,23 +235,27 @@ _SUBSCRIBE_WATCHDOG_PERIOD_S = 20.0
 
 def _stale_event_threshold_s() -> float:
     """Max seconds router will tolerate with no inbound event before
-    self-SIGTERM'ing for a watchdog respawn. Override via
-    `CLAUDETEAM_ROUTER_STALE_S` env (e.g. for tests).
+    self-SIGTERM'ing for a watchdog respawn.
+
+    Resolved via runtime.tunables — priority env > claudeteam.toml > default.
+    Legacy `CLAUDETEAM_ROUTER_STALE_S` env (without `_EVENT_THRESHOLD`) is
+    still honored as a backwards-compat alias since it shipped first.
 
     Default 180s — observed lark WebSocket silent-stall happens within
     minutes of router boot in 2026-05-06 host_smoke; 1200s default was
     too lax (test caught manager not seeing user message for 7+ minutes).
-    A quiet group with no traffic for 3min just triggers a benign
-    catchup-of-zero-messages cycle, so over-triggering is cheap.
     """
-    raw = os.environ.get("CLAUDETEAM_ROUTER_STALE_S", "")
-    try:
-        v = float(raw)
-        if v > 0:
-            return v
-    except ValueError:
-        pass
-    return 180.0
+    from claudeteam.runtime import tunables
+    # Legacy env-var alias (shipped before the tunables framework).
+    legacy = os.environ.get("CLAUDETEAM_ROUTER_STALE_S", "").strip()
+    if legacy:
+        try:
+            v = float(legacy)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return float(tunables.tunable("router.stale_event_threshold_s", 180.0))
 
 
 def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,

@@ -147,7 +147,17 @@ def subprocess_env() -> dict[str, str]:
     so the override is robust against env tampering by the caller.
     """
     env = os.environ.copy()
-    if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
+    # `feishu.no_proxy` cascade: legacy env LARK_CLI_NO_PROXY first
+    # (predates tunables), then tunable lookup. Truthy => strip proxies.
+    legacy = env_str("LARK_CLI_NO_PROXY").lower()
+    if legacy in {"1", "true", "yes", "on"}:
+        no_proxy = True
+    elif legacy in {"0", "false", "no", "off"}:
+        no_proxy = False
+    else:
+        from claudeteam.runtime import tunables
+        no_proxy = bool(tunables.tunable("feishu.no_proxy", False))
+    if no_proxy:
         for key in _PROXY_KEYS:
             env.pop(key, None)
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
@@ -179,7 +189,11 @@ def resolve_cli_prefix() -> list[str]:
     daemon, which had been hardcoded to npx since before R86 (docstring
     claimed direct-binary preference, code didn't).
     """
+    # `feishu.cli_bin` cascade: legacy env first, then tunable lookup.
     override = env_str("CLAUDETEAM_LARK_CLI_BIN")
+    if not override:
+        from claudeteam.runtime import tunables
+        override = str(tunables.tunable("feishu.cli_bin", "") or "")
     if override and os.path.exists(override):
         return [override]
     direct = shutil.which("lark-cli")
@@ -204,18 +218,23 @@ def _build_argv(args: list[str], profile: str) -> list[str]:
 
 def _resolve_timeout(explicit: int | None) -> int:
     """Resolve subprocess timeout in seconds. Caller arg wins; otherwise
-    CLAUDETEAM_LARK_TIMEOUT env; otherwise 90. Round-64: clamp the
-    final value to >=1 — a garbage env like CLAUDETEAM_LARK_TIMEOUT=0
-    used to make subprocess.run insta-TimeoutExpired on every call,
-    silently failing every lark op. -1 raised ValueError downstream.
-    Either way operator hit a confusing error far from the misconfig."""
+    routes through tunables (env > claudeteam.toml > default 90).
+
+    Round-64: clamp the final value to >=1 — a garbage env like
+    CLAUDETEAM_LARK_TIMEOUT=0 used to make subprocess.run
+    insta-TimeoutExpired on every call. Legacy `CLAUDETEAM_LARK_TIMEOUT`
+    env var still honored as backwards-compat alias.
+    """
     if explicit is not None:
         return max(1, int(explicit))
-    try:
-        raw = int(env_str("CLAUDETEAM_LARK_TIMEOUT") or "90")
-    except ValueError:
-        raw = 90
-    return max(1, raw)
+    legacy = env_str("CLAUDETEAM_LARK_TIMEOUT").strip()
+    if legacy:
+        try:
+            return max(1, int(legacy))
+        except ValueError:
+            pass
+    from claudeteam.runtime import tunables
+    return max(1, int(tunables.tunable("router.lark_call_timeout_s", 90)))
 
 
 def call(args: list[str], *, profile: str = "", timeout: int | None = None,

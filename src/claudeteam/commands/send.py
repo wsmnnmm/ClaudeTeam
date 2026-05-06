@@ -59,12 +59,14 @@ def main(argv: list[str]) -> int:
         # REGRESSION 2026-05-06 host_smoke §7: lazy worker_codex received
         # a manager dispatch but pane stayed at a bare shell prompt.
         if not wake.is_ready(target, adapter):
+            from claudeteam.runtime import tunables
             spawn_cmd = (f"{lifecycle.pane_env_prefix()} "
                          f"{adapter.spawn_cmd(to, config.agent_model(to))}")
             wake.wake_if_dormant(
                 target, adapter,
                 spawn_cmd=spawn_cmd,
                 init_msg=_identity.init_prompt(to),
+                timeout_s=float(tunables.tunable("wake.lazy_wake_timeout_s", 30.0)),
                 on_woken=lambda: local_facts.upsert_status(
                     to, "进行中", "responding to first message"),
             )

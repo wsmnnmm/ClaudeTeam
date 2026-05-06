@@ -64,6 +64,15 @@ class CallRecorder:
 def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None):
     """Set CLAUDETEAM_STATE_DIR (always) + optionally TEAM_FILE / RUNTIME_CONFIG.
 
+    Also pins `CLAUDETEAM_CONFIG_FILE` to a non-existent path inside tmpdir
+    so tests don't accidentally read the project root's `claudeteam.toml`
+    (which would shadow the test's `team.json` via the toml-first
+    resolution path in `runtime/config.py`). Tests that explicitly want
+    a toml override re-set CLAUDETEAM_CONFIG_FILE inside their `with` block.
+
+    Also resets the tunables mtime cache so a previous test's toml
+    contents don't leak into this one.
+
     Yields the tempdir Path.  All env changes are reverted on exit.
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -74,10 +83,17 @@ def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None
             team_path.write_text(json.dumps(team, ensure_ascii=False), encoding="utf-8")
         if runtime_config is not None:
             rt_path.write_text(json.dumps(runtime_config, ensure_ascii=False), encoding="utf-8")
+        # Reset tunables cache so toml from a previous test doesn't leak.
+        try:
+            from claudeteam.runtime import tunables
+            tunables.reset_cache()
+        except ImportError:
+            pass
         with env_patch(
             CLAUDETEAM_STATE_DIR=str(tmp_path / "state"),
             CLAUDETEAM_TEAM_FILE=str(team_path),
             CLAUDETEAM_RUNTIME_CONFIG=str(rt_path),
+            CLAUDETEAM_CONFIG_FILE=str(tmp_path / "claudeteam.toml"),
         ):
             yield tmp_path
 

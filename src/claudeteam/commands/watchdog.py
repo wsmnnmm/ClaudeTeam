@@ -85,7 +85,9 @@ def _make_alert_fn():
             f"- check daemon log for root cause\n"
             f"- after fix: `claudeteam down && claudeteam up`"
         )
-        card = simple_card(title, body, color="red")
+        from claudeteam.runtime import tunables
+        alarm_color = str(tunables.tunable("router.alarm_card_color", "red"))
+        card = simple_card(title, body, color=alarm_color)
         try:
             _chat.send_card(chat_id, card, profile=profile, as_user=False)
         except Exception as e:
