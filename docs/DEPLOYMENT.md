@@ -224,18 +224,18 @@ the router, no manager round-trip.
 
 ---
 
-## Smoke tests
+## Verifying the deploy
 
-| Scenario | When to run | Pass criterion |
-| -------- | ----------- | -------------- |
-| [`tests/scenarios/host_smoke.md`](../tests/scenarios/host_smoke.md) | Right after host deploy | All 9 sections green; chat-side replies match |
-| [`tests/scenarios/round_c_real_task.md`](../tests/scenarios/round_c_real_task.md) | After major refactor | Manager dispatches, workers say-back, manager summarises |
-| [`tests/scenarios/slash_matrix.md`](../tests/scenarios/slash_matrix.md) | New slash hook coverage | Every `/cmd` returns the expected card |
-| [`tests/scenarios/reidentify.md`](../tests/scenarios/reidentify.md) | After identity prompt change | Pane re-injection picks up new identity body |
+After `claudeteam up` returns green:
 
-```bash
-python3 tests/run.py     # stdlib-only test runner; should report 0 failed
-```
+1. Send `/health` in the Feishu group → expect a card listing every
+   agent + the router + watchdog as green.
+2. Send `/team` → expect each agent's heartbeat fresh (♥ < 30 s).
+3. Talk to the team in chat: `@manager` + a simple task. Manager
+   should reply within 30 s, and if the task involves dispatch, you
+   should see worker `say` cards land in the group.
+
+If any of those fail, see "Common failures" below.
 
 ---
 
@@ -256,10 +256,10 @@ from keychain.
 
 ### Container `router` reports `lark-cli failed (rc=2)` and stalls
 
-Catchup defaulted to `--as user` and the container has no user OAuth
-(only bot). Fixed in commit `542fbc4` — make sure `docker-compose.yml`
-has `CLAUDETEAM_LARK_SEND_AS=bot` in `environment:` (it should after
-the fix). Verify:
+Catchup tried to use `--as user` but the container only has bot
+OAuth. Make sure `docker-compose.yml` has `CLAUDETEAM_LARK_SEND_AS=bot`
+in its `environment:` block (the bundled compose file ships with this).
+Verify inside the container:
 
 ```bash
 docker compose exec claudeteam env | grep CLAUDETEAM_LARK_SEND_AS
@@ -278,11 +278,11 @@ ps -ef | grep -E "lark-cli.*subscribe" | grep -v grep
 
 ### Manager loops on the same anchored message after `claudeteam up`
 
-Catchup replays everything newer than the cursor; if the cursor is
-behind real chat, you get duplicates. State is at
-`state/router.cursor` + `state/router.seen`. Stale dedup file
-truncates at 5000 entries. Fixed in commit `aaf76ed` (cursor
-minute-floor + persisted seen set).
+Catchup replays everything newer than the cursor; the daemon also
+keeps a `state/router.seen` dedup set persisted across restarts (auto
+truncates at 5000 entries). If you still see duplicates, deleting
+`state/router.seen` and bumping the cursor in `state/router.cursor`
+forward to "now" makes the next catchup skip everything older.
 
 ### `worker_codex` shows "pane up but CLI not ready yet"
 

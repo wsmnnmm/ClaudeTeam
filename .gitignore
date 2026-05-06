@@ -37,3 +37,10 @@ runtime_config.json
 # claudeteam unified config — per-deploy file, like runtime_config.json
 /claudeteam.toml
 /claudeteam.toml.bak
+AGENTS.md
+
+# Personal dev convenience — operator-specific Makefile + creds helper.
+# Hardcodes a private chat_id / lark profile, so kept out of the open
+# source repo. Use the documented `claudeteam` commands instead.
+/Makefile
+/bin/

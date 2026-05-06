@@ -13,20 +13,16 @@
 #   lark-cli's event +subscribe long-poll needs to reach
 #   open.larksuite.com / open.feishu.cn. Run the container with
 #   --network host (or compose `network_mode: host`) on Linux to avoid
-#   NAT timeouts; on macOS/Windows Docker Desktop, default bridge works
-#   but expect the slower lark-cli round-trips noted in CLAUDE.md
-#   (project_lark_cli_slow.md memory).
+#   NAT timeouts; on macOS/Windows Docker Desktop, default bridge
+#   works but lark-cli round-trips are slower.
 
-# R170: bumped from 3.11 to 3.12 because kimi-cli ≥1.0 requires Python
-# ≥3.12 (older 0.34 still on 3.11 but lacks the slash-command surface
-# we need). pyproject's `requires-python = ">=3.10"` stays compatible.
+# kimi-cli ≥1.0 requires Python ≥3.12; pyproject's
+# requires-python = ">=3.10" stays compatible.
 FROM python:3.12-slim
 
 # Pin apt index once; install in one layer to keep the image lean.
 # `curl` is required by @larksuite/cli's postinstall script (downloads
-# a platform-specific binary blob via curl into node_modules); slim
-# image doesn't ship it. Round-58 smoke caught this — without curl
-# the npm install errors out with "spawnSync curl ENOENT".
+# a platform-specific binary blob); slim image doesn't ship it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tmux \
@@ -45,44 +41,24 @@ RUN apt-get update \
 # is the cleanest path for per-pid CPU% (kernel-computed, no two-
 # snapshot delta required).
 
-# Pre-install lark-cli into npm's global prefix at build time so the
-# first `claudeteam router` invocation doesn't have to fetch+install
-# +run install.js for ~600 deps on cold start. Round-58 smoke caught
-# this: in a fresh container the install.js script fails (rc=1) under
-# slim image conditions and router exits immediately. Globally
-# installing once at build time means npx resolves to the cached copy
-# instantly and no install.js runs at request time.
-#
-# Pinned to >=1.0.21 (the version host smoke validated against) but
-# allow patches; --silent reduces build log noise.
+# Pre-install lark-cli at build time so the first `claudeteam router`
+# invocation doesn't have to fetch+install ~600 deps on cold start.
+# A fresh-container `npx` install can fail under slim-image conditions
+# (rc=1, install.js error) and router would exit immediately.
 RUN npm install --silent --global @larksuite/cli@latest \
     && lark-cli --version
 
-# R168: install Claude Code CLI so manager + worker_cc panes can
-# actually run an agent. Without this, the panes spawn the bash-side
-# `claude --dangerously-skip-permissions ...` command and immediately
-# get `claude: command not found` (boss saw this in /tmux output).
-#
-# Auth: token-based via ANTHROPIC_API_KEY env (passed through compose)
-# OR interactive `claude /login` once inside the container — tokens
-# persist via the /root/.claude volume so subsequent container restarts
-# pick them up automatically.
-#
-# Pinning to a fixed version keeps the smoke environment reproducible;
-# bump as needed when host operator upgrades to match.
+# Install Claude Code CLI so manager + worker_cc panes can actually run
+# an agent. Auth: ANTHROPIC_API_KEY env (passed through compose) or
+# interactive `claude /login` once inside the container — tokens
+# persist via the /root/.claude volume across restarts.
 RUN npm install --silent --global @anthropic-ai/claude-code \
     && claude --version
 
-# R172.b: write claude's global silent-launch settings so the
-# `claude --dangerously-skip-permissions` invocation in spawn_cmd
-# never pops the "Yes, I accept" dialog and never asks per-tool
-# permission. Boss-provided 2026-05-04 (effect: 启动不弹确认、
-# 运行中不弹权限、不弹问卷、不弹更新).
-#
-# `/root/.claude/.credentials.json` is bind-mounted from host RW for
-# OAuth state, so this file gets written first to a path the bind
-# mount doesn't shadow. ~/.claude/settings.json is OUTSIDE the
-# .credentials.json bind path, so this works.
+# Pre-set claude's global settings so `claude --dangerously-skip-
+# permissions` (used by spawn_cmd) never pops the "Yes, I accept"
+# dialog, never asks per-tool permission, and skips onboarding +
+# theme picker on a fresh container.
 RUN mkdir -p /root/.claude \
     && printf '%s\n' \
        '{' \
@@ -93,41 +69,22 @@ RUN mkdir -p /root/.claude \
        '    "allow": ["Bash", "Edit", "Read", "Write"]' \
        '  }' \
        '}' > /root/.claude/settings.json
-# - claude rejects `"Write()"` (empty parens); current claude needs a
-#   bare verb or `"Write(<glob>)"`.
-# - `"theme": "dark"` pre-picks the syntax theme so the "Choose the
-#   text style" dialog never pops on fresh container starts (boss saw
-#   this 2026-05-04). Container has no persistent ~/.claude.json now
-#   that we dropped its bind-mount, so the theme dialog would otherwise
-#   appear on every restart.
-# - `hasCompletedOnboarding: true` suppresses the rest of the
-#   onboarding flow.
 
-# R170: install Codex CLI (OpenAI) + Kimi CLI (Moonshot AI). Same
-# pattern as claude-code: install the binaries here, mount host's
-# auth state at runtime via docker-compose volumes so container
-# reuses an already-logged-in session without re-OAuth.
-#
-# - codex: `npm install -g @openai/codex` ships the node wrapper +
-#   platform binary; auth state lives in $HOME/.codex/auth.json
-#   (ChatGPT OAuth tokens). Same mount pattern as claude.
-# - kimi: Python tool. Use `pip install kimi-cli`; auth state in
-#   $HOME/.kimi/credentials/. Mount host's ~/.kimi for credential reuse.
-#   (uv would be cleaner but the slim image doesn't ship it; pip is
-#   already there from the python:3.11-slim base.)
+# Install Codex CLI + Kimi CLI. Same pattern as claude-code: install
+# binaries here, mount host's auth state at runtime via compose so
+# container reuses an already-logged-in session.
+#   - codex auth: ~/.codex/auth.json (ChatGPT OAuth)
+#   - kimi auth:  ~/.kimi/credentials/<cli>.json
 RUN npm install --silent --global @openai/codex \
     && codex --version
 RUN pip install --no-cache-dir kimi-cli \
     && kimi --version
 
-# R173: install `uv` so we can pull `codex-cli-usage` (and gemini /
-# kimi sister tools) — these are the only way to get real usage
-# percentages from Codex (boss-flagged 2026-05-05: showing the OAuth
-# email + plan + valid-until is "登录账号有屁用" — useless without
-# real % consumed). Mirrors main's Dockerfile pattern: install via
-# `uv tool install` then symlink the venv bin into /usr/local/bin so
-# the subprocess shell-out from feishu/slash._handle_usage finds it
-# on PATH without needing $HOME/.local/bin in PATH at runtime.
+# Install `uv` to pull `codex-cli-usage` — the only path to real
+# usage percentages for Codex (`/usage` slash card depends on it).
+# Symlink the venv bin into /usr/local/bin so the subprocess
+# shell-out from feishu/slash finds it on PATH without
+# $HOME/.local/bin needing to be present at runtime.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && export PATH="$HOME/.local/bin:$PATH" \
     && uv tool install codex-cli-usage \

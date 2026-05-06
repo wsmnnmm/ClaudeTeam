@@ -6,18 +6,6 @@ Multiple Claude Code agents running in tmux, coordinated through a
 Feishu group chat. The boss talks to a manager agent in chat; the
 manager dispatches workers, watches their panes, and summarises back.
 
-> **One-click deploy — paste this prompt to your Claude Code agent:**
->
-> ```
-> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md
-> and docs/DEPLOYMENT.md, then walk me through bringing up a team.
-> Ask for the Feishu app credentials and chat_id when you need them.
-> ```
-
----
-
-### Screenshots
-
 **Feishu group chat — control your AI team in real time**
 
 <table><tr>
@@ -31,6 +19,14 @@ manager dispatches workers, watches their panes, and summarises back.
 **tmux backend — Claude Code agents running in parallel**
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
+
+> **One-click deploy — paste this prompt to your Claude Code agent:**
+>
+> ```
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md
+> and docs/DEPLOYMENT.md, then walk me through bringing up a team.
+> Ask for the Feishu app credentials and chat_id when you need them.
+> ```
 
 ---
 
@@ -74,6 +70,8 @@ nothing depends on a remote DB.
   alert when cooldown trips.
 - **Slash commands from chat** — `/help /team /health /usage /tmux
   /send /compact /clear /stop /peek /say /remember /recall`.
+- **Zero Python dependencies** — runs on the standard library only;
+  the only external runtime is `lark-cli` (Node).
 
 ---
 
@@ -93,6 +91,10 @@ container or via bind-mount).
 ---
 
 ## Quick start
+
+> **First**: create a Feishu app + add the bot to your group
+> ([see below](#feishu-bot-setup)). You'll need the `App ID`,
+> `App Secret`, and the `chat_id` of the group the bot is in.
 
 ```bash
 git clone https://github.com/zylMozart/ClaudeTeam.git
@@ -146,7 +148,6 @@ role = "团队主管"
 
 [team.agents.worker_codex]
 cli = "codex-cli"
-model = "gpt-5.5"
 role = "数据分析员工"
 
 [team.agents.worker_kimi]
@@ -170,8 +171,7 @@ callbacks, and version publishing. It runs in two modes:
 
 ```bash
 cd scripts/feishu_bot_creator
-npm install
-npx playwright install chromium
+npm install               # also installs playwright chromium (postinstall)
 
 # One-time login (scan QR code with Feishu mobile)
 node create_feishu_bot.js login

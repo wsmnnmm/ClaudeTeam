@@ -20,93 +20,51 @@ services:
     build: .
     image: claudeteam:dev
     volumes:
-      # R172.b: bind-mount source RW so Python edits hot-reload without
-      # `docker compose build`. The image's `pip install -e ./src` made
-      # the install editable; with the host src/ replacing the image's
-      # baked-in copy, every claudeteam invocation inside the container
-      # picks up the latest host code. Boss-flagged 2026-05-05: only
-      # rebuild for Dockerfile / dep changes, never for code-only
-      # tweaks. RW (not :ro) because pip's `*.egg-info` writes go into
+      # Bind-mount source RW so Python edits hot-reload without
+      # `docker compose build`. Only rebuild for Dockerfile / deps
+      # changes. RW (not :ro) because pip's `*.egg-info` writes into
       # src/ on first install.
       - ./src:/app/src
       - ./team-data:/data
-      # lark-cli's `event +subscribe` fcntl-locks
-      # /root/.lark-cli/locks/subscribe_<app_id>.lock; under :ro the
-      # lock can't be acquired and lark-cli misreports "another
-      # instance running". RW mount needed so subscribe can claim
-      # the per-app lock inside the container.
-      #
-      # 2026-05-06: 拆分两个挂载 — 共享 config（host 与容器复用
-      # 同一份 OAuth profile）但 *不* 共享 locks/。原来 mount 整
-      # 个 ~/.lark-cli 让 host router & 容器 router 抢同一个 fcntl
-      # 锁文件 (host_smoke 实测: 容器持锁后 host 报 "another instance
-      # running"; 反过来同样)。现在容器锁独立, host 与容器可以并存
-      # (虽然 lark 服务端仍只允许一条 subscribe, 但锁文件层面不互
-      # 干扰; 是否两个同时跑由 operator 决定)。
+      # Share the host's lark-cli OAuth profile (config.json + cache)
+      # but keep the per-app fcntl lock dir container-private. Sharing
+      # the lock dir would let a host router + container router race
+      # for the same lock and one would misreport "another instance
+      # running"; keeping locks/ inside the container avoids that.
       - ${HOME}/.lark-cli/config.json:/root/.lark-cli/config.json
       - ${HOME}/.lark-cli/cache:/root/.lark-cli/cache
-      # locks/ 是容器私有 — 跟 host 隔离
-      # R168: bind-mount host's claude OAuth so container reuses it
-      # without an interactive login. Mirrors `feat/messaging-fixes-
-      # block1` / `main`'s pattern (their docker-compose.yml mounts
-      # `.credentials.json` + `.claude.json` directly).
-      #
-      # On macOS host, `.credentials.json` actually lives in keychain
-      # under service `Claude Code-credentials`. The deploy step
-      # `security find-generic-password -s "Claude Code-credentials"
-      # -w > ~/.claude/.credentials.json` materialises it as a file
-      # the bind mount can pick up. Token gets refreshed by claude
-      # itself on use; volume is RW so the refresh persists back to
-      # host. Same OAuth account works for both host and container.
+      # Bind-mount host's claude OAuth so the container reuses it
+      # without an interactive login. On macOS the .credentials.json
+      # file actually lives in keychain — extract once with:
+      #   security find-generic-password -s "Claude Code-credentials" -w \
+      #     > ~/.claude/.credentials.json
+      # before `docker compose up`. RW so token refresh persists back.
       - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
-      # R172.b: bind-mount host's ~/.claude.json READ-ONLY at a
-      # secondary path so per-agent home setup can SEED a private copy
-      # (with userID + oauthAccount) into each /data/agent-home/<agent>.
-      # Direct-mounting at /root/.claude.json with multiple panes
-      # writing concurrently corrupted the file (JSON Parse error
-      # dialog 2026-05-04). RO at a side path means claude's per-agent
-      # writes go to the per-agent copy instead, no race.
+      # Read-only mount of host's ~/.claude.json at a side path. Each
+      # agent pane seeds a per-agent copy from this so multiple panes
+      # don't race on writes to the same file (which corrupts JSON).
       - ${HOME}/.claude.json:/root/host-claude.json:ro
-      # R170: bind-mount the claude projects/ directory so ccusage can
-      # find usage logs inside the container. Without this, ccusage
-      # crashes with "No valid Claude data directories found" — the
-      # error rendered as a 200-char red Status line in the /usage
-      # card (boss-flagged). RW so the in-container claude can append
-      # session logs back to the same store.
+      # Claude projects/ shared so ccusage finds the usage logs that
+      # the /usage card depends on.
       - ${HOME}/.claude/projects:/root/.claude/projects
-      # R170: bind-mount codex + kimi auth dirs so /usage queries can
-      # call those CLIs (and the underlying providers) without an
-      # interactive re-login. Codex stores ChatGPT OAuth tokens at
-      # ~/.codex/auth.json; Kimi stores `access_token` per-cli profile
-      # at ~/.kimi/credentials/<cli-name>.json plus the device id /
-      # session state directly under ~/.kimi. RW so token refreshes
-      # written by the in-container CLI persist back to host (matches
-      # the claude-creds pattern above).
+      # Codex + Kimi credentials so the agent CLIs (and /usage card)
+      # don't need to re-login inside the container. Token refreshes
+      # written in-container persist back to host.
       - ${HOME}/.codex:/root/.codex
       - ${HOME}/.kimi:/root/.kimi
-    # FEISHU_APP_SECRET / LARKSUITE_CLI_APP_SECRET — supplied via the
-    # `.env` file (gitignored) so the container's lark-cli can
-    # authenticate without reaching the host's macOS keychain. Both
-    # names work; setting both is harmless and forward-compat with
-    # whichever lark-cli build the image bundles.
-    #
-    # ANTHROPIC_API_KEY (optional) — alternative to interactive
-    # `claude /login`; if set in .env, claude CLI uses the token
-    # directly without a login prompt.
+    # Credentials come from `.env` (gitignored). FEISHU_APP_* and
+    # LARKSUITE_CLI_APP_* are aliases — set both. ANTHROPIC_API_KEY is
+    # optional; without it claude uses the bind-mounted host OAuth.
     environment:
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
       - LARKSUITE_CLI_APP_SECRET=${LARKSUITE_CLI_APP_SECRET:-}
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - LARKSUITE_CLI_APP_ID=${LARKSUITE_CLI_APP_ID:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Container-only deploys typically have bot OAuth (via app_secret →
-      # tenant_token in subprocess_env) but NOT user OAuth (which lives in
-      # macOS keychain / lark-cli config that the container can't reach).
-      # Pin send_as=bot here so catchup / say / slash all use bot identity
-      # and don't trip `need_user_authorization` (rc=2 from
-      # chat-messages-list when --as user without OAuth). Override with
-      # `claudeteam.toml` [feishu] send_as = "user" if the container has
-      # been set up with user OAuth.
+      # Container deploys typically only have bot OAuth (via app_secret
+      # → tenant_token), not user OAuth. Pin send_as=bot so catchup /
+      # say / slash all use bot identity. Override with `user` only
+      # if you've run `lark-cli auth login` inside the container.
       - CLAUDETEAM_LARK_SEND_AS=${CLAUDETEAM_LARK_SEND_AS:-bot}
     network_mode: host
     tty: true

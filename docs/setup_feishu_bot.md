@@ -24,7 +24,7 @@
 
 1. 在左侧菜单「开发配置」中选择 **权限管理**
 2. 点击 **批量导入/导出权限**
-3. 选择「导入」，将 [`feishu_scopes.json`](../config/feishu_scopes.json) 的内容粘贴到编辑器中，点击 **下一步，确认新增权限**
+3. 选择「导入」，将 [`feishu_scopes.json`](../scripts/feishu_bot_creator/feishu_scopes.json) 的内容粘贴到编辑器中，点击 **下一步，确认新增权限**
 4. 在确认页面中点击 **添加**
 
 > 权限共计 **483 条**（Tenant 234 条 + User 249 条），覆盖以下模块：
@@ -32,7 +32,7 @@
 > Docs/Docx、Drive、Helpdesk、IM（消息/群组）、Mail、Minutes、
 > Search、Sheets、Slides、Space、Task、VC、Wiki、Approval、Attendance
 >
-> 完整 JSON 见 [`feishu_scopes.json`](../config/feishu_scopes.json)
+> 完整 JSON 见 [`feishu_scopes.json`](../scripts/feishu_bot_creator/feishu_scopes.json)
 
 ---
 
