@@ -25,19 +25,11 @@ Dispatch is a leading-token dict lookup (`/cmd args…` → handler(args, ctx))
 so detection and execution share one path — no per-handler regex preamble.
 Each handler receives only the part of the message after the command name.
 
-Card-building helpers all live in `feishu/cards.py` (R136 consolidation):
+Card-building helpers live in `feishu/cards.py`:
     simple_card(title, body, color)         shape constructor
-    beijing_stamp(now) -> str               R117: card-title timestamp suffix
+    beijing_stamp(now) -> str               card-title timestamp suffix
                                             (callers pass `ctx.now`)
-    fenced_block(text) -> str               R118: monospace lark_md fence
-
-Removed:
-    R137 — `kv_card` (never had a production caller)
-    R143 — `is_slash_command` (no production caller; router uses raw
-            `/`-prefix detection, dispatch surfaces unknown commands)
-    R172.b — `/recall` + `/forget` slash dispatch (boss flagged 2026-05-04
-              as not in main and not requested). CLI commands `claudeteam
-              recall|forget` stay as agent-pane tools.
+    fenced_block(text) -> str               monospace lark_md fence
 """
 from __future__ import annotations
 
@@ -79,12 +71,10 @@ class SlashContext:
     they only touch what's in here, easy to fake in tests."""
     team_agents: list[str]
     session: str
-    # R158: pre-computed at daemon startup so /team's lazy-pane probe
-    # doesn't have to call `config.load_team()` per chat event. Empty
-    # default keeps tests + cold-path callers (they construct their
-    # own SlashContext in fakes) working without churn — the only
-    # consequence of an empty set is that lazy agents render as 🛑
-    # instead of ⏸, which is the pre-R129 behavior.
+    # Deprecated: handlers now pull live data via `_live_agents()` so
+    # claudeteam.toml edits take effect without restarting the
+    # router. These two fields are kept for back-compat with tests
+    # constructing SlashContext directly.
     lazy_agents: frozenset[str] = frozenset()
     run: Callable = subprocess.run         # for shell-out (`claudeteam <cmd>`)
     sleep: Callable = time.sleep           # for /clear's settle delay
@@ -185,10 +175,9 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     Color is `green` when no agent is in a warning/down state, `yellow`
     when at least one is, so the boss can scan group chat at a glance.
 
-    Round-129: lazy agents (`team.json` `"lazy": true`) get the ⏸
-    glyph instead of 🛑 — lazy is BY DESIGN, not a failure. R128 smoke
-    caught the wart: yellow team header for a worker that's just
-    waiting for its first message looks like an alarm.
+    Lazy agents (config `lazy: true`) display as ⏸ instead of 🛑 —
+    a not-yet-spawned CLI is intentional, not a failure, and
+    shouldn't paint the team header yellow.
     """
     # _live_agents reads config every call so claudeteam.toml edits
     # take effect on the next /team without a router restart.
@@ -203,11 +192,10 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
         except Exception:
             buf = ""
         emoji, brief = pane_state.parse(buf)
-        # Recognise lazy state: pane_state.parse returns 🛑 (Linux bash
-        # prompt regex match) or 🔘 (tail-fallback / macOS shell with %
-        # prompt) for "no CLI". Either is fine for an agent team.json
-        # marks `lazy: true` — flip to ⏸ so the team-color check below
-        # doesn't go yellow. R128 / R129 caught this on macOS host.
+        # pane_state.parse returns 🛑 (Linux bash prompt) or 🔘 (tail
+        # fallback / macOS % prompt) for "no CLI" — both are normal
+        # for a lazy agent before its first message arrives. Flip to
+        # ⏸ so the team-color check below stays green.
         if emoji in ("🛑", "🔘") and agent in lazy_agents:
             emoji = "⏸"
             brief = "lazy (waiting for first message)"
@@ -251,11 +239,10 @@ def _agent_emoji(cpu: float) -> str:
 def _build_server_load_elements(data: dict) -> list:
     """Render the server-load data dict into v2 card elements.
 
-    R166 ports `feat/messaging-fixes-block1:slash/health.build_server_
-    load_card`'s layout: 🖥️ 主机总览 (CPU / 内存 / 磁盘 column_set) →
-    📦 容器总量 → 👤 员工细分 Top N (per-row column_set) → 🚨 异常告警 →
-    note footer. Each section ends with an `hr` divider; final `hr` is
-    pruned before the note.
+    Layout: 🖥️ 主机总览 (CPU / 内存 / 磁盘 column_set) → 📦 容器总量 →
+    👤 员工细分 Top N (per-row column_set) → 🚨 异常告警 → note footer.
+    Each section ends with an `hr` divider; final `hr` is pruned
+    before the note.
     """
     host = data.get("host") or {}
     cpu = host.get("cpu")
@@ -351,19 +338,12 @@ def _build_server_load_elements(data: dict) -> list:
 def _handle_health(args: str, ctx: SlashContext) -> dict:
     """Server-load snapshot card.
 
-    R166: completely re-shaped per boss-flagged "card 完全不行" feedback.
-    Was a plain-text dump of `claudeteam health`'s deploy-checks; now
-    matches `feat/messaging-fixes-block1` / `main` shape — host
-    CPU/mem/disk + docker containers + per-agent process subtree
-    rendered in column_set 3 grids with red/orange/green percentages
-    and emoji section headings. Data comes from
-    `runtime/server_metrics.collect_server_load`. Header template
-    stays purple per the older branch.
-
-    Falls back to a "无数据" cell per metric when the underlying
-    `uptime` / `free` / `df` / `docker stats` / `ps` shell-out
-    returns nothing — common inside the container on macOS Docker
-    Desktop where some host commands aren't visible.
+    Renders host CPU/mem/disk + docker containers + per-agent process
+    subtree in column_set grids with red/orange/green percentages.
+    Data comes from `runtime/server_metrics.collect_server_load`.
+    Falls back to a "无数据" cell when the underlying `uptime` /
+    `free` / `df` / `docker stats` / `ps` shell-out returns nothing
+    — common inside the container on macOS Docker Desktop.
     """
     from claudeteam.runtime import server_metrics
     _, agent_set, _, _ = _live_agents()
@@ -372,8 +352,7 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
         session=ctx.session,
     )
     elements = _build_server_load_elements(data)
-    # R166: v2 schema dropped the v1 `note` element ("cards of schema V2
-    # no longer support this capability; unsupported tag note"); use a
+    # Lark v2 schema doesn't support the `note` element; use a
     # grey-font markdown line instead so the footer still reads as
     # subdued metadata.
     elements.append({"tag": "markdown",
@@ -389,17 +368,8 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     )
 
 
-# R173: dropped `_extract_ccusage_summary` / `_summarise_ccusage_error`
-# (and their CCUSAGE regex constants). ccusage just returned cumulative
-# cost ("Total: $X") which boss flagged as wrong — replaced by direct
-# Anthropic OAuth /usage API call (real per-window utilization). See
-# `commands/usage._query_cc_usage`.
-
-
 def _remaining_color(remaining_pct: float) -> str:
-    """R170: traffic-light header tint for kimi remaining%.
-    ≤20 red / ≤50 orange / else green — mirrors main's
-    `_remaining_pct_color`."""
+    """Traffic-light tint for `remaining%`: ≤20 red / ≤50 orange / else green."""
     if remaining_pct <= 20:
         return "red"
     if remaining_pct <= 50:
@@ -410,12 +380,9 @@ def _remaining_color(remaining_pct: float) -> str:
 def _codex_section(cx: dict) -> list:
     """Render Codex section rows for `/usage` card.
 
-    R173: shows real % consumed per limit window (5h / Weekly / etc),
-    same traffic-light layout as Kimi. Boss flagged R170's earlier
-    JWT-decode-only output as useless ("登录账号有屁用啊"). Now we
-    shell out to `codex-cli-usage` (uv-installed in container) and
-    render its lines as percent metrics. Plan stays as a top header
-    line for context. ok=False → red Status line."""
+    Shells out to `codex-cli-usage` (real % consumed per 5h / weekly
+    window) and renders results as column_set rows. `ok=False` →
+    red Status line; `metrics=[]` → grey "no data" line."""
     rows: list = [{"tag": "markdown", "content": "**🟦 Codex (ChatGPT OAuth)**"}]
     if not cx.get("ok"):
         rows.append(column_set_2(
@@ -443,10 +410,8 @@ def _codex_section(cx: dict) -> list:
 def _kimi_section(km: dict) -> list:
     """Render Kimi section rows for `/usage` card.
 
-    R170: queries `api.kimi.com/coding/v1/usages` — returns weekly +
-    sliding-window quotas. Each metric becomes a column_set 2 row
-    `label / <font color>剩余 X%</font> · 已用 Y%/Z` so traffic-light
-    color matches the underlying remaining percentage."""
+    Queries `api.kimi.com/coding/v1/usages` (weekly + sliding-window
+    quotas). Each metric → column_set 2 row with traffic-light color."""
     rows: list = [{"tag": "markdown", "content": "**🟧 Kimi (api.kimi.com)**"}]
     if not km.get("ok"):
         rows.append(column_set_2(
@@ -466,18 +431,11 @@ def _kimi_section(km: dict) -> list:
 def _handle_usage(args: str, ctx: SlashContext) -> dict:
     """`/usage [view]` — token / credit consumption snapshot card.
 
-    R170: per-CLI sections — Claude Code via ccusage, Codex via decoded
-    `~/.codex/auth.json` JWT (plan + window), Kimi via `api.kimi.com/
-    coding/v1/usages`. Each section is `**heading**` + column_set 2
-    rows + hr separator. Mirrors `main`'s `build_usage_card` layout
-    but stripped of the `inspect_cli` preflight machinery (rebuild
-    keeps a leaner status surface — actual per-CLI failure lives in
-    `commands/usage.py`'s probe functions and surfaces here as the
-    section's red `Status` line).
-
-    R167: ports `feat/messaging-fixes-block1` / `main` shape — purple
-    header, ccusage failures condensed to one line.
-    R164→R167 history: plain text → ccusage-only card → multi-CLI card.
+    Per-CLI sections (Claude Code via ccusage, Codex via
+    `codex-cli-usage`, Kimi via `api.kimi.com/coding/v1/usages`)
+    each render as `**heading**` + column_set 2 rows + hr separator.
+    Per-CLI failures show as a red `Status` line in their section
+    rather than failing the whole card.
     """
     view_arg = args.strip().split()[0] if args.strip() else ""
     argv = ["claudeteam", "usage", "--json"]
@@ -565,10 +523,10 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
 def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     """`/tmux [agent] [N]` — capture last N pane lines as a Feishu card.
 
-    Round-116: was plain text; now a blue card with code-fenced body
-    so the monospace pane content (banners / spinners / box drawing)
-    renders aligned. Empty pane gets a placeholder, mirroring the
-    CLI `claudeteam peek`'s (R103) `(empty buffer for X)` line.
+    Returns a blue card with code-fenced body so the monospace pane
+    content (banners / spinners / box drawing) renders aligned.
+    Empty pane gets a placeholder, mirroring the CLI `claudeteam
+    peek`'s `(empty buffer for X)` line.
 
     Unknown-agent / illegal-name still return text (warning is
     one-line — a card here would be over-formatting)."""
@@ -669,11 +627,9 @@ _HANDLERS: dict[str, Callable[[str, SlashContext], str]] = {
     "/stop": _handle_stop,
     "/clear": _handle_clear,
 }
-# R172.b: dropped /recall + /forget — boss flagged as "not in main and
-# not requested". Memory CLI commands (`claudeteam recall|forget`) stay
-# as agent-pane tools; only the chat slash dispatch entries went away.
-# Matches main's exact 9-command surface: /help /team /health /usage
-# /tmux /send /compact /stop /clear.
+# 9 chat slash commands: /help /team /health /usage /tmux /send
+# /compact /stop /clear. Memory commands (`claudeteam recall` /
+# `forget` / `remember`) live only as agent-pane CLIs, not chat slash.
 
 
 def _split_cmd(text: str) -> tuple[str, str]:
