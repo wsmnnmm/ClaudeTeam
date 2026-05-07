@@ -50,8 +50,62 @@ _CC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _CC_USAGE_BETA = "oauth-2025-04-20"
 
 
+def _read_claude_oauth(home: Path | None = None,
+                       *, keychain_runner: Callable | None = None) -> dict:
+    """Resolve the freshest Claude OAuth payload available.
+
+    On macOS, the keychain (`security find-generic-password -s 'Claude
+    Code-credentials'`) is the source of truth — claude refreshes there
+    on every token rotation. The home file at `~/.claude/.credentials.json`
+    only updates occasionally and is often hours behind, so a host that's
+    "logged in" still saw `/usage` say "access token 已过期" because we
+    keyed off the file's stale `expiresAt` (caught 2026-05-07 host smoke).
+
+    Resolution order:
+      1. macOS keychain (when `security` works) — always live.
+      2. `~/.claude/.credentials.json` (fallback for Linux + macOS hosts
+         where keychain access is denied, e.g. tests with subprocess
+         stubs).
+
+    Returns `{"ok": True, "oauth": {...}}` on success or
+    `{"ok": False, "note": "..."}` with a user-facing reason."""
+    import platform
+    # Production path uses host keychain (`home is None`). Tests pass an
+    # explicit home= to fence the call into a tmpdir; treat that as
+    # opt-out of the host keychain too so a test machine's real OAuth
+    # state can't bleed into assertions. Callers that genuinely want
+    # to exercise the keychain path with home= can pass keychain_runner.
+    if keychain_runner is None and home is None and platform.system() == "Darwin":
+        def keychain_runner():
+            import subprocess
+            return subprocess.run(
+                ["security", "find-generic-password",
+                 "-s", "Claude Code-credentials", "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+    if keychain_runner is not None:
+        try:
+            out = keychain_runner()
+            if out is not None and getattr(out, "returncode", 1) == 0 \
+                    and out.stdout.strip():
+                return {"ok": True,
+                        "oauth": json.loads(out.stdout)["claudeAiOauth"]}
+        except Exception:
+            pass  # fall through to file path
+    cred_path = (home or Path.home()) / ".claude" / ".credentials.json"
+    try:
+        return {"ok": True,
+                "oauth": json.loads(cred_path.read_text())["claudeAiOauth"]}
+    except FileNotFoundError:
+        return {"ok": False,
+                "note": f"{cred_path} 不存在；运行 claude /login"}
+    except (OSError, ValueError, KeyError) as e:
+        return {"ok": False, "note": f"读取 {cred_path} 失败: {e}"}
+
+
 def _query_cc_usage(home: Path | None = None,
-                    *, opener: Callable = None) -> dict:
+                    *, opener: Callable = None,
+                    keychain_runner: Callable | None = None) -> dict:
     """Hit Claude Max's `/api/oauth/usage` for real per-window
     utilization (5h / 7d / Sonnet / Opus / Extra) — boss flagged the
     earlier `npx ccusage Total: $X` dump as just cumulative cost,
@@ -59,25 +113,23 @@ def _query_cc_usage(home: Path | None = None,
 
     Returns `{ok, metrics: [{label, used_pct, remaining_pct, reset_iso,
     extra: {used,cap,ccy} optional}]}` on success or `{ok: false, note}`
-    on failure. Token comes from `~/.claude/.credentials.json`."""
+    on failure. Token resolved via `_read_claude_oauth` (keychain
+    preferred over the often-stale home file)."""
     if opener is None:
         opener = _opener_default
-    cred_path = (home or Path.home()) / ".claude" / ".credentials.json"
-    try:
-        oauth = json.loads(cred_path.read_text())["claudeAiOauth"]
-    except FileNotFoundError:
-        return {"ok": False, "note": f"{cred_path} 不存在；运行 claude /login"}
-    except (OSError, ValueError, KeyError) as e:
-        return {"ok": False, "note": f"读取 {cred_path} 失败: {e}"}
+    resolved = _read_claude_oauth(home, keychain_runner=keychain_runner)
+    if not resolved["ok"]:
+        return resolved
+    oauth = resolved["oauth"]
     token = oauth.get("accessToken", "")
     expires_ms = oauth.get("expiresAt", 0)
     import time as _time
     if expires_ms and expires_ms < int(_time.time() * 1000):
         return {"ok": False,
                 "note": f"access token 已过期 ({_time.strftime('%Y-%m-%d %H:%M', _time.localtime(expires_ms/1000))})；"
-                        f"刷新 keychain 或 watchdog 自动 refresh"}
+                        f"运行 `claude` 触发刷新"}
     if not token:
-        return {"ok": False, "note": "credentials.json 缺少 accessToken"}
+        return {"ok": False, "note": "credentials 缺少 accessToken"}
 
     req = urllib_request.Request(_CC_USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
