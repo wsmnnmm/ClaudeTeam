@@ -311,31 +311,57 @@ async function stage_import_scopes(page, _ctx, state) {
   //   .monaco-editor
   //     .view-lines   (the visible text layer; aria-hidden="true")
   //     textarea.inputarea  (the actual input target; covered by spans)
-  // Click on .view-lines fails Playwright actionability checks because
-  // of the aria-hidden attribute (round 2026-05-07: "element is not
-  // visible" 60s retry timeout). Solution: focus the inputarea
-  // directly via JS, then keyboard-paste — no click needed at all.
+  //
+  // Why we don't click .view-lines: aria-hidden + role=presentation makes
+  // Playwright treat it as not visible (60s retry timeout). Focus the
+  // underlying textarea.inputarea via .focus() — non-pointer-event API,
+  // bypasses the overlay.
+  //
+  // Why we don't `clipboard.writeText` + `Meta+v`: in headed Playwright
+  // the synthetic Meta+v keystroke does NOT count as a user gesture, so
+  // the browser refuses to populate the resulting paste event's
+  // clipboardData. Monaco gets a paste event with empty data and the
+  // dialog ends up submitted with nothing imported (caught after a real
+  // run on 2026-05-07: "什么都没贴进去就提交了"). Worse, this is also
+  // sensitive to whether the chromium window has OS focus when the keystroke
+  // fires — moving focus to another app makes the clipboard read silently
+  // fail. Fix: dispatch a synthetic ClipboardEvent with an inline
+  // DataTransfer payload. Monaco's paste handler reads event.clipboardData
+  // directly, so it doesn't need to come from the OS clipboard.
   log('Stage 3/7 import-scopes: importing ~480 permissions...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/auth`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Batch import/export scopes' }).click();
   await page.waitForTimeout(1500);
   const dialog = page.locator('[role="dialog"]').first();
-  // Focus Monaco's inputarea programmatically. Trying to click it
-  // hits the overlay; .focus() on the underlying textarea bypasses
-  // the overlay because focus is a non-pointer-event API.
-  await dialog.locator('.monaco-editor textarea.inputarea').first()
-    .evaluate(el => el.focus());
+  const inputarea = dialog.locator('.monaco-editor textarea.inputarea').first();
+  await inputarea.evaluate(el => el.focus());
   await page.waitForTimeout(200);
   await page.keyboard.press('Meta+a');
   await page.waitForTimeout(200);
   await page.keyboard.press('Backspace');
   await page.waitForTimeout(200);
-  await page.evaluate(async (text) => {
-    await navigator.clipboard.writeText(text);
+  await inputarea.evaluate((el, text) => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    el.dispatchEvent(new ClipboardEvent('paste', {
+      clipboardData: dt,
+      bubbles: true,
+      cancelable: true,
+    }));
   }, SCOPES_JSON);
-  await page.keyboard.press('Meta+v');
   await page.waitForTimeout(800);
+  // Verify Monaco actually received the paste. .view-lines only renders
+  // the visible region for large content, so 100 chars is just an
+  // "anything > nothing" floor — empty paste reliably yields 0–10 chars.
+  const visibleLen = await dialog.locator('.monaco-editor .view-lines')
+    .first().evaluate(el => (el.textContent || '').length);
+  if (visibleLen < 100) {
+    throw new Error(
+      `import-scopes: Monaco shows only ${visibleLen} chars after paste ` +
+      `(expected hundreds). Paste event did not propagate; aborting before ` +
+      `submitting an empty form.`);
+  }
   await page.getByRole('button', { name: 'Next, Review New Scopes' }).click();
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Add', exact: true }).click();
