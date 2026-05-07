@@ -90,7 +90,7 @@ def _read_claude_oauth(home: Path | None = None,
                     and out.stdout.strip():
                 return {"ok": True,
                         "oauth": json.loads(out.stdout)["claudeAiOauth"]}
-        except Exception:
+        except (OSError, ValueError, KeyError):
             pass  # fall through to file path
     cred_path = (home or Path.home()) / ".claude" / ".credentials.json"
     try:
@@ -231,7 +231,7 @@ def _codex_login_summary(home: Path | None = None) -> dict:
             plan = (chatgpt.get("chatgpt_plan_type")
                     or plan).title()
             active_until = chatgpt.get("chatgpt_subscription_active_until", "")
-        except Exception:
+        except (ValueError, TypeError, KeyError):
             pass  # JWT not parseable → just show auth_mode
     note = f"已登录 · 计划 {plan}"
     if active_until:

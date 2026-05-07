@@ -38,6 +38,10 @@ class _FakePopenProc:
 
     def __init__(self, argv):
         self.argv = argv
+        # subprocess.run reads `.args` on the Popen result internally
+        # (e.g. when constructing CompletedProcess). Without it any
+        # subprocess.run call routed through this fake AttributeError's.
+        self.args = argv
         self.returncode = 0
         self.stdout = ""
         self.stderr = ""

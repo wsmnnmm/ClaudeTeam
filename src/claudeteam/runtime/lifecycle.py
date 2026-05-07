@@ -101,10 +101,9 @@ def _ensure_claude_agent_home(agent: str) -> None:
                     cred_link.unlink()
                 cred_link.write_text(out.stdout)
                 keychain_extracted = True
-        except Exception:
-            # Subprocess fake in tests / missing `security` / empty
-            # keychain → silent skip and fall through to the host-file
-            # branch below.
+        except (OSError, subprocess.TimeoutExpired):
+            # `security` missing / keychain locked / subprocess timeout →
+            # silent skip and fall through to the host-file branch below.
             pass
     if not keychain_extracted and not cred_link.exists():
         user_creds = Path.home() / ".claude" / ".credentials.json"
