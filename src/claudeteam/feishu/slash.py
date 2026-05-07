@@ -404,13 +404,19 @@ def _codex_section(cx: dict) -> list:
         color = remaining_color(m["remaining_pct"])
         return (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
                 f"· 已用 {m['used_pct']}% · 重置 {m.get('reset', '')}")
+    # When the upstream probe (codex-cli-usage) isn't installed we fall
+    # back to ok=True with empty metrics + a `note` summarising the
+    # auth.json login status. Surface that note in the no-metrics slot
+    # so the user sees "已登录 · 计划 Pro" instead of the generic
+    # "codex-cli-usage 跑通但没返回 %" stub.
     return _usage_section(
         heading="**🟦 Codex (ChatGPT OAuth)**",
         ok=bool(cx.get("ok")),
         fail_text=f"Codex 用量读取失败</font> · {cx.get('note', '')}",
         plan_text=f"<font color='blue'>**{plan}**</font>" if cx.get("ok") else None,
         metrics=cx.get("metrics") or [],
-        no_metrics_note="codex-cli-usage 跑通但没返回 % 数据",
+        no_metrics_note=(cx.get("note")
+                         or "codex-cli-usage 跑通但没返回 % 数据"),
         format_metric=fmt,
     )
 

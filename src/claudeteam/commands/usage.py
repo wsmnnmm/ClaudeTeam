@@ -199,6 +199,47 @@ _CODEX_USAGE_RE = re.compile(
 )
 
 
+def _codex_login_summary(home: Path | None = None) -> dict:
+    """Best-effort login status from ~/.codex/auth.json (no `codex-cli-usage`
+    needed). Decodes the id_token JWT (payload only — we don't verify
+    the signature, just surface display fields) for plan type and
+    subscription active_until. Used as the fallback path so a host with
+    a healthy Codex login still gets a useful /usage row instead of a
+    "未安装" wall.
+
+    Returns the same shape `_query_codex_usage` does on success
+    (`{ok, plan, metrics}`), with metrics empty so the renderer falls
+    back to printing the plan + active_until status line."""
+    auth_path = (home or Path.home()) / ".codex" / "auth.json"
+    try:
+        auth = json.loads(auth_path.read_text())
+    except FileNotFoundError:
+        return {"ok": False, "note": f"{auth_path} 不存在；运行 `codex` 完成登录"}
+    except (OSError, ValueError):
+        return {"ok": False, "note": f"{auth_path} 读取失败"}
+    id_token = (auth.get("tokens") or {}).get("id_token", "")
+    plan = auth.get("auth_mode") or "ChatGPT"
+    active_until = ""
+    if id_token and id_token.count(".") == 2:
+        try:
+            import base64
+            payload_b64 = id_token.split(".")[1]
+            # JWT base64 may need padding to a multiple of 4
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            chatgpt = payload.get("https://api.openai.com/auth", {}) or {}
+            plan = (chatgpt.get("chatgpt_plan_type")
+                    or plan).title()
+            active_until = chatgpt.get("chatgpt_subscription_active_until", "")
+        except Exception:
+            pass  # JWT not parseable → just show auth_mode
+    note = f"已登录 · 计划 {plan}"
+    if active_until:
+        note += f" · 续费至 {active_until[:10]}"
+    note += " · 装 `codex-cli-usage` 看 % 额度"
+    return {"ok": True, "plan": plan, "metrics": [], "note": note}
+
+
 def _query_codex_usage(home: Path | None = None,
                        *, runner: Callable | None = None) -> dict:
     """Shell out to `codex-cli-usage` for real % consumed.
@@ -221,7 +262,16 @@ def _query_codex_usage(home: Path | None = None,
         runner = lambda argv: subprocess.run(
             argv, capture_output=True, text=True, timeout=15)
     if shutil.which("codex-cli-usage") is None:
-        return {"ok": False, "note": "codex-cli-usage 未安装；容器需 `uv tool install codex-cli-usage`"}
+        # Fallback: at least confirm login status from ~/.codex/auth.json.
+        # The id_token JWT carries chatgpt_plan_type +
+        # chatgpt_subscription_active_until — show those instead of a
+        # bare "未安装" message so the user can tell their Codex login
+        # is healthy without installing an extra tool.
+        fallback = _codex_login_summary(home)
+        if fallback["ok"]:
+            return fallback
+        return {"ok": False,
+                "note": "codex-cli-usage 未安装；运行 `uv tool install codex-cli-usage` 看额度（已登录但显示不出 %）"}
     try:
         r = runner(["codex-cli-usage"])
     except subprocess.TimeoutExpired:
