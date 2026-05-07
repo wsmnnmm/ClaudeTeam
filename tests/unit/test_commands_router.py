@@ -133,31 +133,38 @@ def test_main_help_returns_zero():
 # ── stale-event self-restart ──────────────────────────────────────
 
 
-def test_stale_threshold_default_is_180s():
-    """Default chosen after 2026-05-06 host_smoke caught lark WebSocket
-    silently stalling within minutes of router boot. Earlier 1200s left
-    user messages unprocessed for 7+min before self-heal."""
-    with env_patch(CLAUDETEAM_ROUTER_STALE_S=None):
-        assert _stale_event_threshold_s() == 180.0
+def test_stale_threshold_default_is_600s():
+    """Default raised from 180→600 after 2026-05-07 fresh-user smoke
+    caught a quiet chat respawning every 3 min. Original 180 was
+    motivated by a "WS silent stall within minutes" observation in
+    2026-05-06 round, but post-hoc that stall was likely a side-effect
+    of the LARKSUITE_CLI_TENANT_ACCESS_TOKEN missing-app-id bug (fixed
+    separately) — with auth healthy, an actually-quiet chat genuinely
+    has no events, and 180s cratered router uptime.
+
+    isolated_env() fences the test from any repo-root claudeteam.toml
+    that would otherwise feed an old value through the tunable cascade."""
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S=None):
+        assert _stale_event_threshold_s() == 600.0
 
 
 def test_stale_threshold_picks_up_env_override():
-    with env_patch(CLAUDETEAM_ROUTER_STALE_S="60"):
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="60"):
         assert _stale_event_threshold_s() == 60.0
 
 
 def test_stale_threshold_falls_back_to_default_on_garbage():
     """Misconfigured env (`CLAUDETEAM_ROUTER_STALE_S=potato`) should fall
     back to default rather than raise."""
-    with env_patch(CLAUDETEAM_ROUTER_STALE_S="potato"):
-        assert _stale_event_threshold_s() == 180.0
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="potato"):
+        assert _stale_event_threshold_s() == 600.0
 
 
 def test_stale_threshold_ignores_zero_or_negative():
-    with env_patch(CLAUDETEAM_ROUTER_STALE_S="0"):
-        assert _stale_event_threshold_s() == 180.0
-    with env_patch(CLAUDETEAM_ROUTER_STALE_S="-5"):
-        assert _stale_event_threshold_s() == 180.0
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="0"):
+        assert _stale_event_threshold_s() == 600.0
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="-5"):
+        assert _stale_event_threshold_s() == 600.0
 
 
 def test_make_on_progress_refreshes_timestamp_on_each_event():

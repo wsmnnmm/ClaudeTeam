@@ -97,7 +97,7 @@ ready_marker_timeout_s = 60
 
 # ── [router]  路由器守护进程 ───────────────────────────────
 [router]
-stale_event_threshold_s = 180
+stale_event_threshold_s = 600
 lark_call_timeout_s     = 90
 alarm_card_color        = "red"
 
