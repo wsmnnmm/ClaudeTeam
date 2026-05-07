@@ -66,6 +66,11 @@ services:
       # say / slash all use bot identity. Override with `user` only
       # if you've run `lark-cli auth login` inside the container.
       - CLAUDETEAM_LARK_SEND_AS=${CLAUDETEAM_LARK_SEND_AS:-bot}
+      # macOS Docker Desktop's `network_mode: host` is only partially
+      # emulated and the lark-cli WebSocket goes silent after a few
+      # minutes — set CLAUDETEAM_ROUTER_STALE_S in .env (suggested 300)
+      # to make the router respawn faster on this OS. Linux ignores.
+      - CLAUDETEAM_ROUTER_STALE_S=${CLAUDETEAM_ROUTER_STALE_S:-}
     network_mode: host
     tty: true
     stdin_open: true

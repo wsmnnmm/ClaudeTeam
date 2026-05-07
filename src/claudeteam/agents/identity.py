@@ -404,8 +404,16 @@ def init_prompt(agent: str) -> str:
         "--to user (对老板)" if agent == "manager"
         else "--to user (完工/对老板可见) 或 --to manager (内部进度)"
     )
+    # Identity path threaded as absolute. The relative form `agents/<x>/identity.md`
+    # only resolves from the agent pane's CWD — claude on host happens to
+    # run from the project root where `state/agents/...` is a sibling, but
+    # codex / kimi / docker spawns at `/app` (or wherever the spawn cmd
+    # runs from) and the relative path doesn't resolve there. Caught
+    # 2026-05-07 container smoke: codex pane logged "agents/worker_codex
+    # /identity.md was missing" at boot.
+    id_path = identity_path(agent)
     base = (
-        f"You are {agent}. Read agents/{agent}/identity.md, then run:\n"
+        f"You are {agent}. Read {id_path}, then run:\n"
         f"  claudeteam inbox {agent}\n"
         f"  claudeteam status {agent} 进行中 \"ready\"\n"
         f"\n"

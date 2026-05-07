@@ -297,6 +297,25 @@ def test_init_prompt_omits_memory_section_when_empty():
         assert "既往记忆" not in prompt
 
 
+def test_init_prompt_uses_absolute_identity_path():
+    """The Read instruction must use an absolute path so panes whose
+    CWD isn't the project root can still resolve the file. Container
+    deploys spawn at /app; codex pane in 2026-05-07 docker smoke
+    surfaced 'agents/worker_codex/identity.md was missing' because
+    the relative form didn't resolve from /app."""
+    with isolated_env():
+        prompt = identity.init_prompt("worker_cc")
+        # The path in the prompt must be absolute (starts with `/`)
+        # AND must end at the canonical state-relative location.
+        import re
+        m = re.search(r"Read (\S+identity\.md)", prompt)
+        assert m, f"prompt must contain `Read <path>identity.md`; got: {prompt[:200]}"
+        path = m.group(1)
+        assert path.startswith("/"), \
+            f"identity path must be absolute, got relative: {path!r}"
+        assert path.endswith("/agents/worker_cc/identity.md")
+
+
 def test_init_prompt_teaches_to_explicit_say():
     """Step 4c: init prompt 也要强调 --to 必带。烟测 (step4-llm-1778077887)
     发现仅靠 identity body 不够 — LLM 处理 inbox 时直接看 init prompt 的

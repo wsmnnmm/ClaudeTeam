@@ -143,6 +143,14 @@ in the container. The host only needs Docker + the host's
 `~/.claude/.credentials.json` (extracted from macOS keychain on Mac
 hosts) so the container can reuse your Claude OAuth.
 
+> **macOS prereq:** Docker Desktop must be running before any
+> `docker compose` command. `docker --version` succeeds whether the
+> daemon is up or not, but every other command surfaces
+> `failed to connect to the docker API at unix:///...docker.sock`
+> until you `open -a Docker` and wait ~30 s for the whale icon to
+> stop animating. Verify with `docker info | grep '^Server:'` —
+> the Server section is missing when the daemon's down.
+
 ```bash
 # 1. fill credentials (gitignored)
 cp .env.example .env
@@ -168,6 +176,15 @@ docker compose exec claudeteam claudeteam up
 docker compose exec claudeteam claudeteam health
 docker compose exec claudeteam tmux attach -t ClaudeTeam   # see panes; Ctrl+B d to leave
 ```
+
+> **macOS Docker Desktop subscribe stalls:** `network_mode: host` is
+> only partially emulated by Docker Desktop on macOS / Windows. The
+> lark-cli WebSocket subscribe routinely goes silent after a few
+> minutes — events stop reaching the router until it self-restarts and
+> catches up. Set `CLAUDETEAM_ROUTER_STALE_S=300` in `.env` to halve the
+> default 600 s self-restart threshold; events miss less when the router
+> respawns sooner. (Linux container hosts don't need this — `host` mode
+> there is real and the WebSocket is stable.)
 
 **Compose mounts (read `docker-compose.yml` for the full list):**
 
