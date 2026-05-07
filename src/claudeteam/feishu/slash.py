@@ -46,7 +46,7 @@ from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
 from claudeteam.feishu.cards import (
     beijing_stamp, column_set_2, column_set_3, fenced_block, load_color,
-    rich_card, simple_card,
+    remaining_color, rich_card, simple_card,
 )
 from claudeteam.runtime import tmux
 from claudeteam.util import fmt_bytes
@@ -368,63 +368,69 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _remaining_color(remaining_pct: float) -> str:
-    """Traffic-light tint for `remaining%`: ≤20 red / ≤50 orange / else green."""
-    if remaining_pct <= 20:
-        return "red"
-    if remaining_pct <= 50:
-        return "orange"
-    return "green"
+def _usage_section(*, heading: str, ok: bool, fail_text: str,
+                   plan_text: str | None, metrics: list,
+                   no_metrics_note: str | None,
+                   format_metric) -> list:
+    """Render one CLI's section in the /usage card.
 
-
-def _codex_section(cx: dict) -> list:
-    """Render Codex section rows for `/usage` card.
-
-    Shells out to `codex-cli-usage` (real % consumed per 5h / weekly
-    window) and renders results as column_set rows. `ok=False` →
-    red Status line; `metrics=[]` → grey "no data" line."""
-    rows: list = [{"tag": "markdown", "content": "**🟦 Codex (ChatGPT OAuth)**"}]
-    if not cx.get("ok"):
+    Pulled out of `_codex_section` / `_kimi_section` because both
+    follow the same shape: heading → status-on-fail → optional plan
+    → optional no-metrics note → per-metric row. The differences are
+    just text strings; `format_metric` is a callable that turns one
+    metric dict into the right side of a `column_set_2` row.
+    """
+    rows: list = [{"tag": "markdown", "content": heading}]
+    if not ok:
         rows.append(column_set_2(
-            "**Status**",
-            f"<font color='red'>Codex 用量读取失败</font> · {cx.get('note', '')}"))
+            "**Status**", f"<font color='red'>{fail_text}</font>"))
         return rows
-    plan = cx.get("plan") or "unknown"
-    rows.append(column_set_2(
-        "**Plan**", f"<font color='blue'>**{plan}**</font>"))
-    metrics = cx.get("metrics") or []
+    if plan_text:
+        rows.append(column_set_2("**Plan**", plan_text))
     if not metrics:
-        rows.append(column_set_2(
-            "**Status**",
-            f"<font color='grey'>codex-cli-usage 跑通但没返回 % 数据</font>"))
+        if no_metrics_note:
+            rows.append(column_set_2(
+                "**Status**", f"<font color='grey'>{no_metrics_note}</font>"))
         return rows
     for m in metrics:
-        color = _remaining_color(m["remaining_pct"])
-        rows.append(column_set_2(
-            f"**{m['label']}**",
-            (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
-             f"· 已用 {m['used_pct']}% · 重置 {m.get('reset', '')}")))
+        rows.append(column_set_2(f"**{m['label']}**", format_metric(m)))
     return rows
 
 
-def _kimi_section(km: dict) -> list:
-    """Render Kimi section rows for `/usage` card.
+def _codex_section(cx: dict) -> list:
+    """Render Codex section rows for `/usage` card."""
+    plan = cx.get("plan") or "unknown"
+    def fmt(m):
+        color = remaining_color(m["remaining_pct"])
+        return (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
+                f"· 已用 {m['used_pct']}% · 重置 {m.get('reset', '')}")
+    return _usage_section(
+        heading="**🟦 Codex (ChatGPT OAuth)**",
+        ok=bool(cx.get("ok")),
+        fail_text=f"Codex 用量读取失败</font> · {cx.get('note', '')}",
+        plan_text=f"<font color='blue'>**{plan}**</font>" if cx.get("ok") else None,
+        metrics=cx.get("metrics") or [],
+        no_metrics_note="codex-cli-usage 跑通但没返回 % 数据",
+        format_metric=fmt,
+    )
 
-    Queries `api.kimi.com/coding/v1/usages` (weekly + sliding-window
-    quotas). Each metric → column_set 2 row with traffic-light color."""
-    rows: list = [{"tag": "markdown", "content": "**🟧 Kimi (api.kimi.com)**"}]
-    if not km.get("ok"):
-        rows.append(column_set_2(
-            "**Status**",
-            f"<font color='red'>Kimi API 失败</font> · {km.get('note', '')}"))
-        return rows
-    for m in km.get("metrics", []) or []:
-        color = _remaining_color(m["remaining_pct"])
-        rows.append(column_set_2(
-            f"**{m['label']}**",
-            (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
-             f"· 已用 {m['used_pct']}% ({m['used']}/{m['limit']}) "
-             f"· 重置 {m.get('reset_iso', '')}")))
+
+def _kimi_section(km: dict) -> list:
+    """Render Kimi section rows for `/usage` card."""
+    def fmt(m):
+        color = remaining_color(m["remaining_pct"])
+        return (f"<font color='{color}'>**剩余 {m['remaining_pct']}%**</font> "
+                f"· 已用 {m['used_pct']}% ({m['used']}/{m['limit']}) "
+                f"· 重置 {m.get('reset_iso', '')}")
+    return _usage_section(
+        heading="**🟧 Kimi (api.kimi.com)**",
+        ok=bool(km.get("ok")),
+        fail_text=f"Kimi API 失败</font> · {km.get('note', '')}",
+        plan_text=None,
+        metrics=km.get("metrics") or [],
+        no_metrics_note=None,
+        format_metric=fmt,
+    )
     return rows
 
 
@@ -465,7 +471,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
                     "**Status**",
                     f"<font color='grey'>API 跑通但没返回可解析窗口</font>"))
             for m in metrics:
-                color = _remaining_color(m["remaining_pct"])
+                color = remaining_color(m["remaining_pct"])
                 extra = m.get("extra")
                 if extra:
                     right = (f"<font color='{color}'>**已用 {m['used_pct']}%**</font>"
