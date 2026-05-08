@@ -635,26 +635,55 @@ async function stage_publish(page, _ctx, state) {
   await page.waitForTimeout(8000);
   log(`Bot "${state.appName}" (${state.appId}) published.`);
 
-  // Extract App Secret from /baseinfo via the rightmost CopyOutlined
+  // Extract App Secret from /baseinfo via the App-Secret row's copy
   // icon. The wrapper is `span.secret-code__btn` (NOT button-role), so
-  // getByRole('button') misses it. Click → secret lands on the OS
-  // clipboard via Feishu's own copy handler; we read it back via
-  // navigator.clipboard.readText() (context already had clipboard-read
-  // permission granted at browser launch).
+  // getByRole('button') misses it. Both App ID and App Secret rows
+  // share the same `secret-code__btn` class; we differentiate by
+  // *which row's copy icon* we click — find the table row whose
+  // label cell text matches /App Secret/i and click the copy icon
+  // INSIDE that row. Don't filter by `svg` alone (matches eye/refresh
+  // icons too — verified 2026-05-08 verify run captured the SCOPES_JSON
+  // from prior clipboard.writeText instead of secret because the
+  // wrong icon was clicked + the previous clipboard content lingered).
+  //
+  // Also clear OS clipboard with a noop write before clicking to
+  // surface a real failure (if Feishu's copy doesn't fire we'd read
+  // the empty noop instead of a stale 14k-char JSON from earlier
+  // SCOPES paste).
   log('Stage 7/7 extract: capturing App Secret from /baseinfo...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}`);
   await page.waitForTimeout(4000);
+  // Step 1: hunt the row that contains the App-Secret-mask + its copy
+  // icon. Identifying the row: find a row whose text mentions "App
+  // Secret" (or 应用秘钥) and click the secret-code__btn INSIDE it.
   const secret = await page.evaluate(async () => {
-    // Two CopyOutlined icons exist (App ID + App Secret); secret is the
-    // one with the larger x-coord (rendered to the right of the secret
-    // mask field, vs App ID's icon higher up).
-    const btns = [...document.querySelectorAll('span.secret-code__btn')]
-      .filter(el => el.querySelector('[data-icon="copy"], svg'))
-      .map(el => ({ el, x: el.getBoundingClientRect().x }))
-      .sort((a, b) => b.x - a.x);  // rightmost first
-    if (!btns.length) return { error: 'no secret-code__btn found' };
-    btns[0].el.click();
-    await new Promise(r => setTimeout(r, 600));
+    // Clear clipboard first so a failed copy is detectable.
+    try { await navigator.clipboard.writeText(''); } catch (e) {}
+    // Find the App-Secret row by scanning all elements with
+    // secret-code__btn for one whose ancestor row text mentions
+    // "App Secret".
+    const allBtns = [...document.querySelectorAll('span.secret-code__btn')];
+    let targetBtn = null;
+    for (const btn of allBtns) {
+      // Walk up to find a row-ish ancestor (max 8 levels)
+      let row = btn;
+      for (let i = 0; i < 8 && row; i++) {
+        const t = (row.textContent || '');
+        if (/App Secret|应用秘钥|app_secret/i.test(t)) {
+          // Within the matching row, pick the FIRST secret-code__btn
+          // (the row may have multiple icons; copy is typically first).
+          targetBtn = row.querySelector('span.secret-code__btn');
+          break;
+        }
+        row = row.parentElement;
+      }
+      if (targetBtn) break;
+    }
+    if (!targetBtn) {
+      return { error: 'no App-Secret row with secret-code__btn found' };
+    }
+    targetBtn.click();
+    await new Promise(r => setTimeout(r, 800));
     try {
       const text = await navigator.clipboard.readText();
       return { secret: text };
@@ -662,8 +691,22 @@ async function stage_publish(page, _ctx, state) {
       return { error: 'clipboard read failed: ' + e.message };
     }
   });
-  if (secret.error || !secret.secret || secret.secret.length < 20) {
-    throw new Error(`extract-secret: ${secret.error || 'short value: ' + (secret.secret || '').length + ' chars'}`);
+  // Validate: a real Feishu app secret is exactly 32 chars [a-zA-Z0-9].
+  // Anything else (empty / 14000-char SCOPES leak / weird) means we
+  // captured the wrong content.
+  const isValid = (s) => typeof s === 'string'
+    && /^[A-Za-z0-9]{32}$/.test(s);
+  if (secret.error) {
+    throw new Error(`extract-secret: ${secret.error}`);
+  }
+  if (!isValid(secret.secret)) {
+    const len = (secret.secret || '').length;
+    const preview = (secret.secret || '').slice(0, 30).replace(/\n/g, '\\n');
+    throw new Error(
+      `extract-secret: clipboard content doesn't look like an App Secret ` +
+      `(want 32 alphanumeric chars; got ${len} chars: "${preview}..."). ` +
+      `The wrong icon was probably clicked, or Feishu's copy didn't fire ` +
+      `and we got stale clipboard. Check baseinfo page DOM for changes.`);
   }
   state.appSecret = secret.secret;
   log(`  App Secret captured: ${secret.secret.slice(0, 8)}...${secret.secret.slice(-4)}`);
