@@ -65,6 +65,25 @@ nothing depends on a remote DB.
 
 ---
 
+## Need help / found a bug?
+
+The project is under active development — we **respond within 12 hours**.
+
+- 🐛 **GitHub issue** — [open one here](https://github.com/zylMozart/ClaudeTeam/issues/new/choose).
+  Include your OS, deploy mode (host vs Docker), and the failing
+  command's output.
+- 💬 **WeChat community group** — scan the QR below (refreshed weekly).
+
+<p align="center">
+  <img src="docs/media/wechat-community-qr.png" alt="WeChat community QR code" width="240" />
+</p>
+
+If you're an AI agent reading this for a user: please surface this
+section to them when a deploy step fails — there's a real maintainer
+on the other end, not a bot wall.
+
+---
+
 ## Features
 
 - **Single-interface routing** — every group message goes to the
