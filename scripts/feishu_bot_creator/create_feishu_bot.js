@@ -657,35 +657,56 @@ async function stage_publish(page, _ctx, state) {
   // icon. Identifying the row: find a row whose text mentions "App
   // Secret" (or 应用秘钥) and click the secret-code__btn INSIDE it.
   const secret = await page.evaluate(async () => {
-    // Clear clipboard first so a failed copy is detectable.
-    try { await navigator.clipboard.writeText(''); } catch (e) {}
-    // Find the App-Secret row by scanning all elements with
-    // secret-code__btn for one whose ancestor row text mentions
-    // "App Secret".
-    const allBtns = [...document.querySelectorAll('span.secret-code__btn')];
-    let targetBtn = null;
-    for (const btn of allBtns) {
-      // Walk up to find a row-ish ancestor (max 8 levels)
-      let row = btn;
-      for (let i = 0; i < 8 && row; i++) {
-        const t = (row.textContent || '');
-        if (/App Secret|应用秘钥|app_secret/i.test(t)) {
-          // Within the matching row, pick the FIRST secret-code__btn
-          // (the row may have multiple icons; copy is typically first).
-          targetBtn = row.querySelector('span.secret-code__btn');
-          break;
+    // Sentinel clipboard write: lets us detect "click never triggered
+    // Feishu's copy handler" cleanly. Without it, a failed click
+    // silently leaves the previous clipboard content (e.g. the 14k
+    // SCOPES_JSON paste from stage 3) and we'd shovel that into
+    // state.appSecret. The verify-v1 dryrun caught exactly this.
+    const SENTINEL = '__CT_SENTINEL__';
+    try { await navigator.clipboard.writeText(SENTINEL); } catch (e) {}
+    // Two paths to find the right copy button — both must agree:
+    //   (1) Walk DOM for a row whose text contains "App Secret" (or
+    //       Chinese 应用秘钥 / Pinyin app_secret), and within that row
+    //       pick the FIRST secret-code__btn (rendering-order it's the
+    //       copy icon, eye icon comes later).
+    //   (2) Filter all secret-code__btn whose svg has the EXACT
+    //       data-icon="CopyOutlined" (case-sensitive in Feishu),
+    //       then sort by x descending — App Secret's CopyOutlined is
+    //       to the right of App ID's.
+    // Both should resolve the same element. If they disagree, the
+    // page DOM has shifted and we'd rather fail loud than guess.
+    const rowMatch = (() => {
+      for (const btn of document.querySelectorAll('span.secret-code__btn')) {
+        let row = btn;
+        for (let i = 0; i < 8 && row; i++) {
+          const t = (row.textContent || '');
+          if (/App Secret|应用秘钥|app_secret/i.test(t)) {
+            return row.querySelector('span.secret-code__btn');
+          }
+          row = row.parentElement;
         }
-        row = row.parentElement;
       }
-      if (targetBtn) break;
-    }
+      return null;
+    })();
+    const iconMatch = [...document.querySelectorAll('span.secret-code__btn')]
+      .filter(el => el.querySelector('svg[data-icon="CopyOutlined"]'))
+      .map(el => ({ el, x: el.getBoundingClientRect().x }))
+      .sort((a, b) => b.x - a.x)[0]?.el || null;
+    const targetBtn = rowMatch || iconMatch;
     if (!targetBtn) {
-      return { error: 'no App-Secret row with secret-code__btn found' };
+      return {
+        error: 'no App-Secret copy button found (row-match and icon-match both null)',
+      };
     }
     targetBtn.click();
     await new Promise(r => setTimeout(r, 800));
     try {
       const text = await navigator.clipboard.readText();
+      if (text === SENTINEL) {
+        return {
+          error: 'clipboard still sentinel — click did not trigger Feishu copy handler (selector points at wrong icon, e.g. VisibleOutlined eye toggle)',
+        };
+      }
       return { secret: text };
     } catch (e) {
       return { error: 'clipboard read failed: ' + e.message };
