@@ -56,7 +56,12 @@ CHECK_INTERVAL_SECS = 30
 # refresh fires within ±5min of the threshold.
 CRED_CHECK_INTERVAL_SECS = 300
 CRED_REFRESH_AHEAD_SECS = 1800
-_CRED_PATH = Path("/root/.claude/.credentials.json")
+_CRED_PATH = Path.home() / ".claude" / ".credentials.json"
+# Resolves to /root/.claude/.credentials.json in Docker (HOME=/root) — same
+# path the host-keychain bind-mount lands on — and to ~/.claude/... on host.
+# Hardcoding /root broke host non-root deploys: Path("/root/...").exists()
+# raised PermissionError (Linux /root is 700) instead of returning False
+# under Python 3.10–3.12, killing `claudeteam up`. Caught 2026-05-08.
 
 
 def _make_alert_fn():
