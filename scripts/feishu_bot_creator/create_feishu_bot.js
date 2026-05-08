@@ -434,7 +434,21 @@ async function stage_import_scopes(page, _ctx, state) {
   }
   const missing = [...expectedFlat].filter(s => !applied.has(s));
   log(`scope verification: ${applied.size} applied · ${missing.length} of ${expectedFlat.size} requested didn't activate`);
+  // Bringup B3 (2026-05-08): many tenants gate non-IM scopes (Calendar
+  // / Docs / Wiki / Base / Mail / Contact) behind admin approval. Calling
+  // the "didn't activate" warning loud without context made operators
+  // think the bot was unusable. Classify by IM-core vs advanced so the
+  // operator knows ClaudeTeam's basic flow still works.
+  const IM_CORE = ['im:message', 'im:chat:create', 'im:chat:read'];
+  const coreApplied = IM_CORE.filter(s => applied.has(s));
+  const coreMissing = IM_CORE.filter(s => !applied.has(s));
   if (missing.length) {
+    if (coreMissing.length === 0) {
+      log(`  ✅ IM core scopes (${coreApplied.join(', ')}) granted — ClaudeTeam's basic flow will work`);
+      log(`  ℹ Advanced scopes (Calendar / Docs / Wiki / Base / Mail / Contact) commonly need admin approval in your tenant`);
+    } else {
+      log(`  ⚠️ IM core scope(s) MISSING (${coreMissing.join(', ')}) — ClaudeTeam's basic flow may fail`);
+    }
     log(`  hints: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ` (+${missing.length - 6} more)` : ''}`);
     log(`  manually grant any missing at https://open.feishu.cn/app/${state.appId}/auth`);
   }

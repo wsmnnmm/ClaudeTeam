@@ -38,6 +38,14 @@ from claudeteam.util import env_str
 # env vars to propagate from the operator's shell into every spawned pane
 # so worker agents' shell-out calls (via Bash tool) see the deployment's
 # state dir instead of falling back to ~/.claudeteam.
+#
+# FEISHU_APP_*/LARKSUITE_CLI_APP_* added 2026-05-08 (bringup B5): when
+# tmux server was started by an earlier checkout's `claudeteam up`, new
+# panes inherit *its* global env (no FEISHU_APP_ID/SECRET). lark.py's
+# tenant_token_from_env() returned None and fell back to the saved
+# lark-cli profile — a different app — yielding HTTP 400 "Bot/User can
+# NOT be out of the chat" on every `claudeteam say`. Embedding the creds
+# in the spawn-cmd prefix sidesteps the tmux-server-env quirk entirely.
 _PROPAGATED_ENV = (
     "LARK_CLI_PROFILE",
     "LARK_CLI_NO_PROXY",
@@ -45,6 +53,10 @@ _PROPAGATED_ENV = (
     "CLAUDETEAM_TEAM_FILE",
     "CLAUDETEAM_RUNTIME_CONFIG",
     "CLAUDETEAM_DEFAULT_MODEL",
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
 )
 
 

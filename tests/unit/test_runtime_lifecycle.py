@@ -51,6 +51,25 @@ def test_pane_env_prefix_skips_unset_vars():
     assert "LARK_CLI_NO_PROXY=" not in prefix
 
 
+def test_pane_env_prefix_propagates_feishu_app_credentials():
+    """Bringup B5: tmux server started by an earlier checkout had its
+    own global env without FEISHU_APP_*; new panes inherited that env
+    and tenant_token_from_env() returned None → fell back to the saved
+    lark-cli profile (an OLD app) → HTTP 400 on every claudeteam say.
+    Embedding the creds in the spawn-cmd prefix sidesteps the
+    tmux-server-env quirk."""
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            FEISHU_APP_ID="cli_NEW",
+            FEISHU_APP_SECRET="newSecret123",
+            LARKSUITE_CLI_APP_ID="cli_NEW",
+            LARKSUITE_CLI_APP_SECRET="newSecret123"):
+        prefix = pane_env_prefix()
+    assert "FEISHU_APP_ID=cli_NEW" in prefix
+    assert "FEISHU_APP_SECRET=newSecret123" in prefix
+    assert "LARKSUITE_CLI_APP_ID=cli_NEW" in prefix
+    assert "LARKSUITE_CLI_APP_SECRET=newSecret123" in prefix
+
+
 def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     """shlex.quote should wrap any value containing whitespace; otherwise
     `eval $(...)` in a downstream shell would split on the space."""

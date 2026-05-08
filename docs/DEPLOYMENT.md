@@ -42,12 +42,27 @@ deployment, the flow is the same:
    platform's **Credentials & Basic Info** page (the bot creator's
    `.state/<bot-name>.json` also has them).
 
-2. **Add the bot to a Feishu group (manual — no API)**. Self-built
-   apps can't auto-join groups; this is the one human-required click
-   between publish and `claudeteam up`. Without it every `claudeteam
-   say` fails with `code=230001 invalid receive_id`.
+2. **Get the bot into a Feishu group**. Self-built apps cannot be
+   invited to existing groups via API, but they CAN create new ones —
+   pick whichever fits your flow:
 
-   On Feishu **mobile or desktop**:
+   **Path A — bot creates an empty group, you join via share link**
+   (preferred for agent-driven setup; only mobile click is "Join group"):
+   ```bash
+   # bot creates the group; chat_id comes back in stdout
+   lark-cli im +chats-create \
+     --body '{"name":"ClaudeTeam-test","chat_type":"public","description":"ClaudeTeam smoke"}' \
+     --as bot
+   # generate a share link the user can tap
+   lark-cli im +chats-link --chat-id <chat_id> --as bot
+   ```
+   Open the returned `applink.feishu.cn/...` URL on Feishu mobile and
+   tap **Join Group**. Bot is already in (creator); user is in (joined);
+   chat_id is captured for `claudeteam.toml`.
+
+   **Path B — manual add to an existing group** (if you want to drop
+   the bot into a group that already exists). On Feishu **mobile or
+   desktop**:
    1. Open the target group → group settings (⚙️).
    2. **群机器人 / Bots** → **添加机器人 / Add bot**.
    3. Search by the App name you used in the bot creator → confirm.
@@ -55,8 +70,10 @@ deployment, the flow is the same:
       ```bash
       lark-cli im +chat-search --query "<group name>" --as user
       ```
-      The response's `chat_id` is `oc_...` — paste it into your
-      `claudeteam.toml` in step 4 below.
+
+   Either way, paste the resulting `chat_id` (`oc_...`) into your
+   `claudeteam.toml` in step 4 below. Skip this step entirely and every
+   `claudeteam say` will fail with `code=230001 invalid receive_id`.
 
 3. **Pick host or Docker** — Docker is the simpler path (no Python on
    the host, just `docker compose`). Host is faster iteration but
@@ -126,6 +143,9 @@ export CLAUDETEAM_LARK_SEND_AS=bot         # bot identity for headless smoke;
                                            # without it `say` defaults to user OAuth
 
 # 2. install (editable, in a venv — PEP 668 means no bare pip on macOS Homebrew)
+#    macOS note: /usr/bin/python3 is 3.9.6 — too old. Use brew/pyenv:
+#      brew install python@3.12 && /opt/homebrew/bin/python3.12 -m venv .venv
+#    Linux: python3 from your distro is usually fine if it's ≥3.10.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -381,6 +401,38 @@ keeps a `state/router.seen` dedup set persisted across restarts (auto
 truncates at 5000 entries). If you still see duplicates, deleting
 `state/router.seen` and bumping the cursor in `state/router.cursor`
 forward to "now" makes the next catchup skip everything older.
+
+### `claudeteam say` from a pane fails HTTP 400 "Bot/User can NOT be out of the chat"
+
+Symptom: `claudeteam say` from your launching shell **works**, but the
+exact same call from inside an agent pane (manager / worker_*) returns
+the HTTP 400 above. Bringup B5 caught this: a pre-existing tmux
+**server** started by an earlier `claudeteam up` (different checkout,
+or a session you forgot you had) holds onto its original global env.
+`tmux new-session` attaches to that server and inherits *its* env, not
+your launching shell's.
+
+The lifecycle prefix now embeds `FEISHU_APP_ID/SECRET` +
+`LARKSUITE_CLI_APP_*` + `CLAUDETEAM_STATE_DIR` directly into each
+spawn-cmd, so this should no longer trigger from a clean state. If you
+still see it, the orphan-tmux trap is the cause:
+
+```bash
+# 1. surface stale tmux servers + orphan ClaudeTeam daemons
+tmux ls 2>/dev/null
+ps -ef | grep -E "claudeteam (router|watchdog)|lark-cli.*subscribe" | grep -v grep
+
+# 2. clean up
+claudeteam down                           # graceful local stop
+tmux kill-server                          # nuke ALL tmux servers (only if no
+                                          # unrelated tmux work is in flight)
+# alternative if you DO have other tmux work: kill JUST our session
+tmux kill-session -t ClaudeTeam
+
+# 3. relaunch from a shell that has the right env exported
+claudeteam up
+tmux show-environment -g | grep -E "FEISHU_APP_ID|CLAUDETEAM_STATE_DIR"  # verify
+```
 
 ### `worker_codex` shows "pane up but CLI not ready yet"
 
