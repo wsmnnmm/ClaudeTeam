@@ -39,27 +39,42 @@ deployment, the flow is the same:
    how to recover) are in [`setup_feishu_bot.md`](setup_feishu_bot.md).
 
    After `publish`, read `App ID` + `App Secret` from the Feishu open
-   platform's **Credentials & Basic Info** page. The user adds the
-   bot to a group and tells you the group name; find the `chat_id`
-   via `lark-cli im +chat-search --query "<group name>" --as user`.
+   platform's **Credentials & Basic Info** page (the bot creator's
+   `.state/<bot-name>.json` also has them).
 
-2. **Pick host or Docker** — Docker is the simpler path (no Python on
+2. **Add the bot to a Feishu group (manual — no API)**. Self-built
+   apps can't auto-join groups; this is the one human-required click
+   between publish and `claudeteam up`. Without it every `claudeteam
+   say` fails with `code=230001 invalid receive_id`.
+
+   On Feishu **mobile or desktop**:
+   1. Open the target group → group settings (⚙️).
+   2. **群机器人 / Bots** → **添加机器人 / Add bot**.
+   3. Search by the App name you used in the bot creator → confirm.
+   4. Capture the chat_id from any shell with `lark-cli` user OAuth:
+      ```bash
+      lark-cli im +chat-search --query "<group name>" --as user
+      ```
+      The response's `chat_id` is `oc_...` — paste it into your
+      `claudeteam.toml` in step 4 below.
+
+3. **Pick host or Docker** — Docker is the simpler path (no Python on
    the host, just `docker compose`). Host is faster iteration but
    needs Python 3.10+, tmux, and the agent CLIs locally. Sections
    below cover both.
 
-3. **Config** — write the credentials into `.env` (Docker) and the
+4. **Config** — write the credentials into `.env` (Docker) and the
    `chat_id` + agents into `claudeteam.toml`. `claudeteam init`
    generates a starter `claudeteam.toml` with three default agents
    (`manager` running Claude Code + `worker_cc` running Claude Code +
    `worker_codex` running Codex CLI) — keep them for a quick first
    smoke or edit before launch.
 
-4. **Launch + verify** — `claudeteam up` then `claudeteam health`
+5. **Launch + verify** — `claudeteam up` then `claudeteam health`
    should be all green. From the Feishu group send `/health` and
    `@manager 你好`; manager should reply within ~30 s.
 
-5. **If anything goes red**, see [Common failures](#common-failures)
+6. **If anything goes red**, see [Common failures](#common-failures)
    at the bottom — it covers Claude OAuth stale, container env not
    picked up, lark WebSocket drop, codex update prompt, etc.
 

@@ -280,8 +280,28 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
         print(f"  ⚠️ lark-cli could not be launched: {e}")
         return None
     if r.returncode != 0:
-        msg = (r.stderr or "").strip().splitlines()[-1:]
-        print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {msg[0] if msg else ''}"[:200])
+        # Smoke v3 caught: lark-cli sometimes prints structured JSON
+        # ({"ok":false,"msg":"invalid receive_id","code":230001}) to
+        # stdout AND exits non-zero. Old `stderr.splitlines()[-1]` returned
+        # just the trailing `}` and lost the real cause. Try JSON first
+        # (stdout, then stderr); fall back to the first non-empty line.
+        for blob in (r.stdout, r.stderr):
+            blob = (blob or "").strip()
+            if not blob:
+                continue
+            try:
+                parsed = json.loads(blob)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                reason = _extract_error_message(parsed)
+                print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {reason}"[:200])
+                return None
+        head = next(
+            (line for line in ((r.stderr or "") + "\n" + (r.stdout or "")).splitlines() if line.strip()),
+            "",
+        )
+        print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {head}"[:200])
         return None
     if not r.stdout.strip():
         return {}

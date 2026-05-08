@@ -36,8 +36,11 @@ def _kill_pid_file(name: str, pid_file) -> int:
     except PermissionError as e:
         return error_exit(f"❌ {name}: not allowed to kill pid {pid}: {e}")
 
-    # Wait a few seconds for graceful shutdown
-    for _ in range(30):
+    # SIGTERM grace, then escalate to SIGKILL. Smoke v3: 3s wasn't enough
+    # for router/watchdog mid-lark-cli to flush — 10s catches the slow
+    # path; SIGKILL fallback guarantees `compose down` doesn't punt to
+    # the operator.
+    for _ in range(100):
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -45,8 +48,22 @@ def _kill_pid_file(name: str, pid_file) -> int:
             pid_file.unlink(missing_ok=True)
             return 0
         time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        print(f"🛑 {name}: pid {pid} stopped")
+        pid_file.unlink(missing_ok=True)
+        return 0
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            print(f"🛑 {name}: pid {pid} stopped (after SIGKILL)")
+            pid_file.unlink(missing_ok=True)
+            return 0
+        time.sleep(0.1)
     return error_exit(
-        f"⚠️  {name}: pid {pid} still alive after 3s — manual SIGKILL may be needed")
+        f"⚠️  {name}: pid {pid} still alive after 12s SIGTERM+SIGKILL — investigate manually")
 
 
 def main(argv: list[str]) -> int:

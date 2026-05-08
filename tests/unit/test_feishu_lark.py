@@ -109,6 +109,25 @@ def test_run_returns_none_on_nonzero_exit():
     assert lark.call(["x"], run=rec) is None
 
 
+def test_nonzero_exit_with_json_blob_extracts_real_message():
+    """Smoke v3 found: when claudeteam say targets an unjoinable chat,
+    lark-cli prints `{"ok":false,"msg":"invalid receive_id","code":230001}`
+    to stdout AND exits non-zero. Old code took stderr.splitlines()[-1]
+    so operators saw `lark-cli failed (rc=1): }` — useless. Now we
+    parse JSON first and route through _extract_error_message."""
+    import io
+    import contextlib
+    payload = '{"ok":false,"msg":"invalid receive_id","code":230001}'
+    rec = _Recorder(FakeProc(returncode=1, stdout=payload, stderr="\n}\n"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert lark.call(["im", "+messages-send"], run=rec) is None
+    log = out.getvalue()
+    assert "invalid receive_id" in log
+    # Must NOT be the trailing `}` from the old splitlines()[-1] path
+    assert "rc=1): }" not in log
+
+
 def test_run_returns_none_when_api_says_ok_false():
     """lark-cli exits 0 even when the API returns ok=false; treat as failure
     so callers don't quietly accept a body that's missing the expected fields."""

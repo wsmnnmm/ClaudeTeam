@@ -268,24 +268,30 @@ def test_down_handles_corrupt_pid_file():
 
 
 def test_down_returns_one_when_pid_refuses_to_die():
-    """When SIGTERM is delivered but the process never exits within the
-    3s grace window, down should return non-zero so the operator knows
-    a manual SIGKILL might be needed."""
+    """SIGTERM delivered, then SIGKILL escalation, then surface the
+    warning — when both signals appear ineffective (kill -0 keeps
+    succeeding), down should warn + return non-zero. Smoke v3 bumped
+    grace 3s→10s SIGTERM + 2s post-SIGKILL = 12s total."""
+    import time as _time
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team), _fake_tmux(session_alive=False):
         paths.ensure_state_dir()
         paths.router_pid_file().write_text("99999", encoding="utf-8")
 
+        signals_seen = []
         def fake_kill(pid, sig):
-            # SIGTERM accepted, but kill -0 always succeeds → process
-            # appears to stay alive forever (down's poll loop should
-            # eventually give up and surface the warning).
+            signals_seen.append(sig)
             return None
 
-        with attr_patch(os, kill=fake_kill):
+        with attr_patch(os, kill=fake_kill), attr_patch(_time, sleep=lambda _s: None):
             rc, _, err = run_cli(["down"])
-        # The router pid is "alive" → down returns non-zero
         assert rc != 0
         assert "still alive" in err
         # pid file is NOT removed — operator needs to investigate
         assert paths.router_pid_file().exists()
+        # Both SIGTERM and SIGKILL must have been attempted (escalation
+        # loop survived the smoke-v3 finding that 3s SIGTERM-only grace
+        # left daemons orphaned).
+        import signal as _signal
+        assert _signal.SIGTERM in signals_seen
+        assert _signal.SIGKILL in signals_seen
