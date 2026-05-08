@@ -1,5 +1,13 @@
 # 飞书企业自建应用（机器人）创建指南
 
+> 创建机器人有两条路，结果一样，选你顺手的：
+>
+> - 🤖 **agent-driven（本文）** —— AI agent 跑下面 7 个 stage，全程
+>   只要扫一次 QR 登录，剩下的 agent 托管。
+> - 🧑 **纯手动** —— 跟着
+>   [`setup_feishu_bots_guide.pdf`](setup_feishu_bots_guide.pdf) 一步一步点，
+>   截图密集，不需要 Playwright/Node 环境。
+
 ClaudeTeam 部署需要一个飞书企业自建 App + 机器人能力 + 一组权限 +
 事件订阅 + 卡片回调 + 已发布版本。整个流程由
 [`scripts/feishu_bot_creator/create_feishu_bot.js`](../scripts/feishu_bot_creator/create_feishu_bot.js)

@@ -37,6 +37,10 @@ deployment, the flow is the same:
 
    Per-stage details (what Playwright does, equivalent manual UI,
    how to recover) are in [`setup_feishu_bot.md`](setup_feishu_bot.md).
+   For a screenshot-heavy click-by-click guide aimed at human
+   operators (recommended for first-timers on the Feishu open
+   platform), see
+   [`setup_feishu_bots_guide.pdf`](setup_feishu_bots_guide.pdf).
 
    After `publish`, read `App ID` + `App Secret` from the Feishu open
    platform's **Credentials & Basic Info** page (the bot creator's
@@ -486,3 +490,23 @@ tests/
 
 `CLAUDE.md` (project root) holds the building rules + active work
 order — read it before making changes.
+
+---
+
+## Stuck? Found a bug?
+
+The project is under active development — we **respond within 12 hours**.
+
+- 🐛 **GitHub issue** — open one at
+  [zylMozart/ClaudeTeam/issues](https://github.com/zylMozart/ClaudeTeam/issues/new/choose).
+  Include OS, deploy mode (host vs Docker), and the failing command's
+  output (or `/tmp/drive*.log` for bot creator stalls).
+- 💬 **WeChat community group** — scan the QR below (refreshed weekly).
+
+<p align="center">
+  <img src="media/wechat-community-qr.png" alt="WeChat community QR code" width="240" />
+</p>
+
+If you're an AI agent driving a deploy and a step fails after a real
+attempt at recovery, surface this section to the user — there's a
+real maintainer reachable, not a bot wall.
