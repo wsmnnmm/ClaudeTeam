@@ -306,29 +306,27 @@ async function stage_add_bot(page, _ctx, state) {
 }
 
 async function stage_import_scopes(page, _ctx, state) {
-  // Opens "Batch import/export scopes" → Monaco editor → paste full JSON →
-  // "Next, Review New Scopes" → "Add". Monaco's structure:
-  //   .monaco-editor
-  //     .view-lines   (the visible text layer; aria-hidden="true")
-  //     textarea.inputarea  (the actual input target; covered by spans)
+  // Opens "Batch import/export scopes" → Monaco editor → paste JSON →
+  // "Next, Review New Scopes" → "Add".
   //
-  // Why we don't click .view-lines: aria-hidden + role=presentation makes
-  // Playwright treat it as not visible (60s retry timeout). Focus the
-  // underlying textarea.inputarea via .focus() — non-pointer-event API,
-  // bypasses the overlay.
+  // ⚠️ KNOWN LIMITATION (caught 2026-05-08 forensic, after multiple "fix"
+  // attempts): Feishu's Monaco editor in this dialog rejects EVERY
+  // programmatic-input path we've tried — synthetic ClipboardEvent,
+  // keyboard.type, OS clipboard + Playwright Cmd+V. The textarea snaps
+  // back to the bot's current scope JSON within a tick of any edit. Only
+  // a real OS-level user-driven Cmd+V (chromium has true OS focus, not
+  // CDP-injected keystroke) actually updates Monaco's model. Net effect:
+  // running this stage adds at most a handful of scopes — whatever Feishu
+  // happened to have in the dialog before our paste. The operator must
+  // manually grant additional scopes in the UI for advanced features
+  // (im:chat:create etc.). feishu_scopes.json is now a SHORT
+  // ClaudeTeam-essential list (~6 scopes) instead of the old ~480-item
+  // wishlist that mostly never activated.
   //
-  // Why we don't `clipboard.writeText` + `Meta+v`: in headed Playwright
-  // the synthetic Meta+v keystroke does NOT count as a user gesture, so
-  // the browser refuses to populate the resulting paste event's
-  // clipboardData. Monaco gets a paste event with empty data and the
-  // dialog ends up submitted with nothing imported (caught after a real
-  // run on 2026-05-07: "什么都没贴进去就提交了"). Worse, this is also
-  // sensitive to whether the chromium window has OS focus when the keystroke
-  // fires — moving focus to another app makes the clipboard read silently
-  // fail. Fix: dispatch a synthetic ClipboardEvent with an inline
-  // DataTransfer payload. Monaco's paste handler reads event.clipboardData
-  // directly, so it doesn't need to come from the OS clipboard.
-  log('Stage 3/7 import-scopes: importing ~480 permissions...');
+  // We still go through the motions because the dialog *does* sometimes
+  // commit a scope or two when our paste flicker partially renders, and
+  // because the "Add" click is required to clear pending state.
+  log('Stage 3/7 import-scopes: attempting paste (note: Feishu UI may silently drop some)...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/auth`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Batch import/export scopes' }).click();
@@ -351,22 +349,38 @@ async function stage_import_scopes(page, _ctx, state) {
     }));
   }, SCOPES_JSON);
   await page.waitForTimeout(800);
-  // Verify Monaco actually received the paste. .view-lines only renders
-  // the visible region for large content, so 100 chars is just an
-  // "anything > nothing" floor — empty paste reliably yields 0–10 chars.
-  const visibleLen = await dialog.locator('.monaco-editor .view-lines')
-    .first().evaluate(el => (el.textContent || '').length);
-  if (visibleLen < 100) {
-    throw new Error(
-      `import-scopes: Monaco shows only ${visibleLen} chars after paste ` +
-      `(expected hundreds). Paste event did not propagate; aborting before ` +
-      `submitting an empty form.`);
-  }
   await page.getByRole('button', { name: 'Next, Review New Scopes' }).click();
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Add', exact: true }).click();
-  await page.waitForTimeout(2000);
-  log('Permissions imported');
+  await page.waitForTimeout(3000);
+  // Verify reality: query bot's actually-applied scopes from Feishu's
+  // backend and compare with what's in feishu_scopes.json. Don't trust
+  // the dialog's "imported" toast — it's optimistic.
+  const expected = JSON.parse(SCOPES_JSON).scopes;
+  const expectedFlat = new Set([...(expected.tenant || []), ...(expected.user || [])]);
+  const actualResp = await page.evaluate(async (appId) => {
+    try {
+      const r = await fetch(`/developers/v1/scope/applied/${appId}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      return await r.json();
+    } catch (e) { return { error: e.message }; }
+  }, state.appId);
+  const applied = new Set();
+  for (const s of (actualResp?.data?.scopes || [])) {
+    if (s.scope) applied.add(s.scope);
+    else if (s.scopeId) applied.add(s.scopeId);
+    else if (s.name) applied.add(s.name);
+  }
+  const missing = [...expectedFlat].filter(s => !applied.has(s));
+  log(`scope verification: ${applied.size} applied / ${expectedFlat.size} requested · missing: ${missing.length}`);
+  if (missing.length) {
+    log(`  ⚠️ scopes Feishu UI didn't activate: ${missing.slice(0, 8).join(', ')}${missing.length > 8 ? ` (+${missing.length - 8} more)` : ''}`);
+    log(`  → manually grant the missing ones at https://open.feishu.cn/app/${state.appId}/auth`);
+  }
+  log('Permissions import attempted (Feishu UI partial-success — see above for missing scopes)');
 }
 
 async function stage_data_range(page, _ctx, _state) {
