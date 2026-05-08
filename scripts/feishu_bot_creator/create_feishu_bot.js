@@ -344,9 +344,16 @@ async function stage_import_scopes(page, _ctx, state) {
   //     without model update.
   log('Stage 3/7 import-scopes: importing ~480 permissions...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/auth`);
-  await page.waitForTimeout(2000);
+  // Wait long enough for Monaco to fully render — 2s isn't enough on a
+  // freshly-created bot (the auth page boots a Monaco instance from
+  // scratch instead of restoring an already-warm one). 2026-05-08 dryrun
+  // V2 caught this: drive failed on `view-lines click` with "Element is
+  // not visible" even with force:true, because the .view-lines element
+  // hadn't reached its final DOM position yet (scrollIntoView fails on
+  // a still-mounting element). 5s clears it consistently.
+  await page.waitForTimeout(5000);
   await page.getByRole('button', { name: 'Batch import/export scopes' }).click();
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2500);
   const dialog = page.locator('[role="dialog"]').first();
   // force-click view-lines: aria-hidden on the layer makes Playwright's
   // visibility check refuse without `force`, but the click itself works.
