@@ -42,6 +42,25 @@ def runtime_config_file() -> Path:
     return env_path("CLAUDETEAM_RUNTIME_CONFIG") or Path.cwd() / "runtime_config.json"
 
 
+def claude_code_settings_file() -> Path:
+    """Project-scoped Claude Code settings file.
+
+    Mirrors the user's ccSwitch-style JSON:
+
+        {
+          "env": {"ANTHROPIC_AUTH_TOKEN": "...", ...},
+          "effortLevel": "max"
+        }
+
+    Keep it under state/ by default so operators can persist proxy keys
+    locally without touching global config or checking secrets into git.
+    """
+    if path := env_path("CLAUDETEAM_CLAUDE_CODE_SETTINGS_FILE"):
+        return path
+    from claudeteam.runtime import paths
+    return paths.state_dir() / "ccswitch.json"
+
+
 # ── team.json ────────────────────────────────────────────────────
 
 
@@ -127,6 +146,11 @@ def load_runtime_config() -> dict:
 
 def save_runtime_config(cfg: dict) -> None:
     write_json(runtime_config_file(), cfg)
+
+
+def load_claude_code_settings() -> dict:
+    return _read_json_lenient(
+        claude_code_settings_file(), {}, "claude code settings")
 
 
 def chat_id() -> str:

@@ -16,6 +16,7 @@ from claudeteam.commands import (
     say, router, watchdog, task, remember, recall, forget, peek,
     health, usage, install_hooks, version,
 )
+from claudeteam.runtime.envfile import load_dotenv
 from claudeteam.util import error_exit
 
 
@@ -96,6 +97,7 @@ def _usage() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     args = list(argv if argv is not None else sys.argv[1:])
     if not args or args[0] in ("-h", "--help", "help"):
         print(_usage())

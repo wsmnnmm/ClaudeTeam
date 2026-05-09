@@ -272,6 +272,28 @@ def test_load_runtime_config_returns_default_on_corrupt_json():
         assert "not valid JSON" in err.getvalue()
 
 
+# ── Claude Code project-local settings ───────────────────────────
+
+
+def test_claude_code_settings_file_defaults_under_state_dir():
+    with isolated_env(team={"agents": {}}):
+        path = config.claude_code_settings_file()
+        assert str(path).endswith("/state/ccswitch.json")
+
+
+def test_load_claude_code_settings_reads_project_local_json():
+    with isolated_env(team={"agents": {}}) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://proxy.example"},"effortLevel":"max"}',
+            encoding="utf-8",
+        )
+        loaded = config.load_claude_code_settings()
+        assert loaded["env"]["ANTHROPIC_BASE_URL"] == "https://proxy.example"
+        assert loaded["effortLevel"] == "max"
+
+
 def test_session_name_falls_back_to_default_when_team_corrupt():
     """Downstream accessor `session_name()` should also degrade
     gracefully — `claudeteam start` shouldn't blow up just because

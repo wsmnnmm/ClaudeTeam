@@ -1,7 +1,9 @@
 """Tests for the top-level claudeteam CLI dispatcher."""
 from __future__ import annotations
 
-from helpers import run_cli
+from pathlib import Path
+
+from helpers import env_patch, isolated_env, run_cli
 from claudeteam import cli
 
 
@@ -138,3 +140,39 @@ def test_handler_unhandled_exception_with_debug_env_reraises():
                 raise AssertionError("expected RuntimeError to propagate")
     finally:
         del cli.COMMANDS["debug-boom"]
+
+
+def test_cli_autoloads_project_dotenv_without_overwriting_existing_env():
+    captured = {}
+
+    def handler(argv):
+        import os
+        captured["send_as"] = os.environ.get("CLAUDETEAM_LARK_SEND_AS")
+        captured["app_id"] = os.environ.get("FEISHU_APP_ID")
+        captured["new_var"] = os.environ.get("NEW_DOTENV_VAR")
+        return 0
+
+    cli.COMMANDS["env-probe"] = handler
+    try:
+        with isolated_env(team={"agents": {}}) as tmp, env_patch(
+                CLAUDETEAM_LARK_SEND_AS="user",
+                FEISHU_APP_ID="existing"):
+            (tmp / ".env").write_text(
+                "FEISHU_APP_ID=cli_from_dotenv\n"
+                "CLAUDETEAM_LARK_SEND_AS=bot\n"
+                "NEW_DOTENV_VAR=loaded\n",
+                encoding="utf-8",
+            )
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(tmp)
+                rc, _, _ = run_cli(["env-probe"])
+            finally:
+                os.chdir(old_cwd)
+    finally:
+        del cli.COMMANDS["env-probe"]
+    assert rc == 0
+    assert captured["send_as"] == "user"
+    assert captured["app_id"] == "existing"
+    assert captured["new_var"] == "loaded"

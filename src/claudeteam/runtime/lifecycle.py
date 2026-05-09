@@ -20,8 +20,9 @@ Returns one of five outcome strings (callers render differently):
                   than aborting the whole `claudeteam start`.
 
 Also home for `pane_env_prefix()` — the shell env-var prefix prepended
-to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR` and
-the Feishu env into their `claudeteam say` shell-outs.
+to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR`,
+project-level `CODEX_HOME`, and the Feishu env into their
+`claudeteam say` shell-outs.
 """
 from __future__ import annotations
 
@@ -47,6 +48,8 @@ from claudeteam.util import env_str
 # NOT be out of the chat" on every `claudeteam say`. Embedding the creds
 # in the spawn-cmd prefix sidesteps the tmux-server-env quirk entirely.
 _PROPAGATED_ENV = (
+    "PYTHONPATH",
+    "CODEX_HOME",
     "LARK_CLI_PROFILE",
     "LARK_CLI_NO_PROXY",
     "CLAUDETEAM_LARK_SEND_AS",
@@ -58,6 +61,19 @@ _PROPAGATED_ENV = (
     "LARKSUITE_CLI_APP_ID",
     "LARKSUITE_CLI_APP_SECRET",
 )
+
+
+def _venv_path_prefix() -> str:
+    """Short PATH prefix injected into panes.
+
+    Use `<repo>/.venv/bin:$PATH` (literal `$PATH`) instead of expanding
+    the caller's full PATH, which can exceed tmux send-keys practical
+    length on macOS and truncate the spawn command.
+    """
+    venv_bin = Path.cwd() / ".venv" / "bin"
+    if not venv_bin.exists():
+        return ""
+    return f"{venv_bin}:$PATH"
 
 
 def _path_readable(p: Path) -> bool:
@@ -189,11 +205,16 @@ def _ensure_claude_agent_home(agent: str) -> None:
 
 def pane_env_prefix() -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
-    spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
-    worker agents calling `claudeteam say` write to the project state
-    dir, not `~/.claudeteam`.
+    spawned process inherit CLAUDETEAM_STATE_DIR, project-level
+    CODEX_HOME, and the Feishu env so worker agents calling
+    `claudeteam say` write to the project state dir, and codex-cli
+    workers resolve config from the project-scoped codex home rather
+    than falling back to `~/.codex`.
     """
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
+    pane_path = _venv_path_prefix()
+    if pane_path:
+        parts.append(f"PATH={pane_path}")
     for var in _PROPAGATED_ENV:
         val = env_str(var)
         if val:

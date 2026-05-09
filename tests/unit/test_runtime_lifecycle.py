@@ -38,6 +38,21 @@ def test_pane_env_prefix_propagates_lark_profile_when_set():
     assert "LARK_CLI_PROFILE=prod" in prefix
 
 
+def test_pane_env_prefix_propagates_codex_home_when_set():
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            CODEX_HOME="/tmp/project codex"):
+        prefix = pane_env_prefix()
+    assert "CODEX_HOME='/tmp/project codex'" in prefix
+
+
+def test_pane_env_prefix_injects_venv_path_and_pythonpath_when_set():
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            PYTHONPATH="/tmp/src"):
+        prefix = pane_env_prefix()
+    assert ".venv/bin:$PATH" in prefix
+    assert "PYTHONPATH=/tmp/src" in prefix
+
+
 def test_pane_env_prefix_skips_unset_vars():
     """Vars not present in the operator shell don't pollute the prefix."""
     with isolated_env(team={"agents": {"a": {}}}), env_patch(

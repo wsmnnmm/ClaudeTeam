@@ -6,7 +6,7 @@ import os
 import shlex
 from pathlib import Path
 
-from claudeteam.runtime import paths
+from claudeteam.runtime import config, paths
 
 from .base import CliAdapter, SPINNER_CHARS
 
@@ -64,6 +64,54 @@ def _data_writable() -> bool:
     return _DATA_WRITABLE
 
 
+_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
+
+def _settings() -> dict:
+    return config.load_claude_code_settings()
+
+
+def _third_party_env() -> dict[str, str]:
+    raw = _settings().get("env", {})
+    if not isinstance(raw, dict):
+        return {}
+    envs: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        name = key.strip()
+        if not name or value is None:
+            continue
+        envs[name] = str(value)
+    return envs
+
+
+def _extra_env_prefix() -> str:
+    envs = _third_party_env()
+    if not envs:
+        return ""
+    parts = [f"{key}={shlex.quote(value)}" for key, value in envs.items()]
+    return " ".join(parts) + " "
+
+
+def _effort_level(agent: str) -> str:
+    profile = _settings().get("effortLevel")
+    if isinstance(profile, str) and profile.strip().lower() in _EFFORT_LEVELS:
+        return profile.strip().lower()
+    try:
+        cfg = config.agent_config(agent)
+    except KeyError:
+        return ""
+    for key in ("effort", "thinking"):
+        val = cfg.get(key)
+        if isinstance(val, str) and val.strip().lower() in _EFFORT_LEVELS:
+            return val.strip().lower()
+    team_default = config.load_team().get("default_thinking")
+    if isinstance(team_default, str) and team_default.strip().lower() in _EFFORT_LEVELS:
+        return team_default.strip().lower()
+    return ""
+
+
 class ClaudeCodeAdapter(CliAdapter):
     def spawn_cmd(self, agent: str, model: str) -> str:
         # Full silent-launch recipe — bypass-permissions confirm, theme picker, etc.
@@ -84,15 +132,19 @@ class ClaudeCodeAdapter(CliAdapter):
         #   ~/.claude/.credentials.json (lifecycle just refreshed it from
         #   keychain) and threading it through env keeps claude in
         #   file-only auth mode for the lifetime of the pane.
-        oauth_token = _read_oauth_token(agent)
+        proxy_env_prefix = _extra_env_prefix()
+        oauth_token = None if _third_party_env().get("ANTHROPIC_AUTH_TOKEN") else _read_oauth_token(agent)
         token_prefix = (f"CLAUDE_CODE_OAUTH_TOKEN={shlex.quote(oauth_token)} "
                         if oauth_token else "")
+        effort = _effort_level(agent)
+        effort_arg = f" --effort {shlex.quote(effort)}" if effort else ""
         return (
+            f"{proxy_env_prefix}"
             f"HOME={agent_home(agent)} "
             f"{token_prefix}"
             f"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 DISABLE_AUTOUPDATER=1 "
             f"IS_SANDBOX=1 claude --dangerously-skip-permissions "
-            f"--model {model} --name {agent}"
+            f"--model {shlex.quote(model)}{effort_arg} --name {shlex.quote(agent)}"
         )
 
     def ready_markers(self) -> list[str]:

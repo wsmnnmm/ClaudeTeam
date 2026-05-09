@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,7 +298,7 @@ def _claudeteam_spec(name: str, pid_file: Path, *,
         name=name,
         pid_file=pid_file,
         expected_cmdline="claudeteam",
-        spawn_cmd=["claudeteam", name],
+        spawn_cmd=[sys.executable, "-m", "claudeteam.cli", name],
         orphan_markers=orphan_markers,
         log_file=log_file,
     )

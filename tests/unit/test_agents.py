@@ -1,6 +1,7 @@
 """Tests for the CLI adapter registry + each adapter's spawn / markers contract."""
 from __future__ import annotations
 
+from helpers import isolated_env
 from claudeteam.agents import get_adapter, known_clis
 from claudeteam.agents.base import CliAdapter
 from claudeteam.agents.claude_code import ClaudeCodeAdapter
@@ -84,6 +85,45 @@ def test_claude_code_spawn_is_dangerously_skip_permissions_with_model():
     assert "--model sonnet-4-6" in cmd
     assert "--name worker_cc" in cmd
     assert "IS_SANDBOX=1" in cmd
+
+
+def test_claude_code_spawn_reads_project_local_ccswitch_settings():
+    team = {
+        "default_thinking": "medium",
+        "agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}},
+    }
+    with isolated_env(team=team) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-test","ANTHROPIC_BASE_URL":"https://proxy.example"},'
+            '"effortLevel":"max"}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet")
+    assert "ANTHROPIC_AUTH_TOKEN=sk-test" in cmd
+    assert "ANTHROPIC_BASE_URL=https://proxy.example" in cmd
+    assert "--effort max" in cmd
+
+
+def test_claude_code_spawn_skips_oauth_when_third_party_token_present():
+    team = {"agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}}}
+    with isolated_env(team=team) as tmp:
+        home = tmp / "state" / "agent-home" / "worker_cc" / ".claude"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".credentials.json").write_text(
+            '{"claudeAiOauth":{"accessToken":"official-token"}}',
+            encoding="utf-8",
+        )
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet")
+    assert "ANTHROPIC_AUTH_TOKEN=sk-third-party" in cmd
+    assert "CLAUDE_CODE_OAUTH_TOKEN=" not in cmd
 
 
 def test_codex_spawn_passes_openai_model_through():
