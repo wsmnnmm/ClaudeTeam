@@ -1,4 +1,8 @@
 <p align="center">
+  <b>English</b> · <a href="README_zh.md">简体中文</a>
+</p>
+
+<p align="center">
   <img src="docs/media/hero.png" alt="ClaudeTeam — Dynamic AI Team Orchestration" width="880" />
 </p>
 
