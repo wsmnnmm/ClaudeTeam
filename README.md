@@ -45,23 +45,16 @@
 
 ## What it does
 
-```
-You (Feishu group chat)
-  ↕  WebSocket
-Router (long-poll subscribe → classify → deliver)
-  ↕
-┌──────────┬──────────┬──────────┐
-│ manager  │ worker_X │ worker_Y │  ← tmux windows running Claude Code / Codex / Kimi / ...
-│(routes)  │(executes)│(executes)│
-└──────────┴──────────┴──────────┘
-  ↕
-Local store (inbox / status / logs / tasks / durable memory)
-```
+<p align="center">
+  <img src="docs/media/architecture.png" alt="ClaudeTeam architecture: Feishu Router dispatches to a Manager Agent, which hires/fires from a dynamic worker pool of isolated tmux panes (Claude Code, Codex, Kimi, Gemini, Qwen). Watchdog auto-restarts failed processes; shared state in Feishu Bitable + tasks + status board + memory." width="880" />
+</p>
 
-The boss talks to **manager** in the group chat. Manager dispatches work
-to workers, watches their tmux panes, summarises back to the group.
-Workers say-back when they finish. Everything is auditable on disk;
-nothing depends on a remote DB.
+The boss talks to **manager** in the Feishu group chat. Manager dispatches
+work to a **dynamic worker pool** — `/hire` spins up a new agent, `/fire`
+shuts one down — and watches their isolated tmux panes. Each worker has
+its own identity, memory, workspace, and task queue. Watchdog auto-restarts
+failed processes. Workers `say` back when they finish. Everything is
+auditable on disk; nothing depends on a remote DB.
 
 ---
 
