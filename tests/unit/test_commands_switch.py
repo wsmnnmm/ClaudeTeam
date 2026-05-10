@@ -5,7 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from helpers import env_patch, run_cli
+from helpers import env_patch, isolated_env, run_cli
 
 
 def _team_dir(tmp: Path, *, with_team_json: bool = True) -> Path:
@@ -120,3 +120,153 @@ def test_switch_rejects_extra_args():
     rc, _, err = run_cli(["switch", "/tmp", "extra"])
     assert rc == 1
     assert "too many args" in err
+
+
+def test_switch_model_shows_project_local_provider_state():
+    with isolated_env(team={"agents": {"manager": {"model": "sonnet"}}}) as tmp:
+        env_dir = tmp / ".env.local.d"
+        env_dir.mkdir()
+        (env_dir / "claudeteam-provider.env").write_text(
+            "ANTHROPIC_BASE_URL=https://minimax.example\n"
+            "ANTHROPIC_AUTH_TOKEN=sk-test\n"
+            "ANTHROPIC_MODEL=MiniMax-M2.7-highspeed\n"
+            "ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-M2.7-highspeed\n",
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli(["switch", "model"])
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, err
+        assert "provider_env:" in out
+        assert "https://minimax.example" in out
+        assert "requested=sonnet effective=MiniMax-M2.7-highspeed" in out
+
+
+def test_switch_model_writes_project_local_env_and_ccswitch():
+    with isolated_env(team={"agents": {"manager": {"model": "sonnet"}}}) as tmp:
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model",
+                "--base-url", "https://minimax.a7m.com.cn",
+                "--auth-token", "sk-abc",
+                "--model", "MiniMax-M2.7-highspeed",
+                "--effort", "high",
+            ])
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, err
+        env_path = tmp / ".env.local.d" / "claudeteam-provider.env"
+        cc_path = tmp / "state" / "ccswitch.json"
+        assert env_path.exists()
+        assert cc_path.exists()
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "ANTHROPIC_BASE_URL=https://minimax.a7m.com.cn" in env_text
+        assert "ANTHROPIC_AUTH_TOKEN=sk-abc" in env_text
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-M2.7-highspeed" in env_text
+        data = json.loads(cc_path.read_text(encoding="utf-8"))
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://minimax.a7m.com.cn"
+        assert data["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "MiniMax-M2.7-highspeed"
+        assert data["effortLevel"] == "high"
+        assert "project-local model routing updated" in out
+
+
+def test_switch_model_does_not_fake_effort_from_default_model_env():
+    with isolated_env(team={"default_model": "sonnet", "agents": {"manager": {"model": "sonnet"}}}) as tmp:
+        env_dir = tmp / ".env.local.d"
+        env_dir.mkdir()
+        (env_dir / "claudeteam-provider.env").write_text(
+            "ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1\n"
+            "ANTHROPIC_MODEL=qwen-plus\n"
+            "ANTHROPIC_DEFAULT_SONNET_MODEL=qwen-plus\n",
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            with env_patch(CLAUDETEAM_DEFAULT_MODEL="sonnet"):
+                rc, out, err = run_cli(["switch", "model"])
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, err
+        assert "effort:       (unset)" in out
+
+
+def test_switch_model_preset_save_and_use():
+    with isolated_env(team={"agents": {"manager": {"model": "sonnet"}}}) as tmp:
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model",
+                "--base-url", "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "--auth-token", "sk-qwen",
+                "--model", "qwen-plus",
+                "--effort", "medium",
+            ])
+            assert rc == 0, err
+            rc, out, err = run_cli(["switch", "model", "preset", "--save", "qwen"])
+            assert rc == 0, err
+            rc, out, err = run_cli(["switch", "model", "preset", "--list"])
+            assert rc == 0, err
+            assert "qwen" in out
+            rc, out, err = run_cli([
+                "switch", "model",
+                "--base-url", "https://minimax.a7m.com.cn",
+                "--auth-token", "sk-mini",
+                "--model", "MiniMax-M2.7-highspeed",
+                "--effort", "high",
+            ])
+            assert rc == 0, err
+            rc, out, err = run_cli(["switch", "model", "preset", "--use", "qwen"])
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, err
+        env_text = (tmp / ".env.local.d" / "claudeteam-provider.env").read_text(encoding="utf-8")
+        assert "ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1" in env_text
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL=qwen-plus" in env_text
+        data = json.loads((tmp / "state" / "ccswitch.json").read_text(encoding="utf-8"))
+        assert data["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen-plus"
+        assert data["effortLevel"] == "medium"
+
+
+def test_switch_model_preset_save_from_flags_without_touching_active_provider():
+    with isolated_env(team={"agents": {"manager": {"model": "sonnet"}}}) as tmp:
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model",
+                "--base-url", "https://minimax.a7m.com.cn",
+                "--auth-token", "sk-mini",
+                "--model", "MiniMax-M2.7-highspeed",
+                "--effort", "high",
+            ])
+            assert rc == 0, err
+            before_env = (tmp / ".env.local.d" / "claudeteam-provider.env").read_text(encoding="utf-8")
+            rc, out, err = run_cli([
+                "switch", "model", "preset",
+                "--save", "qwen-free",
+                "--base-url", "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "--auth-token", "sk-qwen",
+                "--model", "qwen-plus",
+                "--effort", "medium",
+            ])
+            assert rc == 0, err
+            after_env = (tmp / ".env.local.d" / "claudeteam-provider.env").read_text(encoding="utf-8")
+        finally:
+            os.chdir(old_cwd)
+        assert before_env == after_env
+        data = json.loads((tmp / "state" / "provider-presets.json").read_text(encoding="utf-8"))
+        assert data["presets"]["qwen-free"]["ANTHROPIC_BASE_URL"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert data["presets"]["qwen-free"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen-plus"
+        assert data["presets"]["qwen-free"]["effortLevel"] == "medium"

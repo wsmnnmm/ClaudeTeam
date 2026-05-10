@@ -48,6 +48,22 @@ def test_mark_read_sets_flag_and_returns_false_on_miss():
         assert local_facts.mark_read("local_does_not_exist") is False
 
 
+def test_get_message_returns_row_by_local_id():
+    with isolated_env():
+        mid = local_facts.append_message("worker", "manager", "ship it")
+        row = local_facts.get_message(mid)
+        assert row is not None
+        assert row["local_id"] == mid
+        assert row["to"] == "worker"
+        assert row["from"] == "manager"
+        assert row["content"] == "ship it"
+
+
+def test_get_message_returns_none_on_miss():
+    with isolated_env():
+        assert local_facts.get_message("msg_missing") is None
+
+
 def test_status_upsert_then_get():
     with isolated_env():
         assert local_facts.get_status("a") is None

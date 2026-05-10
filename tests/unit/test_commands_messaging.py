@@ -6,7 +6,7 @@ contract end-to-end (without spawning a subprocess).
 from __future__ import annotations
 
 from helpers import isolated_env, run_cli
-from claudeteam.store import local_facts
+from claudeteam.store import local_facts, memory
 
 
 def test_send_writes_inbox_and_prints_local_id():
@@ -26,6 +26,18 @@ def test_send_touches_sender_heartbeat():
     with isolated_env():
         run_cli(["send", "worker", "manager", "do X"])
         assert local_facts.get_heartbeat("manager") is not None
+
+
+def test_send_remembers_assignment_for_both_sides():
+    with isolated_env():
+        run_cli(["send", "worker", "manager", "do X"])
+        worker_memory = memory.list_recent("worker", limit=5)
+        manager_memory = memory.list_recent("manager", limit=5)
+        assert any(r["kind"] == "task_assigned" and "do X" in r["content"]
+                   for r in worker_memory)
+        assert any(r["kind"] == "task_assigned"
+                   and "已派给 worker: do X" in r["content"]
+                   for r in manager_memory)
 
 
 def test_inbox_touches_agent_heartbeat():
@@ -154,6 +166,19 @@ def test_read_marks_then_inbox_drops_it():
         rc, out, _ = run_cli(["inbox", "w"])
         assert rc == 0
         assert "📭 w: no unread messages" in out
+
+
+def test_read_remembers_agent_has_taken_over_task():
+    with isolated_env():
+        run_cli(["send", "worker", "manager", "task A"])
+        local_id = local_facts.list_messages("worker")[0]["local_id"]
+        rc, out, err = run_cli(["read", local_id])
+        assert rc == 0, err
+        assert "marked read" in out
+        rows = memory.list_recent("worker", limit=10)
+        assert any(r["kind"] == "note"
+                   and "已接手来自 manager 的任务: task A" in r["content"]
+                   for r in rows)
 
 
 def test_read_unknown_id_returns_one():

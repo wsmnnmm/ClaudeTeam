@@ -48,6 +48,16 @@ def agent_home(agent: str) -> str:
     return str(paths.state_dir() / "agent-home" / agent)
 
 
+def managed_mcp_config(agent: str) -> str:
+    """Path to the per-agent MCP config snapshot used for pane startup.
+
+    We pass this file explicitly via `--mcp-config` so interactive panes
+    don't climb up to the operator's parent directories, discover a
+    global `~/.mcp.json`, and stop at the first-run approval picker.
+    """
+    return str(Path(agent_home(agent)) / "managed-mcp.json")
+
+
 _DATA_WRITABLE: bool | None = None
 
 
@@ -138,17 +148,20 @@ class ClaudeCodeAdapter(CliAdapter):
                         if oauth_token else "")
         effort = _effort_level(agent)
         effort_arg = f" --effort {shlex.quote(effort)}" if effort else ""
+        mcp_cfg = managed_mcp_config(agent)
         return (
             f"{proxy_env_prefix}"
             f"HOME={agent_home(agent)} "
             f"{token_prefix}"
             f"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 DISABLE_AUTOUPDATER=1 "
-            f"IS_SANDBOX=1 claude --dangerously-skip-permissions "
+            f"IS_SANDBOX=1 claude --permission-mode bypassPermissions "
+            f"--dangerously-skip-permissions --strict-mcp-config "
+            f"--mcp-config {shlex.quote(mcp_cfg)} "
             f"--model {shlex.quote(model)}{effort_arg} --name {shlex.quote(agent)}"
         )
 
     def ready_markers(self) -> list[str]:
-        return ["bypass permissions on", "? for shortcuts"]
+        return ["bypass permissions on", "? for shortcuts", "⏵⏵ bypass permissions on"]
 
     def busy_markers(self) -> list[str]:
         return [

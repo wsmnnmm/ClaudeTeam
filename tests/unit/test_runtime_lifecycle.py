@@ -49,7 +49,7 @@ def test_pane_env_prefix_injects_venv_path_and_pythonpath_when_set():
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             PYTHONPATH="/tmp/src"):
         prefix = pane_env_prefix()
-    assert ".venv/bin:$PATH" in prefix
+    assert "PATH=" in prefix and ":$PATH" in prefix
     assert "PYTHONPATH=/tmp/src" in prefix
 
 
@@ -219,6 +219,33 @@ def test_ensure_claude_agent_home_does_not_raise_when_data_missing():
     lifecycle._ensure_claude_agent_home("worker_cc")
 
 
+def test_merge_runtime_env_into_claude_settings_overrides_host_model_aliases(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        '{\n'
+        '  "env": {\n'
+        '    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",\n'
+        '    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1"\n'
+        '  }\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    with env_patch(
+            ANTHROPIC_BASE_URL="https://minimax.a7m.com.cn",
+            ANTHROPIC_AUTH_TOKEN="sk-test",
+            ANTHROPIC_MODEL="MiniMax-M2.7-highspeed",
+            ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M2.7-highspeed",
+            ANTHROPIC_DEFAULT_SONNET_MODEL="MiniMax-M2.7-highspeed",
+            ANTHROPIC_DEFAULT_OPUS_MODEL="MiniMax-M2.7-highspeed"):
+        lifecycle._merge_runtime_env_into_claude_settings(settings)
+    data = __import__("json").loads(settings.read_text(encoding="utf-8"))
+    env = data["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "https://minimax.a7m.com.cn"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-test"
+    assert env["ANTHROPIC_MODEL"] == "MiniMax-M2.7-highspeed"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "MiniMax-M2.7-highspeed"
+
+
 def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():
     """macOS host: when `security find-generic-password` succeeds, write
     the result as a *regular file* (not a symlink). Earlier impl
@@ -274,3 +301,39 @@ def test_ensure_claude_agent_home_overwrites_stale_creds_each_call():
         # Second call must replace the file with v2's content
         assert "v2-tok" in cred.read_text(), \
             "stale snapshot not overwritten on re-provision"
+
+
+def test_ensure_claude_agent_home_writes_managed_mcp_and_bypass_project_state():
+    team = {"agents": {"manager": {"cli": "claude-code"}}}
+    with isolated_env(team=team) as tmp:
+        home = Path.home()
+        mcp = home / ".mcp.json"
+        claude_json = home / ".claude.json"
+        orig_mcp = mcp.read_text(encoding="utf-8") if mcp.exists() else None
+        orig_claude_json = claude_json.read_text(encoding="utf-8") if claude_json.exists() else None
+        try:
+            mcp.write_text(
+                '{"mcpServers":{"context7":{"command":"context7-mcp","args":["--transport","stdio"]}}}',
+                encoding="utf-8",
+            )
+            claude_json.write_text('{"projects":{}}', encoding="utf-8")
+            lifecycle._ensure_claude_agent_home("manager")
+            from claudeteam.agents.claude_code import agent_home, managed_mcp_config
+            managed = Path(managed_mcp_config("manager"))
+            assert managed.exists()
+            assert "context7" in managed.read_text(encoding="utf-8")
+            agent_cfg = Path(agent_home("manager")) / ".claude.json"
+            data = __import__("json").loads(agent_cfg.read_text(encoding="utf-8"))
+            proj = data["projects"][str(Path.cwd())]
+            assert proj["hasTrustDialogAccepted"] is True
+            assert proj["permissions"]["allowBypass"] is True
+            assert proj["workspaceConfig"]["permissionMode"] == "bypassPermissions"
+        finally:
+            if orig_mcp is None:
+                mcp.unlink(missing_ok=True)
+            else:
+                mcp.write_text(orig_mcp, encoding="utf-8")
+            if orig_claude_json is None:
+                claude_json.unlink(missing_ok=True)
+            else:
+                claude_json.write_text(orig_claude_json, encoding="utf-8")

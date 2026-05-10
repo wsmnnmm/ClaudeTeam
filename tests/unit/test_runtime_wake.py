@@ -1,6 +1,7 @@
 """Tests for runtime/wake.py — lazy wake of dormant CLI panes."""
 from __future__ import annotations
 
+from helpers import attr_patch
 from claudeteam.runtime import wake, tmux
 
 
@@ -8,6 +9,9 @@ class _ClaudeFake:
     """Minimal CliAdapter stand-in for tests."""
     def ready_markers(self):
         return ["bypass permissions on", "? for shortcuts"]
+
+    def process_name(self):
+        return "claude"
 
 
 def _capturer(text_per_call: list[str]):
@@ -191,3 +195,49 @@ def test_wake_returns_false_on_timeout():
         timeout_s=1.0, poll_interval_s=0.1,
     )
     assert ok is False
+
+
+def test_wait_until_ready_accepts_bypass_warning_with_literal_two():
+    target = tmux.Target("S", "manager")
+    capture = _capturer([
+        "WARNING...\n1. No, exit\n2. Yes, I accept\nEnter to confirm · Esc to cancel",
+        "bypass permissions on\n>",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _ClaudeFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == [("S:manager", "2")]
+    assert sent_keys == []
+
+
+def test_wake_bootstraps_claude_home_before_first_lazy_spawn():
+    target = tmux.Target("S", "worker_research")
+    capture = _capturer(["$ ", "bypass permissions on\n>"])
+    spawn_calls = []
+    bootstrapped = []
+    with attr_patch(
+        __import__("claudeteam.runtime.lifecycle", fromlist=["_ensure_claude_agent_home"]),
+        _ensure_claude_agent_home=lambda agent: bootstrapped.append(agent),
+    ):
+        ok = wake.wake_if_dormant(
+            target, _ClaudeFake(), spawn_cmd="claude",
+            capture=capture,
+            spawn=lambda t, c: spawn_calls.append(c) or True,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert bootstrapped == ["worker_research"]
+    assert spawn_calls == ["claude"]

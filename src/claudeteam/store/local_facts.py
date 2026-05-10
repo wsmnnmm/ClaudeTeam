@@ -101,6 +101,22 @@ def mark_read(local_id: str) -> bool:
     return False
 
 
+def get_message(local_id: str) -> dict | None:
+    """Return one inbox row by local_id, else None.
+
+    Used by higher-level commands that need to remember / inspect what a
+    message contained after it was marked read. This is the missing link
+    for restart continuity: once an agent reads a task, the unread inbox
+    view goes empty, so callers need a direct lookup to persist the task
+    into durable memory before it disappears from the normal work queue.
+    """
+    data = read_json(_inbox_file(), {"messages": []})
+    for msg in data.get("messages", []):
+        if msg.get("local_id") == local_id:
+            return dict(msg)
+    return None
+
+
 # ── status ────────────────────────────────────────────────────────────
 
 

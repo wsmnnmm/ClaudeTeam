@@ -22,6 +22,23 @@ from claudeteam.agents.base import CliAdapter
 from claudeteam.runtime import tmux
 
 
+def _is_claude_adapter(adapter: CliAdapter) -> bool:
+    """Best-effort Claude adapter check used by lazy wake bootstrap.
+
+    Production adapters expose both a concrete class name
+    `ClaudeCodeAdapter` and `process_name()=="claude"`. Tests often use
+    light fake adapters that only model part of the interface, so we
+    treat either signal as sufficient instead of pinning the bootstrap
+    path to one exact class name.
+    """
+    if adapter.__class__.__name__ == "ClaudeCodeAdapter":
+        return True
+    try:
+        return bool(getattr(adapter, "process_name", lambda: "")() == "claude")
+    except Exception:
+        return False
+
+
 def _has_marker(target: tmux.Target, markers: list[str],
                 capture: Callable | None) -> bool:
     """Capture the pane (default tmux.capture_pane) and return True iff any
@@ -63,6 +80,12 @@ _FIRST_LAUNCH_DIALOG_MARKERS = (
     "Choose an option:",                      # generic onboarding prompt
 )
 
+_BYPASS_WARNING_MARKERS = (
+    "1. No, exit",
+    "2. Yes, I accept",
+    "Enter to confirm · Esc to cancel",
+)
+
 
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
@@ -82,6 +105,15 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
         text = capture(target, lines=80)
         if any(m in text for m in ready_markers):
             return True
+        if all(m in text for m in _BYPASS_WARNING_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Claude's bypass warning defaults to "1. No, exit".
+                # Sending Enter here kills the pane before it ever reaches
+                # the real prompt. Sending literal "2" accepts and the pane
+                # proceeds straight into the normal prompt.
+                tmux.send_text(target, "2")
+                last_dismiss_at = t
         if any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS):
             t = now()
             if t - last_dismiss_at >= 1.0:
@@ -140,6 +172,17 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
 
     if is_ready(target, adapter, capture=capture):
         return True  # already awake — caller already handled identity at start
+
+    # Lazy Claude panes need the same per-agent HOME/bootstrap files as the
+    # eager `start` path before the first spawn. Without this, the first
+    # on-demand wake can die on missing `managed-mcp.json`, and the wake
+    # nudge then falls through into the raw shell instead of the CLI.
+    if _is_claude_adapter(adapter):
+        try:
+            from claudeteam.runtime import lifecycle
+            lifecycle._ensure_claude_agent_home(target.window)
+        except Exception:
+            pass  # best-effort; spawn path below still reports failure cleanly
 
     if not spawn(target, spawn_cmd):
         return False

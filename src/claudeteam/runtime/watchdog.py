@@ -194,6 +194,7 @@ def respawn(spec: ProcessSpec, *,
         except OSError as e:
             print(f"  ⚠️ {spec.name} log_file open failed ({e}); falling back to DEVNULL")
             log_fh = None
+    stdin = subprocess.DEVNULL
     stdout = log_fh if log_fh is not None else subprocess.DEVNULL
     stderr = log_fh if log_fh is not None else subprocess.DEVNULL
     # PYTHONUNBUFFERED forces line-buffer on the child's sys.stdout when
@@ -206,7 +207,7 @@ def respawn(spec: ProcessSpec, *,
     env["PYTHONUNBUFFERED"] = "1"
     try:
         runner(spec.spawn_cmd, start_new_session=True,
-               stdout=stdout, stderr=stderr, env=env)
+               stdin=stdin, stdout=stdout, stderr=stderr, env=env)
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from claudeteam.agents import adapter_for_agent, identity as _identity
 from claudeteam.runtime import config, lifecycle, tmux, wake
-from claudeteam.store import local_facts
+from claudeteam.store import local_facts, memory
 from claudeteam.util import pop_bool_flag, usage_error
 
 
@@ -39,6 +39,10 @@ def main(argv: list[str]) -> int:
     priority = rest[3] if len(rest) > 3 else "中"
     local_facts.touch_heartbeat(frm)
     local_id = local_facts.append_message(to, frm, message, priority=priority)
+    memory.append(to, "task_assigned", message, ref=local_id)
+    if frm:
+        memory.append(frm, "task_assigned",
+                      f"已派给 {to}: {message}", ref=local_id)
     print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]")
     if no_inject:
         return 0

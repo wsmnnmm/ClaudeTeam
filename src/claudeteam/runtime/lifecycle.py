@@ -26,10 +26,13 @@ project-level `CODEX_HOME`, and the Feishu env into their
 """
 from __future__ import annotations
 
+import json
 import shlex
+import sys
 from pathlib import Path
 
 from claudeteam.agents import get_adapter, identity
+from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
 from claudeteam.runtime import config, paths, tmux, wake
 from claudeteam.store import local_facts
@@ -56,6 +59,12 @@ _PROPAGATED_ENV = (
     "CLAUDETEAM_TEAM_FILE",
     "CLAUDETEAM_RUNTIME_CONFIG",
     "CLAUDETEAM_DEFAULT_MODEL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
     "LARKSUITE_CLI_APP_ID",
@@ -66,14 +75,30 @@ _PROPAGATED_ENV = (
 def _venv_path_prefix() -> str:
     """Short PATH prefix injected into panes.
 
-    Use `<repo>/.venv/bin:$PATH` (literal `$PATH`) instead of expanding
-    the caller's full PATH, which can exceed tmux send-keys practical
-    length on macOS and truncate the spawn command.
+    Prefer the Python interpreter's bin dir (the same environment the
+    running `claudeteam` command came from). This matters when the team
+    is launched FROM a target project directory: `Path.cwd()` then points
+    at the target repo, not the ClaudeTeam repo that actually contains the
+    `claudeteam` executable. Fall back to `<cwd>/.venv/bin` for older
+    setups.
+
+    Keep literal `$PATH` instead of expanding the caller's full PATH,
+    which can exceed tmux send-keys practical length on macOS and truncate
+    the spawn command.
     """
-    venv_bin = Path.cwd() / ".venv" / "bin"
-    if not venv_bin.exists():
-        return ""
-    return f"{venv_bin}:$PATH"
+    candidates = [
+        Path(sys.executable).parent,
+        Path(sys.prefix) / "bin",
+        Path.cwd() / ".venv" / "bin",
+    ]
+    seen: set[Path] = set()
+    for venv_bin in candidates:
+        if venv_bin in seen:
+            continue
+        seen.add(venv_bin)
+        if (venv_bin / "claudeteam").exists():
+            return f"{venv_bin}:$PATH"
+    return ""
 
 
 def _path_readable(p: Path) -> bool:
@@ -87,6 +112,78 @@ def _path_readable(p: Path) -> bool:
         return p.exists()
     except OSError:
         return False
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_CLAUDE_PROVIDER_ENV_KEYS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+)
+
+
+def _merge_runtime_env_into_claude_settings(settings_path: Path) -> None:
+    """Make project/runtime model env override host-global Claude settings.
+
+    Host `~/.claude/settings.json` often pins a third-party Anthropic-
+    compatible backend globally. That is useful for ad-hoc personal use,
+    but in ClaudeTeam we need per-project routing to win. Otherwise a
+    project may export `ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-...` while
+    the copied host settings inside each agent home still force `sonnet`
+    back to some other provider/model (caught 2026-05-10 on product-lab:
+    spawn env said MiniMax, Claude UI still showed `glm-5.1`).
+    """
+    data = _read_json_file(settings_path)
+    if not isinstance(data, dict):
+        data = {}
+    env = data.setdefault("env", {})
+    if not isinstance(env, dict):
+        env = {}
+        data["env"] = env
+    changed = False
+    for key in _CLAUDE_PROVIDER_ENV_KEYS:
+        value = env_str(key)
+        if not value:
+            continue
+        if env.get(key) != value:
+            env[key] = value
+            changed = True
+    if changed:
+        try:
+            settings_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+
+def _managed_mcp_payload() -> dict:
+    """Return the MCP config panes should use for unattended startup.
+
+    Prefer the operator's explicit global `~/.mcp.json` because that's
+    where browser/context7/ocr/mastergo are currently configured on this
+    machine. Fall back to `~/.claude/.mcp.json`, then to an empty config.
+    """
+    candidates = (
+        Path.home() / ".mcp.json",
+        Path.home() / ".claude" / ".mcp.json",
+    )
+    for path in candidates:
+        if _path_readable(path):
+            data = _read_json_file(path)
+            if isinstance(data.get("mcpServers"), dict):
+                return data
+    return {"mcpServers": {}}
 
 
 def _ensure_claude_agent_home(agent: str) -> None:
@@ -174,6 +271,87 @@ def _ensure_claude_agent_home(agent: str) -> None:
             '  }\n'
             '}\n'
         )
+    # Host deploys often keep the effective Claude auth/provider setup
+    # spread across ~/.claude/config.json + settings*.json,
+    # while the per-agent HOME only gets ~/.claude.json copied above.
+    # 2026-05-10 product-lab smoke caught this: per-agent panes showed
+    # "Not logged in · Please run /login" even though the operator's
+    # default HOME could run `claude -p "OK"` successfully. Copy the
+    # small local config files into each agent HOME so provider /
+    # auth-adjacent local state follows the pane.
+    #
+    # Deliberately DO NOT copy ~/.claude/.mcp.json here. Doing so
+    # triggers Claude's interactive "new MCP servers found" approval
+    # dialog inside fresh panes, which deadlocks unattended team bringup.
+    # Project-scoped MCP servers should be enabled explicitly by the
+    # operator or via future trusted-project wiring, not inherited
+    # blindly from the operator's personal HOME.
+    for rel in ("config.json", "settings.local.json"):
+        src = Path.home() / ".claude" / rel
+        dst = claude_dir / rel
+        if _path_readable(src) and not dst.exists():
+            try:
+                dst.write_bytes(src.read_bytes())
+            except OSError:
+                pass
+    # Prefer the operator's real settings.json over the tiny default
+    # stub above when it exists. This carries through provider env,
+    # enabled MCP servers, and other local toggles needed for the same
+    # auth/provider behavior the operator gets in their normal HOME.
+    user_settings = Path.home() / ".claude" / "settings.json"
+    if _path_readable(user_settings):
+        try:
+            settings.write_bytes(user_settings.read_bytes())
+        except OSError:
+            pass
+    _merge_runtime_env_into_claude_settings(settings)
+    managed_mcp = Path(managed_mcp_config(agent))
+    try:
+        managed_mcp.write_text(
+            json.dumps(_managed_mcp_payload(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    # Mirror the operator's "this project path is trusted" flag into the
+    # per-agent HOME. Without this, Claude walks upward, sees a parent
+    # `~/.mcp.json`, and on first interactive pane boot stops at
+    # "new MCP servers found" waiting for manual confirmation. 2026-05-10
+    # product-lab smoke caught exactly that. We don't blindly inherit the
+    # global ~/.mcp.json file; we only stamp the current cwd's trust state
+    # into the copied ~/.claude.json so fresh panes can boot unattended.
+    if _path_readable(claude_json):
+        try:
+            data = json.loads(claude_json.read_text(encoding="utf-8"))
+            projects = data.setdefault("projects", {})
+            project_cfg = projects.setdefault(str(Path.cwd()), {})
+            project_cfg["hasTrustDialogAccepted"] = True
+            # If the operator already approved per-project mcpjson servers in
+            # their own HOME, preserve that exact choice. Otherwise use an
+            # empty approved-list sentinel which suppresses the first-run
+            # chooser while leaving explicit per-project MCP wiring available.
+            src_data = {}
+            if _path_readable(user_claude_json):
+                try:
+                    src_data = json.loads(user_claude_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    src_data = {}
+            src_proj = (src_data.get("projects", {}) or {}).get(str(Path.cwd()), {})
+            project_cfg["enabledMcpjsonServers"] = list(src_proj.get("enabledMcpjsonServers") or [])
+            project_cfg["disabledMcpjsonServers"] = list(src_proj.get("disabledMcpjsonServers") or [])
+            project_cfg.setdefault("mcpContextUris", [])
+            project_cfg.setdefault("mcpServers", {})
+            project_cfg.setdefault("allowedTools", [])
+            project_cfg.setdefault("permissions", {})
+            project_cfg["permissions"]["allowBypass"] = True
+            project_cfg.setdefault("workspaceConfig", {})
+            project_cfg["workspaceConfig"]["permissionMode"] = "bypassPermissions"
+            claude_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
     cred_link = claude_dir / ".credentials.json"
     cred_target = Path("/root/.claude/.credentials.json")
     if _path_readable(cred_target) and not cred_link.exists():

@@ -81,7 +81,9 @@ def test_default_submit_keys_are_enter_variants():
 
 def test_claude_code_spawn_is_dangerously_skip_permissions_with_model():
     cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet-4-6")
-    assert "claude --dangerously-skip-permissions" in cmd
+    assert "claude --permission-mode bypassPermissions --dangerously-skip-permissions" in cmd
+    assert "--strict-mcp-config" in cmd
+    assert "--mcp-config " in cmd
     assert "--model sonnet-4-6" in cmd
     assert "--name worker_cc" in cmd
     assert "IS_SANDBOX=1" in cmd
