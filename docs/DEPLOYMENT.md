@@ -277,6 +277,7 @@ session = "ClaudeTeam"                        # tmux session name
 cli = "claude-code"                           # claude-code | codex-cli | gemini-cli | kimi-code | qwen-code
 role = "团队主管"                             # rendered into identity.md
 model = "opus"
+provider_preset = "cheap-translate"          # optional — per-agent provider preset name
 specialty  = ["调度", "审阅"]                 # optional — manager sees this in dispatch prompt
 tone       = "稳重克制"                       # optional — biases LLM tone
 notes      = "always answer in Chinese"       # optional — free-form prompt addendum

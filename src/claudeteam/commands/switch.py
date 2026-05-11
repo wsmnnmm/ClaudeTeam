@@ -29,7 +29,7 @@ import json
 import shlex
 from pathlib import Path
 
-from claudeteam.runtime import config, paths
+from claudeteam.runtime import config, paths, providers
 from claudeteam.util import (
     atomic_write_text,
     env_str,
@@ -53,26 +53,16 @@ USAGE = (
     "                                      [--auth-token <token>] [--haiku-model <name>]\n"
     "                                      [--sonnet-model <name>] [--opus-model <name>]\n"
     "                                      [--effort <level>]\n"
+    "       claudeteam switch model agent <agent> [--preset <name> | --clear]\n"
     "  no arg          — print the current active team\n"
     "  <team-dir>      — print exports; wrap in `eval \"$(...)\"` to apply\n"
     "  model           — show or update project-local Claude Code model routing"
 )
 
 
-_PROVIDER_ENV_KEYS = (
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-)
+_PROVIDER_ENV_KEYS = providers.PROVIDER_ENV_KEYS
 
-_ALIAS_ENV_KEY = {
-    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-}
+_ALIAS_ENV_KEY = providers.ALIAS_ENV_KEY
 
 _MANAGED_PROVIDER_ENV = "claudeteam-provider.env"
 _PRESETS_FILE = "provider-presets.json"
@@ -84,6 +74,10 @@ def _provider_env_dir() -> Path:
 
 def _presets_path() -> Path:
     return paths.state_file(_PRESETS_FILE)
+
+
+def _agent_overrides_path() -> Path:
+    return providers.agent_overrides_path()
 
 
 def _looks_like_provider_env(path: Path) -> bool:
@@ -360,6 +354,7 @@ def _show_model_state() -> int:
     env_path, env, effort = _load_provider_state()
     print(f"provider_env: {env_path}")
     print(f"ccswitch:     {config.claude_code_settings_file()}")
+    print(f"agent_overrides: {_agent_overrides_path()}")
     print(f"base_url:     {env.get('ANTHROPIC_BASE_URL', '') or '(unset)'}")
     token = env.get("ANTHROPIC_AUTH_TOKEN", "")
     print(f"auth_token:   {'set' if token else '(unset)'}")
@@ -371,14 +366,63 @@ def _show_model_state() -> int:
     print("agents:")
     for agent in config.agent_names():
         requested = config.agent_model(agent)
-        effective = _effective_model(requested, env)
-        print(f"  - {agent}: requested={requested} effective={effective}")
+        preset = providers.provider_preset_name(agent)
+        effective = providers.effective_model_for_agent(agent, requested)
+        suffix = f" provider_preset={preset}" if preset else ""
+        print(f"  - {agent}: requested={requested} effective={effective}{suffix}")
+    return 0
+
+
+def _agent_override_subcommand(rest: list[str]) -> int:
+    if not rest:
+        return error_exit(f"❌ missing agent name\n{USAGE}")
+    agent = rest.pop(0)
+    try:
+        config.agent_config(agent)
+    except KeyError:
+        return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
+    preset = pop_flag(rest, "--preset")
+    clear = pop_bool_flag(rest, "--clear")
+    if preset and clear:
+        return error_exit(f"❌ choose only one of --preset / --clear\n{USAGE}")
+    if (rc := reject_extra_args(rest, USAGE)) is not None:
+        return rc
+
+    overrides = providers.load_agent_overrides()
+    current = overrides.get(agent, {})
+    if not preset and not clear:
+        requested = config.agent_model(agent)
+        effective = providers.effective_model_for_agent(agent, requested)
+        print(f"agent:          {agent}")
+        print(f"requested:      {requested}")
+        print(f"effective:      {effective}")
+        print(f"provider_preset {providers.provider_preset_name(agent) or '(unset)'}")
+        print(f"overrides:      {_agent_overrides_path()}")
+        return 0
+
+    if clear:
+        overrides.pop(agent, None)
+        providers.save_agent_overrides(overrides)
+        print(f"✅ cleared agent override: {agent}")
+        print(f"overrides: {_agent_overrides_path()}")
+        return 0
+
+    if preset not in _load_presets():
+        return error_exit(f"❌ no such preset: {preset}")
+    current["provider_preset"] = preset
+    overrides[agent] = current
+    providers.save_agent_overrides(overrides)
+    print(f"✅ applied agent preset: {agent} -> {preset}")
+    print(f"overrides: {_agent_overrides_path()}")
+    print("hint         run `claudeteam switch model` to verify, then reidentify or restart the team")
     return 0
 
 
 def _apply_model_switch(rest: list[str]) -> int:
     if rest and rest[0] == "preset":
         return _preset_subcommand(rest[1:])
+    if rest and rest[0] == "agent":
+        return _agent_override_subcommand(rest[1:])
     shared_model = pop_flag(rest, "--model")
     base_url = pop_flag(rest, "--base-url")
     auth_token = pop_flag(rest, "--auth-token") or pop_flag(rest, "--api-key")

@@ -128,6 +128,39 @@ def test_claude_code_spawn_skips_oauth_when_third_party_token_present():
     assert "CLAUDE_CODE_OAUTH_TOKEN=" not in cmd
 
 
+def test_claude_code_spawn_prefers_agent_provider_preset_over_global_settings():
+    team = {
+        "agents": {
+            "worker_translate": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-global","ANTHROPIC_BASE_URL":"https://global.example",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"global-sonnet"},"effortLevel":"high"}',
+            encoding="utf-8",
+        )
+        presets = tmp / "state" / "provider-presets.json"
+        presets.write_text(
+            '{"presets":{"cheap-translate":{'
+            '"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cm",'
+            '"ANTHROPIC_MODEL":"minimax-m25",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_translate", "minimax-m25")
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in cmd
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in cmd
+    assert "global.example" not in cmd
+
+
 def test_codex_spawn_passes_openai_model_through():
     cmd = CodexCliAdapter().spawn_cmd("worker_codex", "gpt-5.5")
     assert "codex" in cmd

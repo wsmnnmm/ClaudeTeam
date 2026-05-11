@@ -34,7 +34,7 @@ from pathlib import Path
 from claudeteam.agents import get_adapter, identity
 from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.runtime import config, paths, tmux, wake
+from claudeteam.runtime import config, paths, providers, tmux, wake
 from claudeteam.store import local_facts
 from claudeteam.util import env_str
 
@@ -121,17 +121,8 @@ def _read_json_file(path: Path) -> dict:
         return {}
 
 
-_CLAUDE_PROVIDER_ENV_KEYS = (
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-)
-
-
-def _merge_runtime_env_into_claude_settings(settings_path: Path) -> None:
+def _merge_runtime_env_into_claude_settings(settings_path: Path,
+                                            provider_env: dict[str, str]) -> None:
     """Make project/runtime model env override host-global Claude settings.
 
     Host `~/.claude/settings.json` often pins a third-party Anthropic-
@@ -150,8 +141,8 @@ def _merge_runtime_env_into_claude_settings(settings_path: Path) -> None:
         env = {}
         data["env"] = env
     changed = False
-    for key in _CLAUDE_PROVIDER_ENV_KEYS:
-        value = env_str(key)
+    for key in providers.PROVIDER_ENV_KEYS:
+        value = provider_env.get(key, "")
         if not value:
             continue
         if env.get(key) != value:
@@ -304,7 +295,7 @@ def _ensure_claude_agent_home(agent: str) -> None:
             settings.write_bytes(user_settings.read_bytes())
         except OSError:
             pass
-    _merge_runtime_env_into_claude_settings(settings)
+    _merge_runtime_env_into_claude_settings(settings, providers.provider_env_for_agent(agent))
     managed_mcp = Path(managed_mcp_config(agent))
     try:
         managed_mcp.write_text(
@@ -381,7 +372,7 @@ def _ensure_claude_agent_home(agent: str) -> None:
             pass
 
 
-def pane_env_prefix() -> str:
+def pane_env_prefix(agent: str | None = None) -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
     spawned process inherit CLAUDETEAM_STATE_DIR, project-level
     CODEX_HOME, and the Feishu env so worker agents calling
@@ -397,6 +388,9 @@ def pane_env_prefix() -> str:
         val = env_str(var)
         if val:
             parts.append(f"{var}={shlex.quote(val)}")
+    if agent:
+        for key, value in providers.provider_env_for_agent(agent).items():
+            parts.append(f"{key}={shlex.quote(value)}")
     return " ".join(parts)
 
 
@@ -449,9 +443,10 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     # Inline agent_model resolution: per-agent override → env var →
     # team default → "opus". Mirrors `config.agent_model` but uses the
     # already-loaded `team` dict for the default_model fallback.
-    model = (cfg.get("model")
-             or env_str("CLAUDETEAM_DEFAULT_MODEL")
-             or team.get("default_model", "opus"))
+    requested_model = (cfg.get("model")
+                       or env_str("CLAUDETEAM_DEFAULT_MODEL")
+                       or team.get("default_model", "opus"))
+    model = providers.effective_model_for_agent(agent, requested_model)
     # Pass resolved fields to identity.write so its internal render()
     # skips a redundant config.agent_config() fallback. `role`
     # defaulting to `agent` matches render's own fallback so the
@@ -473,7 +468,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
+    cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
     # 60s ready timeout (was 20s): fresh container claude panes go

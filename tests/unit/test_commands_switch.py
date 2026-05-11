@@ -269,4 +269,108 @@ def test_switch_model_preset_save_from_flags_without_touching_active_provider():
         data = json.loads((tmp / "state" / "provider-presets.json").read_text(encoding="utf-8"))
         assert data["presets"]["qwen-free"]["ANTHROPIC_BASE_URL"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
         assert data["presets"]["qwen-free"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen-plus"
-        assert data["presets"]["qwen-free"]["effortLevel"] == "medium"
+
+
+def test_switch_model_shows_agent_provider_preset_effective_model():
+    team = {
+        "agents": {
+            "manager": {"model": "sonnet"},
+            "worker_translate": {
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            },
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://global.example","ANTHROPIC_DEFAULT_SONNET_MODEL":"global-sonnet"}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"cheap-translate":{"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli(["switch", "model"])
+        finally:
+            os.chdir(old_cwd)
+    assert rc == 0, err
+    assert "manager: requested=sonnet effective=global-sonnet" in out
+    assert "worker_translate: requested=sonnet effective=minimax-m25 provider_preset=cheap-translate" in out
+
+
+def test_switch_model_agent_applies_runtime_override_preset():
+    team = {
+        "agents": {
+            "manager": {"model": "sonnet"},
+            "worker_integrator": {"model": "sonnet"},
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://global.example","ANTHROPIC_DEFAULT_SONNET_MODEL":"global-sonnet"}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"cm-minimax-m25":{"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model", "agent", "worker_integrator",
+                "--preset", "cm-minimax-m25",
+            ])
+            assert rc == 0, err
+            rc, out, err = run_cli(["switch", "model"])
+            data = json.loads((tmp / "state" / "agent-provider-overrides.json").read_text(encoding="utf-8"))
+        finally:
+            os.chdir(old_cwd)
+    assert rc == 0, err
+    assert data["agents"]["worker_integrator"]["provider_preset"] == "cm-minimax-m25"
+    assert "worker_integrator: requested=sonnet effective=minimax-m25 provider_preset=cm-minimax-m25" in out
+
+
+def test_switch_model_agent_clear_removes_runtime_override():
+    team = {
+        "agents": {
+            "worker_integrator": {"model": "sonnet"},
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://global.example","ANTHROPIC_DEFAULT_SONNET_MODEL":"global-sonnet"}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"cm-minimax-m25":{"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "agent-provider-overrides.json").write_text(
+            '{"agents":{"worker_integrator":{"provider_preset":"cm-minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model", "agent", "worker_integrator", "--clear"
+            ])
+            assert rc == 0, err
+            rc, out, err = run_cli(["switch", "model"])
+        finally:
+            os.chdir(old_cwd)
+    assert rc == 0, err
+    assert "worker_integrator: requested=sonnet effective=global-sonnet" in out

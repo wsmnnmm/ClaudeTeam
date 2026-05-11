@@ -49,6 +49,8 @@ session = "{session}"
 #   specialty   可选  list of strings, manager 派单时参考
 #   tone        可选  字符串, 渲染进 identity 影响 LLM 输出风格
 #   notes       可选  字符串, 任意 prompt 加料
+#   provider_preset 可选 员工级 provider preset 名, 从 state/provider-presets.json 解析
+#   provider_env 可选  inline env 覆盖, 例如 ANTHROPIC_BASE_URL / AUTH_TOKEN / DEFAULT_*_MODEL
 #   card_color  可选  飞书 v2 色: blue/green/red/yellow/purple/orange/grey
 #   lazy        可选  true=首消息触发起 CLI; 默认 false
 [team.agents.manager]

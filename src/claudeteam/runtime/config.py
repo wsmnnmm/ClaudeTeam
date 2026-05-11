@@ -137,6 +137,22 @@ def agent_model(agent: str) -> str:
             or load_team().get("default_model", "opus"))
 
 
+def agent_provider_preset(agent: str) -> str:
+    """Optional named provider preset for this agent.
+
+    When set in `claudeteam.toml` as:
+
+        [team.agents.worker_x]
+        provider_preset = "cheap-translate"
+
+    runtime/provider routing can give this agent a different
+    base_url/key/model family than the rest of the team.
+    """
+    cfg = agent_config(agent)
+    raw = cfg.get("provider_preset")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 # ── runtime_config.json ──────────────────────────────────────────
 
 

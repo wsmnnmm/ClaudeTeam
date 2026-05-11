@@ -85,6 +85,66 @@ def test_pane_env_prefix_propagates_feishu_app_credentials():
     assert "LARKSUITE_CLI_APP_SECRET=newSecret123" in prefix
 
 
+def test_pane_env_prefix_uses_agent_specific_provider_preset_when_present():
+    team = {
+        "agents": {
+            "worker_translate": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://global.example","ANTHROPIC_AUTH_TOKEN":"sk-global"}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"cheap-translate":{"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cm","ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix("worker_translate")
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in prefix
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in prefix
+    assert "global.example" not in prefix
+
+
+def test_pane_env_prefix_runtime_agent_override_beats_team_config_preset():
+    team = {
+        "agents": {
+            "worker_translate": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://global.example","ANTHROPIC_AUTH_TOKEN":"sk-global"}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"cheap-translate":{"ANTHROPIC_BASE_URL":"https://cheap.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cheap","ANTHROPIC_DEFAULT_SONNET_MODEL":"cheap-sonnet"},'
+            '"cm-minimax-m25":{"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cm","ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        (tmp / "state" / "agent-provider-overrides.json").write_text(
+            '{"agents":{"worker_translate":{"provider_preset":"cm-minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix("worker_translate")
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in prefix
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in prefix
+    assert "cheap.example" not in prefix
+
+
 def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     """shlex.quote should wrap any value containing whitespace; otherwise
     `eval $(...)` in a downstream shell would split on the space."""
@@ -219,31 +279,60 @@ def test_ensure_claude_agent_home_does_not_raise_when_data_missing():
     lifecycle._ensure_claude_agent_home("worker_cc")
 
 
-def test_merge_runtime_env_into_claude_settings_overrides_host_model_aliases(tmp_path):
-    settings = tmp_path / "settings.json"
-    settings.write_text(
-        '{\n'
-        '  "env": {\n'
-        '    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",\n'
-        '    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1"\n'
-        '  }\n'
-        '}\n',
-        encoding="utf-8",
-    )
-    with env_patch(
-            ANTHROPIC_BASE_URL="https://minimax.a7m.com.cn",
-            ANTHROPIC_AUTH_TOKEN="sk-test",
-            ANTHROPIC_MODEL="MiniMax-M2.7-highspeed",
-            ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M2.7-highspeed",
-            ANTHROPIC_DEFAULT_SONNET_MODEL="MiniMax-M2.7-highspeed",
-            ANTHROPIC_DEFAULT_OPUS_MODEL="MiniMax-M2.7-highspeed"):
-        lifecycle._merge_runtime_env_into_claude_settings(settings)
-    data = __import__("json").loads(settings.read_text(encoding="utf-8"))
+def test_merge_runtime_env_into_claude_settings_overrides_host_model_aliases():
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "settings.json"
+        settings.write_text(
+            '{\n'
+            '  "env": {\n'
+            '    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",\n'
+            '    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1"\n'
+            '  }\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        lifecycle._merge_runtime_env_into_claude_settings(
+            settings,
+            {
+                "ANTHROPIC_BASE_URL": "https://minimax.a7m.com.cn",
+                "ANTHROPIC_AUTH_TOKEN": "sk-test",
+                "ANTHROPIC_MODEL": "MiniMax-M2.7-highspeed",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.7-highspeed",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7-highspeed",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.7-highspeed",
+            },
+        )
+        data = json.loads(settings.read_text(encoding="utf-8"))
     env = data["env"]
     assert env["ANTHROPIC_BASE_URL"] == "https://minimax.a7m.com.cn"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-test"
     assert env["ANTHROPIC_MODEL"] == "MiniMax-M2.7-highspeed"
     assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "MiniMax-M2.7-highspeed"
+
+
+def test_merge_runtime_env_into_claude_settings_uses_agent_override_values():
+    import json
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "settings.json"
+        settings.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://global.example"}}\n', encoding="utf-8")
+        lifecycle._merge_runtime_env_into_claude_settings(
+            settings,
+            {
+                "ANTHROPIC_BASE_URL": "https://cm.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-cm",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "minimax-m25",
+            },
+        )
+        data = json.loads(settings.read_text(encoding="utf-8"))
+    env = data["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "https://cm.example/v1"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-cm"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "minimax-m25"
 
 
 def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():

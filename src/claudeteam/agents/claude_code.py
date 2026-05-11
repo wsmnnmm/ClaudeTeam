@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 from claudeteam.runtime import config, paths
+from claudeteam.runtime import providers
 
 from .base import CliAdapter, SPINNER_CHARS
 
@@ -96,8 +97,9 @@ def _third_party_env() -> dict[str, str]:
     return envs
 
 
-def _extra_env_prefix() -> str:
+def _extra_env_prefix(agent: str) -> str:
     envs = _third_party_env()
+    envs.update(providers.provider_env_for_agent(agent))
     if not envs:
         return ""
     parts = [f"{key}={shlex.quote(value)}" for key, value in envs.items()]
@@ -142,8 +144,8 @@ class ClaudeCodeAdapter(CliAdapter):
         #   ~/.claude/.credentials.json (lifecycle just refreshed it from
         #   keychain) and threading it through env keeps claude in
         #   file-only auth mode for the lifetime of the pane.
-        proxy_env_prefix = _extra_env_prefix()
-        oauth_token = None if _third_party_env().get("ANTHROPIC_AUTH_TOKEN") else _read_oauth_token(agent)
+        proxy_env_prefix = _extra_env_prefix(agent)
+        oauth_token = None if providers.provider_env_for_agent(agent).get("ANTHROPIC_AUTH_TOKEN") else _read_oauth_token(agent)
         token_prefix = (f"CLAUDE_CODE_OAUTH_TOKEN={shlex.quote(oauth_token)} "
                         if oauth_token else "")
         effort = _effort_level(agent)
