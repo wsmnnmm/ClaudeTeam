@@ -34,7 +34,12 @@ def _fake_send():
     a `text` field from the card body so existing assertions on
     `call['text']` keep working without rewrites. Send_text is still
     stubbed (no-op) in case some path accidentally falls back."""
-    state = {"calls": [], "result": {"message_id": "om_fake"}}
+    state = {
+        "calls": [],
+        "image_calls": [],
+        "result": {"message_id": "om_fake"},
+        "image_result": {"message_id": "om_fake_image"},
+    }
 
     def fake_card(chat_id, card, *, profile="", as_user=False,
                   lark_run=None):
@@ -66,7 +71,18 @@ def _fake_send():
         # No-op; should not be called post-R169 but keep for safety.
         return state["result"]
 
-    with attr_patch(feishu_chat, send_card=fake_card, send_text=fake_text):
+    def fake_image(chat_id, image, *, profile="", as_user=False, lark_run=None):
+        state["image_calls"].append({
+            "chat_id": chat_id, "image": image, "profile": profile,
+            "as_user": as_user,
+        })
+        return state["image_result"]
+
+    with attr_patch(
+            feishu_chat,
+            send_card=fake_card,
+            send_text=fake_text,
+            send_image=fake_image):
         yield state
 
 
@@ -154,6 +170,47 @@ def test_say_threads_profile():
         assert send["calls"][0]["profile"] == "prod"
 
 
+def test_say_image_only_sends_image_and_logs_locally():
+    with _isolated(), _fake_send() as send:
+        rc, out, _ = run_cli(["say", "manager", "--image", "artifacts/shot.png"])
+        logs = local_facts.list_logs("manager")
+    assert rc == 0
+    assert "image_id=om_fake_image" in out
+    assert send["image_calls"] == [{
+        "chat_id": "oc_test",
+        "image": "artifacts/shot.png",
+        "profile": "",
+        "as_user": False,
+    }]
+    assert send["calls"] == []
+    assert len(logs) == 1
+    assert logs[0]["content"] == "[image] artifacts/shot.png"
+
+
+def test_say_image_and_message_send_both_payloads():
+    with _isolated(), _fake_send() as send:
+        rc, out, _ = run_cli(
+            ["say", "manager", "见图", "--image", "artifacts/shot.png"])
+        logs = local_facts.list_logs("manager")
+    assert rc == 0
+    assert "image_id=om_fake_image" in out
+    assert "message_id=om_fake" in out
+    assert len(send["image_calls"]) == 1
+    assert len(send["calls"]) == 1
+    assert send["calls"][0]["text"] == "[manager] 见图"
+    assert len(logs) == 1
+    assert logs[0]["content"] == "见图\n[image] artifacts/shot.png"
+
+
+def test_say_returns_one_when_image_send_fails():
+    with _isolated(), _fake_send() as send:
+        send["image_result"] = None
+        rc, _, err = run_cli(["say", "manager", "--image", "artifacts/shot.png"])
+    assert rc == 1
+    assert "image send failed" in err.lower()
+    assert send["calls"] == []
+
+
 def test_say_zero_or_one_arg_returns_one():
     rc, _, err = run_cli(["say"])
     assert rc == 1
@@ -169,8 +226,13 @@ def test_say_zero_or_one_arg_returns_one():
 @contextlib.contextmanager
 def _fake_send_card():
     """Replace feishu_chat.send_card alongside send_text."""
-    state = {"text_calls": [], "card_calls": [],
-             "result": {"message_id": "om_fake_card"}}
+    state = {
+        "text_calls": [],
+        "card_calls": [],
+        "image_calls": [],
+        "result": {"message_id": "om_fake_card"},
+        "image_result": {"message_id": "om_fake_image"},
+    }
 
     def fake_text(chat_id, text, **kw):
         state["text_calls"].append({"chat_id": chat_id, "text": text, **kw})
@@ -180,7 +242,15 @@ def _fake_send_card():
         state["card_calls"].append({"chat_id": chat_id, "card": card, **kw})
         return state["result"]
 
-    with attr_patch(feishu_chat, send_text=fake_text, send_card=fake_card):
+    def fake_image(chat_id, image, **kw):
+        state["image_calls"].append({"chat_id": chat_id, "image": image, **kw})
+        return state["image_result"]
+
+    with attr_patch(
+            feishu_chat,
+            send_text=fake_text,
+            send_card=fake_card,
+            send_image=fake_image):
         yield state
 
 
@@ -210,6 +280,16 @@ def test_say_card_for_worker_uses_team_json_color_after_R169():
     card = st["card_calls"][0]["card"]
     assert card["header"]["template"] == "purple"
     assert card["header"]["title"]["content"] == "💎 worker_cc · Claude Code 员工"
+
+
+def test_say_card_escapes_angle_bracket_placeholders_in_body():
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "worker_cc", "填 <server> / <public> / <price_id>"])
+    assert rc == 0
+    body = st["card_calls"][0]["card"]["body"]["elements"][0]["content"]
+    assert "&lt;server&gt;" in body
+    assert "&lt;public&gt;" in body
+    assert "&lt;price_id&gt;" in body
 
 
 def test_say_card_color_reflects_live_toml_edit():

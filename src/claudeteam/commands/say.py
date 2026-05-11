@@ -11,6 +11,7 @@ Exits non-zero if `chat_id` is unset (run setup or set runtime_config.json).
 """
 from __future__ import annotations
 
+import html
 import sys
 from dataclasses import dataclass
 
@@ -22,7 +23,8 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 
 USAGE = (
-    "usage: claudeteam say <agent> <message> "
+    "usage: claudeteam say <agent> [<message>] "
+    "[--image <path-or-image_key>] "
     "[--reply <message_id>] [--as user|bot] [--no-local] "
     "[--to user|manager|worker_<name>]"
 )
@@ -144,10 +146,22 @@ def _agent_card_title(agent: str, cfg: dict) -> str:
     return f"{emoji} {agent} · {role}"
 
 
+def _escape_card_body(text: str) -> str:
+    """Protect Feishu markdown from swallowing angle-bracket placeholders.
+
+    Feishu card markdown can treat `<...>` as markup-ish content, which
+    makes snippets like `<server>` or `<public>` disappear in cards.
+    Escaping only the body keeps the visible text while preserving
+    markdown formatting elsewhere.
+    """
+    return html.escape(text, quote=False)
+
+
 @dataclass(frozen=True)
 class _Args:
     agent: str
-    message: str
+    message: str = ""
+    image: str = ""
     reply_to: str = ""
     as_user: bool = False
     local: bool = True
@@ -168,11 +182,12 @@ def _parse(argv: list[str]) -> _Args | None:
     pop_bool_flag(rest, "--no-card")
     no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
+    image = pop_flag(rest, "--image") or ""
     as_explicit = pop_flag(rest, "--as")
     to_explicit = pop_flag(rest, "--to") or "user"
-    if "--reply" in rest or "--as" in rest or "--to" in rest:
+    if "--reply" in rest or "--as" in rest or "--to" in rest or "--image" in rest:
         return None  # flag present but value missing
-    if len(rest) < 2:
+    if len(rest) < 1:
         return None
     agent = rest[0]
     rest = rest[1:]
@@ -186,11 +201,12 @@ def _parse(argv: list[str]) -> _Args | None:
         else:
             from claudeteam.runtime import tunables
             as_value = str(tunables.tunable("feishu.send_as", "bot"))
-    if not rest:
+    if not rest and not image:
         return None
     return _Args(
         agent=agent,
         message=" ".join(rest),
+        image=image,
         reply_to=reply_to,
         as_user=(as_value == "user"),
         local=not no_local,
@@ -215,8 +231,12 @@ def main(argv: list[str]) -> int:
         # error here should NOT block the chat send (the boss is
         # waiting for the message to land in the group; losing the
         # local audit row is a smaller cost than losing the message).
+        audit_content = args.message
+        if args.image:
+            image_note = f"[image] {args.image}"
+            audit_content = f"{audit_content}\n{image_note}".strip() if audit_content else image_note
         try:
-            local_facts.append_log(args.agent, "say", args.message)
+            local_facts.append_log(args.agent, "say", audit_content)
         except OSError as e:
             print(f"  ⚠️ audit log write failed for {args.agent}: {e}",
                   file=sys.stderr)
@@ -239,7 +259,7 @@ def main(argv: list[str]) -> int:
     # `card_color` is the new field name (more specific than just "color");
     # fall back to legacy "color" so old team.json keeps working.
     cfg_color = agent_cfg.get("card_color") or agent_cfg.get("color")
-    card = simple_card(title, args.message,
+    card = simple_card(title, _escape_card_body(args.message),
                         color=_color_for(args.agent, cfg_color))
 
     # Step 3: chat.publish filter — operator can silence specific
@@ -255,14 +275,32 @@ def main(argv: list[str]) -> int:
         print(f"📝 {args.agent} → silenced by [{key}]=false; logged only")
         return 0
 
-    result = feishu_chat.send_card(
-        chat, card,
-        profile=profile,
-        as_user=args.as_user,
-    )
-    if result is None:
-        return error_exit(f"❌ Feishu send failed for {args.agent}")
+    image_result = None
+    if args.image:
+        image_result = feishu_chat.send_image(
+            chat, args.image,
+            profile=profile,
+            as_user=args.as_user,
+        )
+        if image_result is None:
+            return error_exit(f"❌ Feishu image send failed for {args.agent}")
 
-    msg_id = result.get("message_id", "")
-    print(f"✅ {args.agent} → chat (message_id={msg_id})")
+    result = {}
+    if args.message:
+        result = feishu_chat.send_card(
+            chat, card,
+            profile=profile,
+            as_user=args.as_user,
+        )
+        if result is None:
+            return error_exit(f"❌ Feishu send failed for {args.agent}")
+
+    image_msg_id = image_result.get("message_id", "") if image_result else ""
+    msg_id = result.get("message_id", "") if result else ""
+    if image_msg_id and msg_id:
+        print(f"✅ {args.agent} → chat (image_id={image_msg_id}, message_id={msg_id})")
+    elif image_msg_id:
+        print(f"✅ {args.agent} → chat (image_id={image_msg_id})")
+    else:
+        print(f"✅ {args.agent} → chat (message_id={msg_id})")
     return 0

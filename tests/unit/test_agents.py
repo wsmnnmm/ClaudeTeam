@@ -1,7 +1,7 @@
 """Tests for the CLI adapter registry + each adapter's spawn / markers contract."""
 from __future__ import annotations
 
-from helpers import isolated_env
+from helpers import env_patch, isolated_env
 from claudeteam.agents import get_adapter, known_clis
 from claudeteam.agents.base import CliAdapter
 from claudeteam.agents.claude_code import ClaudeCodeAdapter
@@ -250,3 +250,19 @@ def test_ensure_workdir_trusted_idempotent_when_entry_exists():
         ensure_workdir_trusted(Path("/already/here"), config_path=cfg)
         # File unchanged
         assert cfg.read_text(encoding="utf-8") == original
+
+
+def test_ensure_workdir_trusted_honors_codex_home_env():
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents.codex_cli import ensure_workdir_trusted
+
+    with tempfile.TemporaryDirectory() as tmp:
+        codex_home = Path(tmp) / "codex-home"
+        with env_patch(CODEX_HOME=str(codex_home)):
+            ensure_workdir_trusted(Path("/env/workdir"))
+        cfg = codex_home / "config.toml"
+        assert cfg.exists()
+        text = cfg.read_text(encoding="utf-8")
+        assert '[projects."/env/workdir"]' in text
+        assert 'trust_level = "trusted"' in text

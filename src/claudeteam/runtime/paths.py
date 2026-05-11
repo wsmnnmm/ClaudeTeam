@@ -67,6 +67,21 @@ def watchdog_log_file() -> Path:
     return state_file("watchdog.log")
 
 
+def codex_home_dir() -> Path:
+    """Project-scoped Codex home used by codex-cli workers."""
+    return state_dir() / "codex-home"
+
+
+def codex_config_file() -> Path:
+    """Project-scoped Codex config file."""
+    return codex_home_dir() / "config.toml"
+
+
+def codex_auth_file() -> Path:
+    """Project-scoped Codex auth file."""
+    return codex_home_dir() / "auth.json"
+
+
 def ensure_state_dir() -> Path:
     """Create state_dir if missing and return it. Use when about to write."""
     sd = state_dir()

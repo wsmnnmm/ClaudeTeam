@@ -66,6 +66,24 @@ def send_card(chat_id: str, card: dict, *, profile: str = "", as_user: bool = Fa
     return lark_run(args, profile=profile)
 
 
+def send_image(chat_id: str, image: str, *, profile: str = "", as_user: bool = False,
+               lark_run: Callable = _real_run) -> dict | None:
+    """Send an image message.
+
+    `image` may be either a local file path or an existing Feishu
+    image_key; lark-cli handles both through `--image`.
+    """
+    if not chat_id or not image:
+        return None
+    args = [
+        "im", "+messages-send",
+        "--chat-id", chat_id,
+        "--image", image,
+        *_as(as_user),
+    ]
+    return lark_run(args, profile=profile)
+
+
 def list_recent(chat_id: str, *, page_size: int = 20, profile: str = "",
                 as_user: bool = True, lark_run: Callable = _real_run) -> list[dict]:
     """List recent messages in a chat (newest-first per Feishu API).

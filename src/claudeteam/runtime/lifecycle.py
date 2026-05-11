@@ -36,7 +36,7 @@ from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
 from claudeteam.runtime import config, paths, providers, tmux, wake
 from claudeteam.store import local_facts
-from claudeteam.util import env_str
+from claudeteam.util import env_path, env_str
 
 
 # env vars to propagate from the operator's shell into every spawned pane
@@ -52,7 +52,6 @@ from claudeteam.util import env_str
 # in the spawn-cmd prefix sidesteps the tmux-server-env quirk entirely.
 _PROPAGATED_ENV = (
     "PYTHONPATH",
-    "CODEX_HOME",
     "LARK_CLI_PROFILE",
     "LARK_CLI_NO_PROXY",
     "CLAUDETEAM_LARK_SEND_AS",
@@ -372,6 +371,41 @@ def _ensure_claude_agent_home(agent: str) -> None:
             pass
 
 
+def _ensure_codex_home() -> None:
+    """Materialise the project-scoped Codex home.
+
+    The codex pane runs with `CODEX_HOME=<state_dir>/codex-home` so its
+    trust config, auth, and future state stay inside the project instead
+    of mutating the operator's global `~/.codex`. To keep first-run
+    setup smooth, we bootstrap `auth.json` once from the operator's
+    current Codex home when that file exists.
+    """
+    codex_home = paths.codex_home_dir()
+    try:
+        codex_home.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    dst_auth = paths.codex_auth_file()
+    if _path_readable(dst_auth):
+        return
+    seen: set[Path] = set()
+    candidates = [
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "auth.json",
+        Path.home() / ".codex" / "auth.json",
+    ]
+    for src in candidates:
+        if src in seen:
+            continue
+        seen.add(src)
+        if not _path_readable(src):
+            continue
+        try:
+            dst_auth.write_bytes(src.read_bytes())
+            return
+        except OSError:
+            return
+
+
 def pane_env_prefix(agent: str | None = None) -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
     spawned process inherit CLAUDETEAM_STATE_DIR, project-level
@@ -381,6 +415,7 @@ def pane_env_prefix(agent: str | None = None) -> str:
     than falling back to `~/.codex`.
     """
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
+    parts.append(f"CODEX_HOME={shlex.quote(str(paths.codex_home_dir()))}")
     pane_path = _venv_path_prefix()
     if pane_path:
         parts.append(f"PATH={pane_path}")
@@ -456,7 +491,8 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY
     if cli == "codex-cli":
-        ensure_workdir_trusted(Path.cwd())
+        _ensure_codex_home()
+        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file())
     if cli == "claude-code":
         _ensure_claude_agent_home(agent)
     try:

@@ -142,3 +142,31 @@ def test_send_card_threads_profile_and_identity_through():
     assert spy.calls[0]["kwargs"]["profile"] == "prod"
     args = spy.calls[0]["args"]
     assert args[args.index("--as") + 1] == "user"
+
+
+def test_send_image_passes_chat_id_image_and_bot_identity_by_default():
+    spy = _Spy({"message_id": "om_img"})
+    out = chat.send_image("oc_x", "artifacts/preview.png", lark_run=spy)
+    assert out == {"message_id": "om_img"}
+    args = spy.calls[0]["args"]
+    assert "im" in args and "+messages-send" in args
+    assert "--chat-id" in args and "oc_x" in args
+    assert "--image" in args and "artifacts/preview.png" in args
+    assert args[args.index("--as") + 1] == "bot"
+
+
+def test_send_image_returns_none_when_chat_id_or_image_missing():
+    spy = _Spy({})
+    assert chat.send_image("", "artifacts/preview.png", lark_run=spy) is None
+    assert chat.send_image("oc_x", "", lark_run=spy) is None
+    assert spy.calls == []
+
+
+def test_send_image_threads_profile_and_identity_through():
+    spy = _Spy({"message_id": "om_img"})
+    out = chat.send_image("oc_x", "img_key_123", profile="prod",
+                          as_user=True, lark_run=spy)
+    assert out == {"message_id": "om_img"}
+    assert spy.calls[0]["kwargs"]["profile"] == "prod"
+    args = spy.calls[0]["args"]
+    assert args[args.index("--as") + 1] == "user"

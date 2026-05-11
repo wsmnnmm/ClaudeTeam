@@ -6,6 +6,7 @@ to its configured default.
 """
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 
@@ -20,7 +21,14 @@ def ensure_workdir_trusted(workdir: Path,
 
     `config_path` is injectable for tests.
     """
-    cfg = config_path or (Path.home() / ".codex" / "config.toml")
+    if config_path is not None:
+        cfg = config_path
+    else:
+        codex_home = os.environ.get("CODEX_HOME", "").strip()
+        if codex_home:
+            cfg = Path(codex_home) / "config.toml"
+        else:
+            cfg = Path.home() / ".codex" / "config.toml"
     entry = f'[projects."{workdir}"]\ntrust_level = "trusted"\n'
     if cfg.exists():
         existing = cfg.read_text(encoding="utf-8")

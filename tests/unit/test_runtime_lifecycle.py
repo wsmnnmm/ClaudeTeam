@@ -9,10 +9,11 @@ READY_NO_INIT / SPAWN_FAILED).
 """
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from helpers import attr_patch, env_patch, isolated_env, tmux_patch
-from claudeteam.runtime import lifecycle, tmux, wake
+from claudeteam.runtime import lifecycle, paths, tmux, wake
 from claudeteam.runtime.lifecycle import (
     LAZY, READY, READY_NO_INIT, SPAWN_FAILED, CONFIG_ERROR,
     pane_env_prefix, provision_pane,
@@ -38,11 +39,13 @@ def test_pane_env_prefix_propagates_lark_profile_when_set():
     assert "LARK_CLI_PROFILE=prod" in prefix
 
 
-def test_pane_env_prefix_propagates_codex_home_when_set():
+def test_pane_env_prefix_uses_project_codex_home_even_when_host_env_set():
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             CODEX_HOME="/tmp/project codex"):
         prefix = pane_env_prefix()
-    assert "CODEX_HOME='/tmp/project codex'" in prefix
+        expected = shlex.quote(str(paths.codex_home_dir()))
+    assert f"CODEX_HOME={expected}" in prefix
+    assert "/tmp/project codex" not in prefix
 
 
 def test_pane_env_prefix_injects_venv_path_and_pythonpath_when_set():
@@ -220,6 +223,30 @@ def test_provision_ready_pane_env_prefix_baked_into_spawn_cmd():
     assert "CLAUDETEAM_STATE_DIR=" in cmd
     # Adapter contributed the actual CLI spawn after the env prefix
     assert "claude" in cmd
+
+
+def test_provision_codex_bootstraps_project_auth_and_single_codex_home():
+    team = {"agents": {"worker_codex": {"cli": "codex-cli"}}}
+    spawn_calls = []
+    with isolated_env(team=team) as tmp:
+        host_codex = tmp / "host-codex"
+        host_codex.mkdir(parents=True, exist_ok=True)
+        src_auth = host_codex / "auth.json"
+        src_auth.write_text('{"tokens":{"id_token":"abc"}}', encoding="utf-8")
+        src_auth_text = src_auth.read_text(encoding="utf-8")
+        with env_patch(CODEX_HOME=str(host_codex)), tmux_patch(
+                spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
+                inject=lambda *a, **kw: True), \
+                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            outcome = provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
+            copied_auth = paths.codex_auth_file().read_text(encoding="utf-8")
+            expected_codex_home = shlex.quote(str(paths.codex_home_dir()))
+    assert outcome == READY_NO_INIT
+    assert copied_auth == src_auth_text
+    cmd = spawn_calls[0][1]
+    assert cmd.count("CODEX_HOME=") == 1
+    assert f"CODEX_HOME={expected_codex_home}" in cmd
+    assert str(host_codex) not in cmd
 
 
 # ── provision_pane: READY_NO_INIT ─────────────────────────────────
