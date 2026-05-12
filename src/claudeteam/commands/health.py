@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from claudeteam.agents import get_adapter
 from claudeteam.feishu import catchup
+from claudeteam.feishu import pane_state
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
 from claudeteam.util import (
@@ -152,7 +153,12 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
             # config inside the loop.
             adapter = get_adapter(cli)
             text = tmux.capture_pane(target, lines=80)
-            if any(m in text for m in adapter.ready_markers()):
+            ready = any(m in text for m in adapter.ready_markers())
+            emoji, brief = pane_state.parse(text)
+            if ready and emoji in ("⚠️", "⛔", "🛑"):
+                rep.yellow(
+                    f"  {agent}: pane reachable but {brief} ({cli}){hb_suffix}")
+            elif ready:
                 rep.ok(f"  {agent}: pane ready ({cli}){hb_suffix}")
             elif cfg.get("lazy"):
                 rep.ok(f"  {agent}: lazy pane (CLI starts on first message){hb_suffix}")

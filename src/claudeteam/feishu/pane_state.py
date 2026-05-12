@@ -18,6 +18,11 @@ _BASH_PROMPT_RE = re.compile(r"root@[0-9a-f]+:[^#]*#\s*$")
 _PERM_PROMPT_RE = re.compile(r"❯\s*\d\.")
 _BYPASS_RE = re.compile(r"⏵⏵\s*bypass permissions")
 _WORK_TIME_RE = re.compile(r"\((\d+m\s*\d+s|\d+s)(?:\s*·[^)]*)?\)")
+_API_ERROR_MARKERS = (
+    "api error:",
+    "empty or malformed response",
+    "gateway intercepting the request",
+)
 # Codex idle: status line shows "gpt-5.5 default · ~/path" or
 # "permissions: YOLO" inside the boxed banner.
 _CODEX_IDLE_RE = re.compile(r"\b(?:gpt-\d|o1|o3|o4|codex)\S*\s+default\b")
@@ -33,6 +38,7 @@ def parse(buf: str) -> tuple[str, str]:
       🛑 CLI not running (back to bash)
       ⛔ quota exceeded
       ⚠️ awaiting permission prompt
+      ⚠️ provider/api error
       🗜️ compacting context
       🔄 working / thinking (with elapsed time when available)
       💤 idle (CLI ready, no active task)
@@ -50,6 +56,8 @@ def parse(buf: str) -> tuple[str, str]:
         return ("⛔", "quota exceeded")
     if "do you want to proceed" in low or _PERM_PROMPT_RE.search(buf):
         return ("⚠️", "awaiting permission")
+    if any(marker in low for marker in _API_ERROR_MARKERS):
+        return ("⚠️", "provider/api error")
     if "compacting conversation" in low or "compacting…" in low:
         return ("🗜️", "compacting")
     if "esc to interrupt" in low:

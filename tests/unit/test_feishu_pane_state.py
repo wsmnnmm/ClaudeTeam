@@ -47,6 +47,15 @@ def test_idle_via_bypass_marker():
     assert pane_state.parse(buf) == ("💤", "idle")
 
 
+def test_api_error_beats_bypass_idle_marker():
+    buf = (
+        "API Error: API returned an empty or malformed response (HTTP 200) "
+        "— check for a proxy or gateway intercepting the request\n"
+        "⏵⏵ bypass permissions on (shift+tab to cycle)"
+    )
+    assert pane_state.parse(buf) == ("⚠️", "provider/api error")
+
+
 # ── new in round B: codex / kimi idle classification ──────────────
 
 

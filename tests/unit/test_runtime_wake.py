@@ -222,6 +222,32 @@ def test_wait_until_ready_accepts_bypass_warning_with_literal_two():
     assert sent_keys == []
 
 
+def test_wait_until_ready_accepts_focus_cycled_bypass_warning():
+    target = tmux.Target("S", "manager")
+    capture = _capturer([
+        "Bypass Permissions mode\nYes, I accept\nEnter to confirm\n"
+        "shift+tab to cycle",
+        "bypass permissions on\n>",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _ClaudeFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == []
+    assert sent_keys == [("S:manager", ("BTab", "Enter"))]
+
+
 def test_wake_bootstraps_claude_home_before_first_lazy_spawn():
     target = tmux.Target("S", "worker_research")
     capture = _capturer(["$ ", "bypass permissions on\n>"])

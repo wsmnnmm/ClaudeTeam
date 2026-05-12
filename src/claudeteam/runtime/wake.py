@@ -86,6 +86,12 @@ _BYPASS_WARNING_MARKERS = (
     "Enter to confirm · Esc to cancel",
 )
 
+_BYPASS_FOCUS_WARNING_MARKERS = (
+    "Yes, I accept",
+    "Enter to confirm",
+    "shift+tab to cycle",
+)
+
 
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
@@ -113,6 +119,15 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                 # the real prompt. Sending literal "2" accepts and the pane
                 # proceeds straight into the normal prompt.
                 tmux.send_text(target, "2")
+                last_dismiss_at = t
+        elif all(m in text for m in _BYPASS_FOCUS_WARNING_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Some Claude 2.1.x builds render the bypass confirm as a
+                # focus-cycled button row instead of the numbered menu
+                # above. In that variant, back-tab selects the affirmative
+                # button and Enter confirms it.
+                tmux.send_keys(target, "BTab", "Enter")
                 last_dismiss_at = t
         if any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS):
             t = now()
