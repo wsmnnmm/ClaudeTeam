@@ -74,6 +74,13 @@ def test_codex_idle_via_default_status_line():
     assert pane_state.parse(buf) == ("💤", "idle")
 
 
+def test_codex_idle_via_xhigh_status_line():
+    """Codex with explicit reasoning can show 'gpt-5.5 xhigh · /work'
+    instead of the older 'default' status label."""
+    buf = "\n\n  gpt-5.5 xhigh · /srv/ai/projects/product-lab"
+    assert pane_state.parse(buf) == ("💤", "idle")
+
+
 def test_codex_idle_via_yolo_marker_alone():
     """If only the permissions: YOLO line is visible, also idle."""
     buf = "permissions: YOLO\n"

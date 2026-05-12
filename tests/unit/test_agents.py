@@ -196,6 +196,14 @@ def test_codex_busy_markers_include_boot_phase():
     assert "Booting MCP server" in CodexCliAdapter().busy_markers()
 
 
+def test_codex_ready_markers_include_reasoning_status_line():
+    """Codex may only leave the bottom status line in a compact capture,
+    e.g. 'gpt-5.5 xhigh · /work'. Health/lazy-wake must still see ready."""
+    markers = CodexCliAdapter().ready_markers()
+    assert " xhigh · " in markers
+    assert " default · " in markers
+
+
 def test_kimi_busy_markers_include_using_shell():
     assert "Using Shell" in KimiCodeAdapter().busy_markers()
     assert "Booting" in KimiCodeAdapter().busy_markers()

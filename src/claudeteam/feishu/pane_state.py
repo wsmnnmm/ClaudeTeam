@@ -23,9 +23,12 @@ _API_ERROR_MARKERS = (
     "empty or malformed response",
     "gateway intercepting the request",
 )
-# Codex idle: status line shows "gpt-5.5 default · ~/path" or
+# Codex idle: status line shows "gpt-5.5 xhigh · ~/path" or
 # "permissions: YOLO" inside the boxed banner.
-_CODEX_IDLE_RE = re.compile(r"\b(?:gpt-\d|o1|o3|o4|codex)\S*\s+default\b")
+_CODEX_IDLE_RE = re.compile(
+    r"\b(?:gpt-\d|o1|o3|o4|codex)\S*\s+"
+    r"(?:default|low|medium|high|xhigh|max)\s+·"
+)
 # Kimi idle: ready markers from adapter — "context:" line or "── input"
 _KIMI_IDLE_RE = re.compile(r"context:\s*[\d.]+%|── input|Send /help for help")
 

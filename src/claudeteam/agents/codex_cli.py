@@ -52,9 +52,19 @@ class CodexCliAdapter(CliAdapter):
         return f"CODEX_AGENT={shlex.quote(agent)} codex {quoted}"
 
     def ready_markers(self) -> list[str]:
-        # Banner lines after CLI 0.124+ becomes interactive.  Avoids matching
-        # the spawn-command echo that includes "gpt-5".
-        return ["OpenAI Codex", "permissions: YOLO"]
+        # Banner/status lines after CLI 0.124+ becomes interactive.  The
+        # reasoning-effort markers catch compact captures where only the
+        # bottom status line remains, e.g. "gpt-5.5 xhigh · /work".
+        return [
+            "OpenAI Codex",
+            "permissions: YOLO",
+            " default · ",
+            " low · ",
+            " medium · ",
+            " high · ",
+            " xhigh · ",
+            " max · ",
+        ]
 
     def busy_markers(self) -> list[str]:
         return ["esc to interrupt", "Booting MCP server", *SPINNER_CHARS]

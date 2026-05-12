@@ -36,7 +36,7 @@ from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
 from claudeteam.runtime import config, paths, providers, tmux, wake
 from claudeteam.store import local_facts
-from claudeteam.util import env_path, env_str
+from claudeteam.util import atomic_write_text, env_path, env_str
 
 
 # env vars to propagate from the operator's shell into every spawned pane
@@ -371,21 +371,84 @@ def _ensure_claude_agent_home(agent: str) -> None:
             pass
 
 
-def _ensure_codex_home() -> None:
+def _boolish(value: str, default: bool) -> bool:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _render_codex_config(provider_env: dict[str, str]) -> str:
+    model_provider = provider_env.get("OPENAI_MODEL_PROVIDER", "custom").strip() or "custom"
+    model = provider_env.get("OPENAI_MODEL", "").strip()
+    base_url = provider_env.get("OPENAI_BASE_URL", "").strip()
+    wire_api = provider_env.get("OPENAI_WIRE_API", "responses").strip() or "responses"
+    requires_openai_auth = _boolish(
+        provider_env.get("OPENAI_REQUIRES_OPENAI_AUTH", "true"),
+        True,
+    )
+    disable_response_storage = _boolish(
+        provider_env.get("OPENAI_DISABLE_RESPONSE_STORAGE", "true"),
+        True,
+    )
+    effort = provider_env.get("OPENAI_REASONING_EFFORT", "").strip()
+    lines = [
+        f'model_provider = {json.dumps(model_provider, ensure_ascii=False)}',
+    ]
+    if model:
+        lines.append(f'model = {json.dumps(model, ensure_ascii=False)}')
+    if effort:
+        lines.append(f'model_reasoning_effort = {json.dumps(effort, ensure_ascii=False)}')
+    lines.append(f"disable_response_storage = {'true' if disable_response_storage else 'false'}")
+    lines.append("")
+    lines.append(f"[model_providers.{model_provider}]")
+    lines.append(f'name = {json.dumps(model_provider, ensure_ascii=False)}')
+    lines.append(f'wire_api = {json.dumps(wire_api, ensure_ascii=False)}')
+    lines.append(f"requires_openai_auth = {'true' if requires_openai_auth else 'false'}")
+    if base_url:
+        lines.append(f'base_url = {json.dumps(base_url, ensure_ascii=False)}')
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _ensure_codex_home(agent: str, model: str) -> None:
     """Materialise the project-scoped Codex home.
 
     The codex pane runs with `CODEX_HOME=<state_dir>/codex-home` so its
     trust config, auth, and future state stay inside the project instead
     of mutating the operator's global `~/.codex`. To keep first-run
-    setup smooth, we bootstrap `auth.json` once from the operator's
-    current Codex home when that file exists.
+    setup smooth, we either:
+      1. materialise project-local custom-provider config/auth from the
+         agent's OpenAI-compatible routing, or
+      2. fall back to bootstrapping `auth.json` once from the operator's
+         current Codex home when that file exists.
     """
-    codex_home = paths.codex_home_dir()
+    codex_home = paths.codex_home_dir(agent)
     try:
         codex_home.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
-    dst_auth = paths.codex_auth_file()
+    provider_env = providers.codex_provider_env_for_agent(agent)
+    if model and not provider_env.get("OPENAI_MODEL"):
+        provider_env["OPENAI_MODEL"] = model
+    cfg_text = _render_codex_config(provider_env)
+    try:
+        atomic_write_text(paths.codex_config_file(agent), cfg_text)
+    except OSError:
+        pass
+    dst_auth = paths.codex_auth_file(agent)
+    api_key = provider_env.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        try:
+            atomic_write_text(
+                dst_auth,
+                json.dumps({"OPENAI_API_KEY": api_key}, ensure_ascii=False, indent=2) + "\n",
+            )
+            return
+        except OSError:
+            return
     if _path_readable(dst_auth):
         return
     seen: set[Path] = set()
@@ -415,7 +478,8 @@ def pane_env_prefix(agent: str | None = None) -> str:
     than falling back to `~/.codex`.
     """
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
-    parts.append(f"CODEX_HOME={shlex.quote(str(paths.codex_home_dir()))}")
+    codex_home = paths.codex_home_dir(agent) if agent else paths.codex_home_dir()
+    parts.append(f"CODEX_HOME={shlex.quote(str(codex_home))}")
     pane_path = _venv_path_prefix()
     if pane_path:
         parts.append(f"PATH={pane_path}")
@@ -427,6 +491,23 @@ def pane_env_prefix(agent: str | None = None) -> str:
         for key, value in providers.provider_env_for_agent(agent).items():
             parts.append(f"{key}={shlex.quote(value)}")
     return " ".join(parts)
+
+
+def lazy_spawn_cmd(agent: str) -> str:
+    """Build the exact spawn command used when waking a lazy pane.
+
+    Keep lazy first-message wake behaviour identical to start/hire
+    provisioning so codex-cli workers get their project-local CODEX_HOME
+    pre-created before the CLI boots.
+    """
+    cli = config.agent_cli(agent)
+    requested = config.agent_model(agent)
+    model = providers.effective_model_for_agent(agent, requested)
+    if cli == "codex-cli":
+        _ensure_codex_home(agent, model)
+        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file(agent))
+    adapter = get_adapter(cli)
+    return f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
 
 
 # Outcome strings returned by provision_pane. Callers print/log differently
@@ -491,8 +572,8 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY
     if cli == "codex-cli":
-        _ensure_codex_home()
-        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file())
+        _ensure_codex_home(agent, model)
+        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file(agent))
     if cli == "claude-code":
         _ensure_claude_agent_home(agent)
     try:

@@ -32,7 +32,7 @@ from claudeteam.feishu import chat as _chat
 from claudeteam.feishu import slash as _slash
 from claudeteam.feishu.router import Action, Decision
 from claudeteam.runtime import config, tmux, wake
-from claudeteam.runtime.lifecycle import pane_env_prefix
+from claudeteam.runtime.lifecycle import lazy_spawn_cmd
 from claudeteam.store import local_facts
 
 
@@ -87,9 +87,8 @@ def _build_wake_args(agent: str, adapter) -> dict:
     (lifecycle.pane_env_prefix, identity.init_prompt, status upsert).
     """
     from claudeteam.runtime import tunables
-    spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     return {
-        "spawn_cmd": spawn_cmd,
+        "spawn_cmd": lazy_spawn_cmd(agent),
         "init_msg": _identity.init_prompt(agent),
         "timeout_s": float(tunables.tunable("wake.lazy_wake_timeout_s", 30.0)),
         # Flip status from "待命" to "进行中" so `claudeteam team` reflects

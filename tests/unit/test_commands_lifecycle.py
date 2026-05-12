@@ -158,7 +158,8 @@ def test_start_picks_correct_spawn_cmd_per_cli():
     with _isolated_team(team), _fake_tmux() as fake:
         run_cli(["start"])
         spawn_cmds = {c[1]: c[2] for c in fake["calls"] if c[0] == "spawn_agent"}
-        assert "claude --dangerously-skip-permissions" in spawn_cmds["T:w_cc"]
+        assert "claude" in spawn_cmds["T:w_cc"]
+        assert "--dangerously-skip-permissions" in spawn_cmds["T:w_cc"]
         assert "codex" in spawn_cmds["T:w_codex"]
         assert "--model gpt-5.5" in spawn_cmds["T:w_codex"]
 

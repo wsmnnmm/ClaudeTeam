@@ -9,6 +9,7 @@ READY_NO_INIT / SPAWN_FAILED).
 """
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 
@@ -46,6 +47,14 @@ def test_pane_env_prefix_uses_project_codex_home_even_when_host_env_set():
         expected = shlex.quote(str(paths.codex_home_dir()))
     assert f"CODEX_HOME={expected}" in prefix
     assert "/tmp/project codex" not in prefix
+
+
+def test_pane_env_prefix_uses_agent_specific_codex_home_for_codex_agent():
+    team = {"agents": {"worker_codex": {"cli": "codex-cli", "model": "gpt-5.5"}}}
+    with isolated_env(team=team):
+        prefix = pane_env_prefix("worker_codex")
+        expected = shlex.quote(str(paths.codex_home_dir("worker_codex")))
+    assert f"CODEX_HOME={expected}" in prefix
 
 
 def test_pane_env_prefix_injects_venv_path_and_pythonpath_when_set():
@@ -239,14 +248,53 @@ def test_provision_codex_bootstraps_project_auth_and_single_codex_home():
                 inject=lambda *a, **kw: True), \
                 attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
             outcome = provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
-            copied_auth = paths.codex_auth_file().read_text(encoding="utf-8")
-            expected_codex_home = shlex.quote(str(paths.codex_home_dir()))
+            copied_auth = paths.codex_auth_file("worker_codex").read_text(encoding="utf-8")
+            expected_codex_home = shlex.quote(str(paths.codex_home_dir("worker_codex")))
     assert outcome == READY_NO_INIT
     assert copied_auth == src_auth_text
     cmd = spawn_calls[0][1]
     assert cmd.count("CODEX_HOME=") == 1
     assert f"CODEX_HOME={expected_codex_home}" in cmd
     assert str(host_codex) not in cmd
+
+
+def test_provision_codex_writes_project_local_custom_provider_config():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "flux-codex-dev",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "flux-codex-dev": {
+                        "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-flux-123",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex",
+                    }
+                }
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with tmux_patch(
+                spawn_agent=lambda *a, **kw: True,
+                inject=lambda *a, **kw: True), \
+                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            outcome = provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
+        auth = json.loads(paths.codex_auth_file("worker_codex").read_text(encoding="utf-8"))
+        cfg = paths.codex_config_file("worker_codex").read_text(encoding="utf-8")
+    assert outcome == READY_NO_INIT
+    assert auth == {"OPENAI_API_KEY": "sk-flux-123"}
+    assert 'model_provider = "custom"' in cfg
+    assert 'model = "gpt-5.5"' in cfg
+    assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
 
 
 # ── provision_pane: READY_NO_INIT ─────────────────────────────────

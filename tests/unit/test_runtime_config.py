@@ -6,7 +6,7 @@ from helpers import env_patch, isolated_env
 from claudeteam.agents import adapter_for_agent
 from claudeteam.agents.codex_cli import CodexCliAdapter
 from claudeteam.agents.kimi_code import KimiCodeAdapter
-from claudeteam.runtime import config
+from claudeteam.runtime import config, providers
 
 
 def _team_env(team_data, runtime_data=None):
@@ -79,6 +79,40 @@ def test_agent_cli_respects_explicit_value():
     team = {"agents": {"a": {"cli": "codex-cli"}}}
     with _team_env(team):
         assert config.agent_cli("a") == "codex-cli"
+
+
+def test_codex_provider_env_derives_openai_fields_from_agent_preset():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "flux-codex-dev",
+            }
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "flux-codex-dev": {
+      "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+      "ANTHROPIC_AUTH_TOKEN": "sk-flux-123",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        env = providers.codex_provider_env_for_agent("worker_codex")
+    assert env["OPENAI_BASE_URL"] == "https://api.fluxincode.com/v1"
+    assert env["OPENAI_API_KEY"] == "sk-flux-123"
+    assert env["OPENAI_MODEL"] == "gpt-5.5"
+    assert env["OPENAI_MODEL_PROVIDER"] == "custom"
 
 
 # ── model resolution chain ──────────────────────────────────────

@@ -1,4 +1,4 @@
-"""Provider routing for Anthropic-compatible backends.
+"""Provider routing for project-local model backends.
 
 ClaudeTeam already supports a project-local "current provider" via
 `state/ccswitch.json` + `state/provider-presets.json`. This module adds
@@ -24,7 +24,7 @@ from claudeteam.runtime import config, paths
 from claudeteam.util import write_json
 
 
-PROVIDER_ENV_KEYS = (
+ANTHROPIC_PROVIDER_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_MODEL",
@@ -32,6 +32,19 @@ PROVIDER_ENV_KEYS = (
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
 )
+
+OPENAI_PROVIDER_ENV_KEYS = (
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENAI_MODEL_PROVIDER",
+    "OPENAI_WIRE_API",
+    "OPENAI_REQUIRES_OPENAI_AUTH",
+    "OPENAI_DISABLE_RESPONSE_STORAGE",
+    "OPENAI_REASONING_EFFORT",
+)
+
+PROVIDER_ENV_KEYS = ANTHROPIC_PROVIDER_ENV_KEYS + OPENAI_PROVIDER_ENV_KEYS
 
 ALIAS_ENV_KEY = {
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -230,3 +243,36 @@ def effective_model_for_agent(agent: str, requested_model: str | None = None) ->
         if env.get(alias_key):
             return env[alias_key]
     return requested
+
+
+def codex_provider_env_for_agent(agent: str) -> dict[str, str]:
+    """Return the OpenAI-compatible provider env Codex should use.
+
+    Codex workers prefer explicit OPENAI_* settings. If an agent only has
+    Anthropic-style preset data but the target model itself is OpenAI-native,
+    derive an equivalent OPENAI-compatible payload from that preset.
+    """
+    env = provider_env_for_agent(agent)
+    out: dict[str, str] = {}
+    for key in OPENAI_PROVIDER_ENV_KEYS:
+        value = env.get(key, "")
+        if value:
+            out[key] = value
+
+    effective_model = effective_model_for_agent(agent)
+    if "OPENAI_MODEL" not in out and effective_model:
+        out["OPENAI_MODEL"] = effective_model
+
+    anthropic_base = env.get("ANTHROPIC_BASE_URL", "")
+    anthropic_token = env.get("ANTHROPIC_AUTH_TOKEN", "")
+    if "OPENAI_BASE_URL" not in out and anthropic_base:
+        out["OPENAI_BASE_URL"] = anthropic_base
+    if "OPENAI_API_KEY" not in out and anthropic_token:
+        out["OPENAI_API_KEY"] = anthropic_token
+
+    out.setdefault("OPENAI_MODEL_PROVIDER", "custom")
+    out.setdefault("OPENAI_WIRE_API", "responses")
+    out.setdefault("OPENAI_REQUIRES_OPENAI_AUTH", "true")
+    if "OPENAI_DISABLE_RESPONSE_STORAGE" not in out:
+        out["OPENAI_DISABLE_RESPONSE_STORAGE"] = "true"
+    return out

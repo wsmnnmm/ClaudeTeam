@@ -67,19 +67,26 @@ def watchdog_log_file() -> Path:
     return state_file("watchdog.log")
 
 
-def codex_home_dir() -> Path:
-    """Project-scoped Codex home used by codex-cli workers."""
+def codex_home_dir(agent: str | None = None) -> Path:
+    """Project-scoped Codex home used by codex-cli workers.
+
+    When multiple codex agents run in the same team, each gets its own
+    isolated Codex home so provider config, auth and reasoning effort do
+    not overwrite each other.
+    """
+    if agent:
+        return state_dir() / "codex-home" / agent
     return state_dir() / "codex-home"
 
 
-def codex_config_file() -> Path:
+def codex_config_file(agent: str | None = None) -> Path:
     """Project-scoped Codex config file."""
-    return codex_home_dir() / "config.toml"
+    return codex_home_dir(agent) / "config.toml"
 
 
-def codex_auth_file() -> Path:
+def codex_auth_file(agent: str | None = None) -> Path:
     """Project-scoped Codex auth file."""
-    return codex_home_dir() / "auth.json"
+    return codex_home_dir(agent) / "auth.json"
 
 
 def ensure_state_dir() -> Path:

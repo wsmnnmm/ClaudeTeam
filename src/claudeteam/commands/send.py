@@ -72,11 +72,9 @@ def main(argv: list[str]) -> int:
         cfg = config.agent_config(to) if to in config.agent_names() else {}
         if cfg.get("lazy") and not wake.is_ready(target, adapter):
             from claudeteam.runtime import tunables
-            spawn_cmd = (f"{lifecycle.pane_env_prefix()} "
-                         f"{adapter.spawn_cmd(to, config.agent_model(to))}")
             wake.wake_if_dormant(
                 target, adapter,
-                spawn_cmd=spawn_cmd,
+                spawn_cmd=lifecycle.lazy_spawn_cmd(to),
                 init_msg=_identity.init_prompt(to),
                 timeout_s=float(tunables.tunable("wake.lazy_wake_timeout_s", 30.0)),
                 on_woken=lambda: local_facts.upsert_status(

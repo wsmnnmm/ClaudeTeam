@@ -5,7 +5,10 @@ contract end-to-end (without spawning a subprocess).
 """
 from __future__ import annotations
 
+import json
+
 from helpers import isolated_env, run_cli
+from claudeteam.runtime import paths
 from claudeteam.store import local_facts, memory
 
 
@@ -128,12 +131,58 @@ def test_send_calls_wake_only_for_lazy_agent():
                             has_window=lambda *a, **kw: True,
                             inject=lambda *a, **kw: None):
                 with attr_patch(lifecycle,
-                                pane_env_prefix=lambda: "X=Y"):
+                                lazy_spawn_cmd=lambda agent: f"X=Y fake {agent}"):
                     rc, _, _ = run_cli(
                         ["send", "worker_lazy", "manager", "hi"])
     assert rc == 0
     assert calls["is_ready"] == 1
     assert calls["wake_if_dormant"] == 1
+
+
+def test_send_lazy_codex_bootstraps_project_codex_home_before_wake():
+    from helpers import attr_patch
+    from claudeteam.runtime import wake, tmux
+
+    team = {"agents": {"worker_codex": {
+        "cli": "codex-cli",
+        "model": "gpt-5.5",
+        "provider_preset": "flux-codex-dev",
+        "lazy": True,
+    }}}
+    wake_calls: list[str] = []
+
+    def fake_wake(*_a, spawn_cmd=None, **_kw):
+        wake_calls.append(spawn_cmd or "")
+        return True
+
+    with isolated_env(team=team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "flux-codex-dev": {
+                        "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-flux-123",
+                    }
+                }
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with attr_patch(wake, is_ready=lambda *a, **kw: False,
+                        wake_if_dormant=fake_wake):
+            with attr_patch(tmux,
+                            has_window=lambda *a, **kw: True,
+                            inject=lambda *a, **kw: None):
+                rc, _, _ = run_cli(
+                    ["send", "worker_codex", "manager", "hi"])
+        auth = json.loads(paths.codex_auth_file("worker_codex").read_text(encoding="utf-8"))
+        cfg = paths.codex_config_file("worker_codex").read_text(encoding="utf-8")
+    assert rc == 0
+    assert wake_calls
+    assert "CODEX_HOME=" in wake_calls[0]
+    assert auth == {"OPENAI_API_KEY": "sk-flux-123"}
+    assert 'model = "gpt-5.5"' in cfg
 
 
 def test_inbox_lists_unread_with_local_id_and_returns_zero():

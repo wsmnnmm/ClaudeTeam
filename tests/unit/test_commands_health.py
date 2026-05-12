@@ -119,6 +119,22 @@ def test_health_warns_when_ready_pane_contains_provider_error():
         assert "pane reachable but" in out
 
 
+def test_health_treats_codex_xhigh_status_line_as_ready():
+    team = {"session": "S", "agents": {"manager": {"cli": "codex-cli"}}}
+
+    def capture_pane(target, lines=80):
+        return "\n\n  gpt-5.5 xhigh · /srv/ai/projects/product-lab"
+
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), tmux_patch(
+            has_session=lambda s: True,
+            has_window=lambda target: target.window == "manager",
+            capture_pane=capture_pane):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "manager: pane ready (codex-cli)" in out
+        assert "CLI not ready yet" not in out
+
+
 def test_health_lazy_pane_without_marker_is_green():
     """A pane marked lazy in team.json is expected to have no ready marker
     until first message. Don't yellow-flag the operator over expected state."""
