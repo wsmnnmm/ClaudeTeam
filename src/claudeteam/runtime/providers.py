@@ -275,4 +275,12 @@ def codex_provider_env_for_agent(agent: str) -> dict[str, str]:
     out.setdefault("OPENAI_REQUIRES_OPENAI_AUTH", "true")
     if "OPENAI_DISABLE_RESPONSE_STORAGE" not in out:
         out["OPENAI_DISABLE_RESPONSE_STORAGE"] = "true"
+    if "OPENAI_REASONING_EFFORT" not in out:
+        try:
+            cfg = config.agent_config(agent)
+        except KeyError:
+            cfg = {}
+        thinking = str(cfg.get("thinking", "")).strip().lower()
+        if thinking in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+            out["OPENAI_REASONING_EFFORT"] = thinking
     return out

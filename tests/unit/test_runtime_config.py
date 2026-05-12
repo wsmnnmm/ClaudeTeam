@@ -115,6 +115,21 @@ def test_codex_provider_env_derives_openai_fields_from_agent_preset():
     assert env["OPENAI_MODEL_PROVIDER"] == "custom"
 
 
+def test_codex_provider_env_maps_agent_thinking_to_reasoning_effort():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "thinking": "xhigh",
+            }
+        }
+    }
+    with _team_env(team):
+        env = providers.codex_provider_env_for_agent("worker_codex")
+    assert env["OPENAI_REASONING_EFFORT"] == "xhigh"
+
+
 # ── model resolution chain ──────────────────────────────────────
 
 
