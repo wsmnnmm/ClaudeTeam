@@ -297,6 +297,41 @@ def test_provision_codex_writes_project_local_custom_provider_config():
     assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
 
 
+def test_provision_codex_copies_shared_mcp_sections_to_agent_home():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        shared_cfg = paths.codex_config_file()
+        shared_cfg.parent.mkdir(parents=True, exist_ok=True)
+        shared_cfg.write_text(
+            '[projects."/work"]\ntrust_level = "trusted"\n\n'
+            '[mcp_servers.context7]\n'
+            'command = "npx"\n'
+            'args = ["-y", "@upstash/context7-mcp"]\n\n'
+            '[mcp_servers.devtools]\n'
+            'command = "npx"\n'
+            'args = ["-y", "chrome-devtools-mcp@latest"]\n',
+            encoding="utf-8",
+        )
+        with tmux_patch(
+                spawn_agent=lambda *a, **kw: True,
+                inject=lambda *a, **kw: True), \
+                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
+        cfg = paths.codex_config_file("worker_codex").read_text(encoding="utf-8")
+
+    assert "[mcp_servers.context7]" in cfg
+    assert "@upstash/context7-mcp" in cfg
+    assert "[mcp_servers.devtools]" in cfg
+    assert "chrome-devtools-mcp@latest" in cfg
+
+
 # ── provision_pane: READY_NO_INIT ─────────────────────────────────
 
 

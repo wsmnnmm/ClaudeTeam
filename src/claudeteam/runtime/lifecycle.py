@@ -413,6 +413,52 @@ def _render_codex_config(provider_env: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _extract_codex_mcp_sections(text: str) -> str:
+    """Return verbatim [mcp_servers.*] TOML sections from a Codex config."""
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if current:
+                blocks.append(current)
+            current = [line] if stripped.startswith("[mcp_servers.") else None
+            continue
+        if current is not None:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    rendered = "\n\n".join("\n".join(block).rstrip() for block in blocks)
+    return rendered.strip()
+
+
+def _codex_mcp_sections(agent: str) -> str:
+    """Find MCP server sections to preserve for an isolated Codex home.
+
+    Older deployments installed MCP servers into the shared project Codex
+    home. Per-agent Codex homes isolate auth/provider config, so we copy
+    those MCP sections forward unless the agent already has its own.
+    """
+    seen: set[Path] = set()
+    candidates = [
+        paths.codex_config_file(agent),
+        paths.codex_config_file(),
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
+        Path.home() / ".codex" / "config.toml",
+    ]
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            sections = _extract_codex_mcp_sections(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if sections:
+            return sections
+    return ""
+
+
 def _ensure_codex_home(agent: str, model: str) -> None:
     """Materialise the project-scoped Codex home.
 
@@ -434,6 +480,9 @@ def _ensure_codex_home(agent: str, model: str) -> None:
     if model and not provider_env.get("OPENAI_MODEL"):
         provider_env["OPENAI_MODEL"] = model
     cfg_text = _render_codex_config(provider_env)
+    mcp_sections = _codex_mcp_sections(agent)
+    if mcp_sections:
+        cfg_text = cfg_text.rstrip() + "\n\n" + mcp_sections + "\n"
     try:
         atomic_write_text(paths.codex_config_file(agent), cfg_text)
     except OSError:
