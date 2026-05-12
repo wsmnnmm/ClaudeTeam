@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-from helpers import isolated_env, tmux_patch
+from helpers import env_patch, isolated_env, tmux_patch
 from claudeteam.feishu.deliver import (
     apply, _compose_inject_text, _wants_manager_summary,
 )
@@ -98,6 +98,87 @@ def test_route_passes_decision_text_into_inbox():
               tmux_inject=lambda *a, **kw: True, session="S")
         rows = local_facts.list_messages("worker")
         assert rows[0]["content"] == "hello world"
+
+
+def test_route_fast_ack_posts_for_boss_message_to_manager():
+    """Optional zero-LLM receipt: boss sees 'queued/working' before a slow
+    manager model finishes thinking."""
+    decision = Decision(
+        action=Action.ROUTE,
+        targets=["manager"],
+        text="来一个全员配置分析",
+        msg_id="om_fast_ack",
+    )
+    sent = []
+
+    def fake_send(chat_id, text, **kw):
+        sent.append({"chat_id": chat_id, "text": text, **kw})
+        return {"message_id": "om_ack"}
+
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true"):
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: True,
+            session="S",
+            chat_id="oc_x",
+            profile="prod",
+            chat_send=fake_send,
+        )
+
+    assert report.fast_ack is True
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == "oc_x"
+    assert "主管队列" in sent[0]["text"]
+    assert sent[0]["profile"] == "prod"
+    assert sent[0]["as_user"] is False
+
+
+def test_route_fast_ack_skips_peer_message_to_manager():
+    decision = Decision(
+        action=Action.ROUTE,
+        targets=["manager"],
+        sender="worker_ops",
+        text="配置报告完成",
+        msg_id="om_worker_card",
+    )
+    sent = []
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true"):
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: True,
+            session="S",
+            chat_id="oc_x",
+            chat_send=lambda *a, **kw: sent.append((a, kw)) or {"message_id": "om_ack"},
+        )
+
+    assert report.fast_ack is False
+    assert sent == []
+
+
+def test_route_fast_ack_skips_stale_catchup_message():
+    decision = Decision(
+        action=Action.ROUTE,
+        targets=["manager"],
+        text="旧消息不补发收到",
+        msg_id="om_old",
+        create_time="1",
+    )
+    sent = []
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true"):
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: True,
+            session="S",
+            chat_id="oc_x",
+            chat_send=lambda *a, **kw: sent.append((a, kw)) or {"message_id": "om_ack"},
+        )
+
+    assert report.fast_ack is False
+    assert report.injected == ["manager"]
+    assert sent == []
 
 
 # ── partial failure ──────────────────────────────────────────────

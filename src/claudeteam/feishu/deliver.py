@@ -23,6 +23,8 @@ without inspecting hand-rolled tuples. Lists in the report:
 """
 from __future__ import annotations
 
+import datetime as _dt
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -44,6 +46,7 @@ class DeliveryReport:
     rate_limited: list[str] = field(default_factory=list)   # inbox kept, inject skipped
     skipped: bool = False                                    # True iff decision was DROP
     slash_reply: str = ""                                    # set when action=SLASH
+    fast_ack: bool = False                                   # boss got an immediate receipt
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,75 @@ _SUMMARY_CUE_TOKENS = (
 def _wants_manager_summary(text: str) -> bool:
     low = text.lower()
     return any(tok.lower() in low for tok in _SUMMARY_CUE_TOKENS)
+
+
+def _message_age_s(create_time: str) -> float | None:
+    raw = str(create_time or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        value = int(raw)
+        sent_at = value / 1000 if value > 10_000_000_000 else value
+        return time.time() - sent_at
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            sent_at = _dt.datetime.strptime(raw, fmt).timestamp()
+            return time.time() - sent_at
+        except ValueError:
+            continue
+    return None
+
+
+def _should_fast_ack(decision: Decision, agent: str) -> bool:
+    """True when a human boss message just entered the manager queue.
+
+    The manager may run a high-reasoning model and take a while to answer.
+    This router-level receipt is deliberately zero-LLM: it only tells the
+    boss the message is queued and being handled.
+    """
+    from claudeteam.runtime import tunables
+
+    if not bool(tunables.tunable("router.fast_ack.enabled", False)):
+        return False
+    if decision.action is not Action.ROUTE:
+        return False
+    if agent != "manager":
+        return False
+    # Human chat messages arrive with sender=""; worker cards routed to
+    # manager have sender=<worker> and should not get boss-facing receipts.
+    if decision.sender:
+        return False
+    if not decision.text.strip():
+        return False
+    max_age_s = float(tunables.tunable("router.fast_ack.max_age_s", 180.0))
+    if max_age_s > 0:
+        age = _message_age_s(decision.create_time)
+        if age is not None and age > max_age_s:
+            return False
+    return True
+
+
+
+def _send_fast_ack(decision: Decision, *, chat_send: Callable | None,
+                   chat_id: str | None, profile: str | None) -> bool:
+    from claudeteam.runtime import tunables
+
+    chat = chat_id if chat_id is not None else config.chat_id()
+    if not chat:
+        return False
+    text = str(tunables.tunable(
+        "router.fast_ack.text",
+        "收到，已进入主管队列，正在处理。",
+    )).strip()
+    if not text:
+        return False
+    prof = profile if profile is not None else config.lark_profile()
+    send_text = chat_send or _chat.send_text
+    try:
+        return send_text(chat, text, profile=prof, as_user=False) is not None
+    except Exception as e:
+        print(f"  ⚠️ fast ack failed for {decision.msg_id}: {e}")
+        return False
 
 
 def _compose_inject_text(agent: str, decision: Decision,
@@ -226,10 +298,19 @@ def apply(decision: Decision, *,
 
     sender = decision.sender or "user"
     report = DeliveryReport()
+    acked = False
     for agent in decision.targets:
         local_id = _write_inbox(agent, sender, decision, deps, report)
         if not local_id:
             continue
+        if not acked and _should_fast_ack(decision, agent):
+            report.fast_ack = _send_fast_ack(
+                decision,
+                chat_send=chat_send,
+                chat_id=chat_id,
+                profile=profile,
+            )
+            acked = True
         outcome = _inject_to_pane(agent, decision, deps, wake_fn,
                                    local_id=local_id)
         getattr(report, outcome).append(agent)
