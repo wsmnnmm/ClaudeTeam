@@ -157,6 +157,64 @@ def _escape_card_body(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _normalize_visible_escapes(text: str) -> str:
+    """Turn shell-visible `\\n` / `\\t` into layout whitespace for chat.
+
+    Many operators and scripts build `claudeteam say "line1\\n- line2"`
+    inside double quotes. The shell keeps those escapes literal, so
+    without normalization Feishu cards show raw `\n` instead of real
+    line breaks.
+
+    Keep the transform intentionally narrow:
+    - decode only `\r\n`, `\n`, `\t`
+    - do not touch other backslash sequences
+    - do not decode path-ish tokens such as `C:\new\test` or `/tmp/\n`
+      where the backslash is more likely literal content than chat
+      formatting.
+    """
+    if "\\" not in text:
+        return text
+
+    def _token_prefix(idx: int) -> str:
+        start = idx
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+        return text[start:idx]
+
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch != "\\" or i + 1 >= len(text):
+            out.append(ch)
+            i += 1
+            continue
+
+        prefix = _token_prefix(i)
+        nxt = text[i + 1]
+        if any(mark in prefix for mark in (":", "/", "\\")):
+            out.append(ch)
+            i += 1
+            continue
+
+        if nxt == "r" and i + 3 < len(text) and text[i + 2] == "\\" and text[i + 3] == "n":
+            out.append("\n")
+            i += 4
+            continue
+        if nxt == "n":
+            out.append("\n")
+            i += 2
+            continue
+        if nxt == "t":
+            out.append("\t")
+            i += 2
+            continue
+
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 @dataclass(frozen=True)
 class _Args:
     agent: str
@@ -218,6 +276,7 @@ def main(argv: list[str]) -> int:
     args = _parse(argv)
     if args is None:
         return usage_error(USAGE)
+    message = _normalize_visible_escapes(args.message)
 
     chat = config.chat_id()
     if not chat:
@@ -231,7 +290,7 @@ def main(argv: list[str]) -> int:
         # error here should NOT block the chat send (the boss is
         # waiting for the message to land in the group; losing the
         # local audit row is a smaller cost than losing the message).
-        audit_content = args.message
+        audit_content = message
         if args.image:
             image_note = f"[image] {args.image}"
             audit_content = f"{audit_content}\n{image_note}".strip() if audit_content else image_note
@@ -259,7 +318,7 @@ def main(argv: list[str]) -> int:
     # `card_color` is the new field name (more specific than just "color");
     # fall back to legacy "color" so old team.json keeps working.
     cfg_color = agent_cfg.get("card_color") or agent_cfg.get("color")
-    card = simple_card(title, _escape_card_body(args.message),
+    card = simple_card(title, _escape_card_body(message),
                         color=_color_for(args.agent, cfg_color))
 
     # Step 3: chat.publish filter — operator can silence specific
@@ -286,7 +345,7 @@ def main(argv: list[str]) -> int:
             return error_exit(f"❌ Feishu image send failed for {args.agent}")
 
     result = {}
-    if args.message:
+    if message:
         result = feishu_chat.send_card(
             chat, card,
             profile=profile,

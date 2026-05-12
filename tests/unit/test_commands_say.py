@@ -292,6 +292,22 @@ def test_say_card_escapes_angle_bracket_placeholders_in_body():
     assert "&lt;price_id&gt;" in body
 
 
+def test_say_normalizes_literal_newlines_and_tabs_in_body():
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "manager", r"汇总：\n- 第一项\n- 第二项\t已完成"])
+    assert rc == 0
+    body = st["card_calls"][0]["card"]["body"]["elements"][0]["content"]
+    assert body == "汇总：\n- 第一项\n- 第二项\t已完成"
+
+
+def test_say_does_not_overdecode_path_like_backslashes():
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli(["say", "worker_cc", r"路径 C:\new\test 和 /tmp/\n/cache 保持原样"])
+    assert rc == 0
+    body = st["card_calls"][0]["card"]["body"]["elements"][0]["content"]
+    assert body == r"路径 C:\new\test 和 /tmp/\n/cache 保持原样"
+
+
 def test_say_card_color_reflects_live_toml_edit():
     """REGRESSION: editing a worker's `card_color` in claudeteam.toml
     should change the very next `say` card without a router restart.
