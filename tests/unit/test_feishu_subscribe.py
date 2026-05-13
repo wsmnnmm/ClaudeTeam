@@ -575,6 +575,36 @@ def test_normalises_plain_post_image_marker_with_downloaded_local_path():
     assert "local_path=/tmp/om_post_plain/image-img_v3_plain.jpg" in text
 
 
+def test_normalises_plain_image_marker_even_when_type_is_text():
+    line = json.dumps({
+        "message_id": "om_plain_text_image",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "text",
+        "content": "screenshot\n[Image: img_v3_text]\nplease check",
+    })
+    calls = []
+
+    def fake_download(message_id, resource_key, resource_type):
+        calls.append((message_id, resource_key, resource_type))
+        return f"/tmp/{message_id}/{resource_type}-{resource_key}.jpg"
+
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        resource_downloader=fake_download,
+    )
+    assert stats.handled == 1
+    assert calls == [("om_plain_text_image", "img_v3_text", "image")]
+    text = applied[0].text
+    assert "screenshot" in text
+    assert "[image: image_key=img_v3_text" in text
+    assert "local_path=/tmp/om_plain_text_image/image-img_v3_text.jpg" in text
+
+
 def test_normalises_post_text_plus_file_message():
     """文件 + 文字混合."""
     line = json.dumps({

@@ -122,14 +122,15 @@ def _extract_text(content, msg_type: str, *,
     try:
         data = json.loads(content) or {}
     except json.JSONDecodeError:
-        # Plain string content (legacy variant)
-        if msg_type == "post":
-            return _post_plain_to_text(
-                content,
-                message_id=message_id,
-                resource_downloader=resource_downloader,
-            )
-        return content
+        # Plain string content (legacy / chat-messages-list variants).
+        # lark-cli may render rich post images as `[Image: img_v3_...]`
+        # even when the event's message_type is missing or reported as
+        # text, so normalize image markers regardless of msg_type.
+        return _post_plain_to_text(
+            content,
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
     if msg_type == "image":
         key = data.get("image_key", "")
         return _media_placeholder(
