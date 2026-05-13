@@ -353,6 +353,34 @@ def test_normalises_image_message_to_placeholder_text():
     assert "[image:" in applied[0].text
 
 
+def test_normalises_image_message_with_downloaded_local_path():
+    line = json.dumps({
+        "message_id": "om_img1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "image",
+        "content": json.dumps({"image_key": "img_v3_xxx"}),
+    })
+    calls = []
+
+    def fake_download(message_id, resource_key, resource_type):
+        calls.append((message_id, resource_key, resource_type))
+        return "/tmp/artifacts/om_img1/image-img_v3_xxx.png"
+
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        resource_downloader=fake_download,
+    )
+    assert stats.handled == 1
+    assert calls == [("om_img1", "img_v3_xxx", "image")]
+    assert "image_key=img_v3_xxx" in applied[0].text
+    assert "local_path=/tmp/artifacts/om_img1/image-img_v3_xxx.png" in applied[0].text
+
+
 def test_normalises_image_message_no_key_falls_back_to_bracket():
     line = json.dumps({
         "message_id": "om_img2",
@@ -483,6 +511,68 @@ def test_normalises_post_text_plus_image_message():
     text = applied[0].text
     assert "看这个 bug" in text
     assert "[image: image_key=img_screenshot]" in text
+
+
+def test_normalises_post_text_plus_image_with_downloaded_local_path():
+    line = json.dumps({
+        "message_id": "om_post2",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": json.dumps({
+            "title": "",
+            "content": [[
+                {"tag": "text", "text": "看这个 bug "},
+                {"tag": "img", "image_key": "img_screenshot"},
+            ]],
+        }),
+    })
+
+    def fake_download(message_id, resource_key, resource_type):
+        return f"/tmp/{message_id}/{resource_type}-{resource_key}.png"
+
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        resource_downloader=fake_download,
+    )
+    assert stats.handled == 1
+    text = applied[0].text
+    assert "看这个 bug" in text
+    assert "local_path=/tmp/om_post2/image-img_screenshot.png" in text
+
+
+def test_normalises_plain_post_image_marker_with_downloaded_local_path():
+    line = json.dumps({
+        "message_id": "om_post_plain",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "post",
+        "content": "看这个\n[Image: img_v3_plain]\n好了",
+    })
+    calls = []
+
+    def fake_download(message_id, resource_key, resource_type):
+        calls.append((message_id, resource_key, resource_type))
+        return f"/tmp/{message_id}/{resource_type}-{resource_key}.jpg"
+
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        resource_downloader=fake_download,
+    )
+    assert stats.handled == 1
+    assert calls == [("om_post_plain", "img_v3_plain", "image")]
+    text = applied[0].text
+    assert "看这个" in text
+    assert "[image: image_key=img_v3_plain" in text
+    assert "local_path=/tmp/om_post_plain/image-img_v3_plain.jpg" in text
 
 
 def test_normalises_post_text_plus_file_message():

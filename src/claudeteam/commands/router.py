@@ -42,6 +42,7 @@ from typing import Callable
 
 from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
+from claudeteam.feishu.media import download_message_resource
 from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import config, paths, pidlock, tunables, wake
 from claudeteam.util import error_exit, maybe_print_help, warn
@@ -396,6 +397,16 @@ def main(argv: list[str]) -> int:
             on_progress=_make_on_progress(last_event_at),
             on_line_received=_bump_subscribe_alive,
             seen_msg_ids=seen,
+            resource_downloader=(
+                lambda message_id, resource_key, resource_type:
+                    download_message_resource(
+                        message_id,
+                        resource_key,
+                        resource_type,
+                        profile=profile,
+                        as_user=False,
+                    )
+            ),
         )
 
         # Catchup: replay anything newer than the cursor before going live
