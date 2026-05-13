@@ -26,7 +26,8 @@ USAGE = (
     "usage: claudeteam say <agent> [<message>] "
     "[--image <path-or-image_key>] "
     "[--reply <message_id>] [--as user|bot] [--no-local] "
-    "[--to user|manager|worker_<name>]"
+    "[--to user|manager|worker_<name>]\n"
+    "       use '-' as <message> to read message body from stdin"
 )
 
 
@@ -272,11 +273,25 @@ def _parse(argv: list[str]) -> _Args | None:
     )
 
 
+def _message_body(raw: str) -> str:
+    """Resolve the user-provided message argument.
+
+    A single '-' follows the common CLI convention: read the actual
+    message body from stdin. This lets agents safely send generated
+    report files with `cat report.md | claudeteam say worker_x - --to user`.
+    """
+    if raw == "-":
+        return sys.stdin.read().strip()
+    return raw
+
+
 def main(argv: list[str]) -> int:
     args = _parse(argv)
     if args is None:
         return usage_error(USAGE)
-    message = _normalize_visible_escapes(args.message)
+    message = _normalize_visible_escapes(_message_body(args.message))
+    if args.message == "-" and not message and not args.image:
+        return error_exit("❌ empty stdin message for `claudeteam say <agent> -`")
 
     chat = config.chat_id()
     if not chat:

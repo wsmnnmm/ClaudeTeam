@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import io
+import sys
 
 from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.feishu import chat as feishu_chat
@@ -104,6 +106,27 @@ def test_say_sends_to_chat_and_logs_locally():
         assert len(logs) == 1
         assert logs[0]["type"] == "say"
         assert logs[0]["content"] == "hello world"
+
+
+def test_say_dash_reads_message_from_stdin():
+    with _isolated(), _fake_send_card() as st, \
+            attr_patch(sys, stdin=io.StringIO("line 1\n- line 2\n")):
+        rc, out, _ = run_cli(["say", "worker_cc", "-", "--to", "user"])
+        logs = local_facts.list_logs("worker_cc")
+    assert rc == 0
+    assert "worker_cc → chat" in out
+    body = st["card_calls"][0]["card"]["body"]["elements"][0]["content"]
+    assert body == "line 1\n- line 2"
+    assert logs[0]["content"] == "line 1\n- line 2"
+
+
+def test_say_dash_empty_stdin_returns_one_without_sending():
+    with _isolated(), _fake_send_card() as st, \
+            attr_patch(sys, stdin=io.StringIO("")):
+        rc, _, err = run_cli(["say", "worker_cc", "-", "--to", "user"])
+    assert rc == 1
+    assert "empty stdin message" in err
+    assert st["card_calls"] == []
 
 
 def test_say_default_identity_is_bot():
