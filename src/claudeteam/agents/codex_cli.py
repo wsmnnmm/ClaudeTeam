@@ -76,4 +76,8 @@ class CodexCliAdapter(CliAdapter):
         return list(MULTILINE_SUBMIT_KEYS)
 
     def rate_limit_markers(self) -> list[str]:
-        return ["rate limit", "429", "RateLimitError", "you exceeded your"]
+        # Codex TUI keeps recent scrollback in-pane; marker-based preflight
+        # can mistake old errors or numeric fragments for a current limit and
+        # silently leave boss messages in inbox. Let Codex receive the prompt
+        # and surface any real rate-limit error itself.
+        return []

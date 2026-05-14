@@ -57,7 +57,7 @@ const fs = require('fs');
 const path = require('path');
 
 const COOKIE_FILE = path.join(__dirname, '.feishu_cookies.json');
-const SCOPES_FILE = path.join(__dirname, 'feishu_scopes.json');
+const SCOPES_FILE = process.env.FEISHU_SCOPES_FILE || path.join(__dirname, 'feishu_scopes.json');
 const STATE_DIR = path.join(__dirname, '.state');
 
 const SCOPES_JSON = fs.readFileSync(SCOPES_FILE, 'utf-8').replace(/\s+/g, ' ').trim();
@@ -292,11 +292,13 @@ async function stage_create_app(page, _ctx, state) {
   }
   await gotoWithRetry(page, 'https://open.feishu.cn/app');
   await page.waitForTimeout(1000);
-  await page.getByRole('button', { name: 'Create Custom App' }).click();
+  await page.getByRole('button', {
+    name: /Create Custom App|创建企业自建应用|创建自建应用|创建应用/,
+  }).click();
   await page.waitForTimeout(800);
   await page.getByRole('textbox', { name: /\/32/ }).fill(state.appName);
   await page.locator('textarea').fill(state.appDescription);
-  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await page.getByRole('button', { name: /^(Create|创建)$/ }).click();
   // Poll URL — Feishu SPA changes location without firing 'load',
   // so page.waitForURL would 10 s-timeout even after navigation.
   const navigated = await pollForUrl(page, '/capability/', 30000);
@@ -326,7 +328,7 @@ async function stage_add_bot(page, _ctx, state) {
   log('Stage 2/7 add-bot: adding Bot capability...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/capability`);
   await page.waitForTimeout(1500);
-  await page.getByRole('button', { name: 'Add' }).first().click();
+  await page.getByRole('button', { name: /Add|添加|添加能力/ }).first().click();
   const navigated = await pollForUrl(page, '/bot', 30000);
   if (!navigated) throw new Error('add-bot: never navigated to bot page');
   log('Bot capability added');
@@ -379,7 +381,9 @@ async function stage_import_scopes(page, _ctx, state) {
   // hadn't reached its final DOM position yet (scrollIntoView fails on
   // a still-mounting element). 5s clears it consistently.
   await page.waitForTimeout(5000);
-  await page.getByRole('button', { name: 'Batch import/export scopes' }).click();
+  await page.getByRole('button', {
+    name: /Batch import\/export scopes|批量导入\/导出权限|批量导入导出权限|批量导入|批量导出/,
+  }).click();
   await page.waitForTimeout(2500);
   const dialog = page.locator('[role="dialog"]').first();
   // force-click view-lines: aria-hidden on the layer makes Playwright's
@@ -407,9 +411,11 @@ async function stage_import_scopes(page, _ctx, state) {
       `(expected thousands). Monaco didn't accept Cmd+V — Feishu UI may ` +
       `have changed; check stage_import_scopes mechanism.`);
   }
-  await page.getByRole('button', { name: 'Next, Review New Scopes' }).click();
+  await page.getByRole('button', {
+    name: /Next, Review New Scopes|下一步|下一步，查看新增权限|审核新增权限/,
+  }).click();
   await page.waitForTimeout(2000);
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('button', { name: /^(Add|添加|确认添加|申请开通)$/ }).click();
   await page.waitForTimeout(3000);
   // Post-import verification: how many of what we paste actually got
   // through Feishu's filter (some sensitive scopes need admin approval
@@ -488,22 +494,31 @@ async function stage_events(page, _ctx, state) {
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/event`);
   await page.waitForTimeout(2000);
 
-  const editBtn = page.locator('text=Subscription mode').first()
-    .locator('..').locator('button').first();
-  await editBtn.click();
+  try {
+    const editBtn = page.getByText(/Subscription mode|订阅方式|订阅模式/).first()
+      .locator('..').locator('button').first();
+    if (await editBtn.isVisible({ timeout: 5000 })) {
+      await editBtn.click();
+      await page.waitForTimeout(1000);
+      await scrollToBottom(page);
+      await page.getByRole('button', { name: /^(Save|保存)$/ }).click();
+      await page.waitForTimeout(1000);
+    }
+  } catch (e) {
+    log('  subscription mode editor not found; assuming persistent connection is already configured');
+  }
+
+  await page.getByRole('button', { name: /Add Events|添加事件|新增事件|添加订阅事件/ }).click();
   await page.waitForTimeout(1000);
-  await scrollToBottom(page);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByPlaceholder(/Search|搜索/).fill('message');
   await page.waitForTimeout(1000);
 
-  await page.getByRole('button', { name: 'Add Events' }).click();
-  await page.waitForTimeout(1000);
-  await page.getByPlaceholder('Search').fill('message');
-  await page.waitForTimeout(1000);
-
-  for (const tabHook of [null, 'User Token-Based Subscription']) {
+  for (const tabHook of [null, /User Token-Based Subscription|User Token|用户 Token|用户身份|用户访问凭证/]) {
     if (tabHook) {
-      await page.getByText(tabHook).click();
+      const tab = page.getByText(tabHook).first();
+      if (await tab.isVisible({ timeout: 3000 })) {
+        await tab.click();
+      }
       await page.waitForTimeout(500);
     }
     const checkboxes = page.getByRole('checkbox');
@@ -515,11 +530,11 @@ async function stage_events(page, _ctx, state) {
     }
   }
 
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('button', { name: /^(Add|添加|确认添加)$/ }).click();
   await page.waitForTimeout(2000);
 
   try {
-    const addScopesBtn = page.getByRole('button', { name: 'Add Scopes' });
+    const addScopesBtn = page.getByRole('button', { name: /Add Scopes|添加权限|添加权限范围/ });
     if (await addScopesBtn.isVisible({ timeout: 3000 })) {
       await addScopesBtn.click();
       await page.waitForTimeout(1000);
@@ -535,22 +550,28 @@ async function stage_callbacks(page, _ctx, state) {
   log('Stage 6/7 callbacks: enabling card.action.trigger...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/event`);
   await page.waitForTimeout(2000);
-  await page.getByText('Callback Configuration').click();
+  await page.getByText(/Callback Configuration|回调配置|回调订阅|卡片回调/).click();
   await page.waitForTimeout(1000);
 
-  const callbackEditBtn = page.locator('text=Subscription mode').first()
-    .locator('..').locator('button').first();
-  await callbackEditBtn.click();
-  await page.waitForTimeout(1000);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(1000);
+  try {
+    const callbackEditBtn = page.getByText(/Subscription mode|订阅方式|订阅模式/).first()
+      .locator('..').locator('button').first();
+    if (await callbackEditBtn.isVisible({ timeout: 5000 })) {
+      await callbackEditBtn.click();
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: /^(Save|保存)$/ }).click();
+      await page.waitForTimeout(1000);
+    }
+  } catch (e) {
+    log('  callback subscription mode editor not found; assuming persistent connection is already configured');
+  }
 
-  await page.getByRole('button', { name: 'Add callback' }).click();
+  await page.getByRole('button', { name: /Add callback|添加回调|新增回调|添加回调事件/ }).click();
   await page.waitForTimeout(1000);
   const cardCheckbox = page.getByRole('checkbox').first();
   await cardCheckbox.check();
   await page.waitForTimeout(300);
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('button', { name: /^(Add|添加|确认添加)$/ }).click();
   await page.waitForTimeout(1000);
   log('Callbacks configured');
 }
@@ -590,18 +611,18 @@ async function stage_publish(page, _ctx, state) {
   log('Stage 7/7 publish: creating version + publishing...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/version`);
   await page.waitForTimeout(2000);
-  await page.getByRole('button', { name: 'Create Version' }).first().click();
+  await page.getByRole('button', { name: /Create Version|创建版本|新建版本/ }).first().click();
   if (!await pollForUrl(page, '/version/create', 30000)) {
     throw new Error('publish: never navigated to version/create');
   }
   await page.waitForTimeout(6000);  // form lazy-renders; 1s isn't enough
   await scrollToBottom(page);
-  const pageSave = page.getByRole('button', { name: 'Save', exact: true });
+  const pageSave = page.getByRole('button', { name: /^(Save|保存)$/ });
   if (await pageSave.isDisabled().catch(() => false)) {
     log('  Save disabled — running data-range reconfigure subroutine');
     // 3a — outer Configure link (Feishu styles it as a button-role with
     // link visual, hence using getByRole('button', { name: 'Configure' }))
-    await page.getByRole('button', { name: 'Configure', exact: true }).first().click();
+    await page.getByRole('button', { name: /^(Configure|配置)$/ }).first().click();
     await page.waitForTimeout(2000);
     // Side dialog opens. There may be multiple unconfigured tabs in the
     // sidebar — Contacts is usually pre-configured, others (e.g.
@@ -611,18 +632,18 @@ async function stage_publish(page, _ctx, state) {
     for (let attempt = 0; attempt < 5; attempt++) {
       const dialog = page.locator('[role="dialog"]').first();
       // Has the right pane shown the "Not configured" red badge?
-      const needsConfig = await dialog.getByText('Not configured', { exact: true })
+      const needsConfig = await dialog.getByText(/Not configured|未配置/)
         .first().isVisible({ timeout: 1000 }).catch(() => false);
       if (!needsConfig) break;
       // Inner Configure → edit mode
-      await dialog.getByRole('button', { name: 'Configure', exact: true }).first()
+      await dialog.getByRole('button', { name: /^(Configure|配置)$/ }).first()
         .click({ timeout: 5000 });
       await page.waitForTimeout(1500);
       // Pick "All" radio (default is Filter, which stays Save-disabled)
-      await dialog.getByText('All', { exact: true }).first().click();
+      await dialog.getByText(/^(All|全部)$/).first().click();
       await page.waitForTimeout(1000);
       // Inner Save
-      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await dialog.getByRole('button', { name: /^(Save|保存)$/ }).click();
       await page.waitForTimeout(2500);
       // If sidebar has another red-dotted tab, click it; otherwise the
       // dialog will auto-close on the next tick.
@@ -644,7 +665,7 @@ async function stage_publish(page, _ctx, state) {
   await page.waitForTimeout(3000);
   // "Submit the release request?" confirm dialog auto-pops
   const confirmDialog = page.locator('[role="dialog"]').first();
-  await confirmDialog.getByRole('button', { name: 'Publish', exact: true })
+  await confirmDialog.getByRole('button', { name: /^(Publish|发布|确认发布)$/ })
     .click({ timeout: 10000 });
   await page.waitForTimeout(8000);
   log(`Bot "${state.appName}" (${state.appId}) published.`);
@@ -919,7 +940,17 @@ async function withBrowser(fn) {
     console.error('Error: playwright not installed. Run: npm install && npx playwright install chromium');
     process.exit(1);
   }
-  const browser = await chromium.launch({ headless: false });
+  const launchOptions = { headless: false };
+  if (process.env.FEISHU_BOT_CREATOR_CHROME_CHANNEL) {
+    launchOptions.channel = process.env.FEISHU_BOT_CREATOR_CHROME_CHANNEL;
+  } else if (
+    process.platform === 'darwin'
+    && fs.existsSync('/Applications/Google Chrome.app')
+    && process.env.FEISHU_BOT_CREATOR_USE_BUNDLED_CHROMIUM !== '1'
+  ) {
+    launchOptions.channel = 'chrome';
+  }
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext();
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   try {

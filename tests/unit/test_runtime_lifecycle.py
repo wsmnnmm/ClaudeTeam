@@ -33,6 +33,14 @@ def test_pane_env_prefix_always_includes_state_dir():
     assert prefix.startswith("CLAUDETEAM_STATE_DIR=")
 
 
+def test_pane_env_prefix_always_includes_config_file():
+    """Spawned panes must not inherit another team's CLAUDETEAM_CONFIG_FILE."""
+    with isolated_env(team={"agents": {"a": {}}}) as tmp:
+        prefix = pane_env_prefix()
+        expected = shlex.quote(str(tmp / "claudeteam.toml"))
+    assert f"CLAUDETEAM_CONFIG_FILE={expected}" in prefix
+
+
 def test_pane_env_prefix_propagates_lark_profile_when_set():
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             LARK_CLI_PROFILE="prod"):
@@ -294,6 +302,49 @@ def test_provision_codex_writes_project_local_custom_provider_config():
     assert auth == {"OPENAI_API_KEY": "sk-flux-123"}
     assert 'model_provider = "custom"' in cfg
     assert 'model = "gpt-5.5"' in cfg
+    assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
+
+
+def test_provision_codex_inherits_host_custom_provider_base_url():
+    """When only auth.json is copied from a custom Codex setup, the agent
+    must also inherit the custom base_url or the key is sent to api.openai.com."""
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        host_codex = tmp / "host-codex"
+        host_codex.mkdir(parents=True, exist_ok=True)
+        (host_codex / "auth.json").write_text(
+            '{"OPENAI_API_KEY":"sk-compatible"}',
+            encoding="utf-8",
+        )
+        (host_codex / "config.toml").write_text(
+            'model_provider = "custom"\n'
+            'model = "gpt-5.5"\n'
+            'model_reasoning_effort = "xhigh"\n'
+            'disable_response_storage = true\n\n'
+            '[model_providers.custom]\n'
+            'name = "custom"\n'
+            'wire_api = "responses"\n'
+            'requires_openai_auth = true\n'
+            'base_url = "https://api.fluxincode.com/v1"\n',
+            encoding="utf-8",
+        )
+        with env_patch(CODEX_HOME=str(host_codex)), tmux_patch(
+                spawn_agent=lambda *a, **kw: True,
+                inject=lambda *a, **kw: True), \
+                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            outcome = provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
+        cfg = paths.codex_config_file("worker_codex").read_text(encoding="utf-8")
+    assert outcome == READY_NO_INIT
+    assert 'model_provider = "custom"' in cfg
+    assert 'model = "gpt-5.5"' in cfg
+    assert 'model_reasoning_effort = "xhigh"' in cfg
     assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
 
 

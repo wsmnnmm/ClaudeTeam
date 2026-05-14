@@ -99,6 +99,28 @@ def test_health_warns_when_pane_up_but_no_cli_marker():
         assert "CLI not ready yet" in out
 
 
+def test_health_warns_when_ready_pane_heartbeat_is_stale():
+    import json
+    from claudeteam.runtime import paths
+    from claudeteam.util import now_ms
+
+    team = {"session": "S", "agents": {"manager": {"cli": "codex-cli"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), tmux_patch(
+            has_session=lambda s: True,
+            has_window=lambda target: target.window == "manager",
+            capture_pane=lambda target, lines=80: "\n\n  gpt-5.5 xhigh · /work"):
+        paths.facts_dir().mkdir(parents=True, exist_ok=True)
+        stale = now_ms() - 31 * 60 * 1000
+        (paths.facts_dir() / "heartbeats.json").write_text(
+            json.dumps({"manager": stale}), encoding="utf-8")
+
+        rc, out, _ = run_cli(["health"])
+
+        assert rc == 0
+        assert "manager: pane ready (codex-cli) but heartbeat is stale" in out
+        assert "warning" in out
+
+
 def test_health_warns_when_ready_pane_contains_provider_error():
     team = {"session": "S", "agents": {"manager": {}}}
 

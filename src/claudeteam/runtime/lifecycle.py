@@ -402,6 +402,10 @@ def _render_codex_config(provider_env: dict[str, str]) -> str:
     if effort:
         lines.append(f'model_reasoning_effort = {json.dumps(effort, ensure_ascii=False)}')
     lines.append(f"disable_response_storage = {'true' if disable_response_storage else 'false'}")
+    # Codex TUI may show an update prompt before the chat input. In an
+    # automated tmux worker, our injected Enter can select "Update now",
+    # causing the worker to update and exit instead of processing inbox.
+    lines.append("check_for_update_on_startup = false")
     lines.append("")
     lines.append(f"[model_providers.{model_provider}]")
     lines.append(f'name = {json.dumps(model_provider, ensure_ascii=False)}')
@@ -411,6 +415,91 @@ def _render_codex_config(provider_env: dict[str, str]) -> str:
         lines.append(f'base_url = {json.dumps(base_url, ensure_ascii=False)}')
     lines.append("")
     return "\n".join(lines)
+
+
+def _read_codex_provider_defaults(path: Path) -> dict[str, str]:
+    """Read OpenAI-compatible provider defaults from a Codex config.toml.
+
+    ClaudeTeam writes per-agent CODEX_HOME directories. When the operator's
+    global Codex config uses a custom OpenAI-compatible endpoint, copying only
+    auth.json makes the isolated agent send that custom key to api.openai.com.
+    This lightweight reader copies the selected provider's routing fields
+    without pulling in unrelated project trust or MCP config.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    top: dict[str, object] = {}
+    providers_by_name: dict[str, dict[str, object]] = {}
+    current_provider: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            prefix = "model_providers."
+            current_provider = section[len(prefix):] if section.startswith(prefix) else None
+            if current_provider is not None:
+                providers_by_name.setdefault(current_provider, {})
+            continue
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value.startswith('"') and raw_value.endswith('"'):
+            try:
+                value: object = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value.strip('"')
+        elif raw_value.lower() in {"true", "false"}:
+            value = raw_value.lower() == "true"
+        else:
+            value = raw_value
+        if current_provider is None:
+            top[key] = value
+        else:
+            providers_by_name.setdefault(current_provider, {})[key] = value
+
+    provider_name = str(top.get("model_provider") or "").strip()
+    if not provider_name:
+        return {}
+    provider = providers_by_name.get(provider_name, {})
+    out: dict[str, str] = {"OPENAI_MODEL_PROVIDER": provider_name}
+    if model := top.get("model"):
+        out["OPENAI_MODEL"] = str(model)
+    if effort := top.get("model_reasoning_effort"):
+        out["OPENAI_REASONING_EFFORT"] = str(effort)
+    if "disable_response_storage" in top:
+        out["OPENAI_DISABLE_RESPONSE_STORAGE"] = "true" if top["disable_response_storage"] else "false"
+    if base_url := provider.get("base_url"):
+        out["OPENAI_BASE_URL"] = str(base_url)
+    if wire_api := provider.get("wire_api"):
+        out["OPENAI_WIRE_API"] = str(wire_api)
+    if "requires_openai_auth" in provider:
+        out["OPENAI_REQUIRES_OPENAI_AUTH"] = "true" if provider["requires_openai_auth"] else "false"
+    return out
+
+
+def _host_codex_provider_defaults(agent: str) -> dict[str, str]:
+    """Return provider defaults from shared/operator Codex configs."""
+    seen: set[Path] = set()
+    candidates = [
+        paths.codex_config_file(),
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
+        Path.home() / ".codex" / "config.toml",
+    ]
+    for path in candidates:
+        if path == paths.codex_config_file(agent) or path in seen:
+            continue
+        seen.add(path)
+        defaults = _read_codex_provider_defaults(path)
+        if defaults:
+            return defaults
+    return {}
 
 
 def _extract_codex_mcp_sections(text: str) -> str:
@@ -477,6 +566,8 @@ def _ensure_codex_home(agent: str, model: str) -> None:
     except OSError:
         return
     provider_env = providers.codex_provider_env_for_agent(agent)
+    for key, value in _host_codex_provider_defaults(agent).items():
+        provider_env.setdefault(key, value)
     if model and not provider_env.get("OPENAI_MODEL"):
         provider_env["OPENAI_MODEL"] = model
     cfg_text = _render_codex_config(provider_env)
@@ -527,6 +618,7 @@ def pane_env_prefix(agent: str | None = None) -> str:
     than falling back to `~/.codex`.
     """
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
+    parts.append(f"CLAUDETEAM_CONFIG_FILE={shlex.quote(str(paths.config_file()))}")
     codex_home = paths.codex_home_dir(agent) if agent else paths.codex_home_dir()
     parts.append(f"CODEX_HOME={shlex.quote(str(codex_home))}")
     pane_path = _venv_path_prefix()

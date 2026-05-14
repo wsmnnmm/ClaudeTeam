@@ -486,16 +486,38 @@ class _FetchRec:
 
 def test_ensure_tenant_token_returns_existing_env_unchanged():
     """If LARKSUITE_CLI_TENANT_ACCESS_TOKEN is already set, don't fetch.
-    Host operators sometimes pre-export a hand-crafted token; respect it."""
+    Host operators sometimes pre-export a hand-crafted token; respect it
+    when no app credentials identify a safer app-scoped token path."""
     import os
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         cache = _cache_path(td)
-        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-preset"):
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-preset",
+                       FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                       LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
             token = lark._ensure_tenant_token(cache_path=cache)
         assert token == "t-preset"
         # No cache file written — env path doesn't touch disk
         assert not os.path.exists(cache)
+
+
+def test_ensure_tenant_token_ignores_existing_env_when_app_creds_present():
+    """A stale inherited tenant token must not override current app creds.
+    Otherwise an agent can send with another team's bot identity."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        fetch = _FetchRec(result={"token": "t-current-app", "expire_at": 9999999999})
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-stale-env",
+                       FEISHU_APP_ID="cli_current", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, cache_path=cache)
+        assert token == "t-current-app"
+        assert fetch.calls[0]["args"] == ["cli_current", "s"]
+        with open(cache, "r", encoding="utf-8") as fh:
+            rewritten = json.loads(fh.read())
+        assert rewritten["app_id"] == "cli_current"
+        assert rewritten["token"] == "t-current-app"
 
 
 def test_ensure_tenant_token_uses_fresh_cache_when_present():
@@ -507,7 +529,11 @@ def test_ensure_tenant_token_uses_fresh_cache_when_present():
     with tempfile.TemporaryDirectory() as td:
         cache = _cache_path(td)
         with open(cache, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"token": "t-cached", "expire_at": 9999999999}))
+            fh.write(json.dumps({
+                "app_id": "cli_x",
+                "token": "t-cached",
+                "expire_at": 9999999999,
+            }))
         fetch = _FetchRec(result=None)
         with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
                        FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
@@ -525,7 +551,11 @@ def test_ensure_tenant_token_refetches_when_cache_expired():
     with tempfile.TemporaryDirectory() as td:
         cache = _cache_path(td)
         with open(cache, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"token": "t-stale", "expire_at": 100}))
+            fh.write(json.dumps({
+                "app_id": "cli_x",
+                "token": "t-stale",
+                "expire_at": 100,
+            }))
         fetch = _FetchRec(result={"token": "t-fresh", "expire_at": 9999999999})
         with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
                        FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
@@ -538,6 +568,45 @@ def test_ensure_tenant_token_refetches_when_cache_expired():
         with open(cache, "r", encoding="utf-8") as fh:
             rewritten = json.loads(fh.read())
         assert rewritten["token"] == "t-fresh"
+        assert rewritten["app_id"] == "cli_x"
+
+
+def test_ensure_tenant_token_ignores_cache_for_other_app():
+    """A valid cache entry from another Feishu app must not be reused.
+    Otherwise separate ClaudeTeam bots can send with the wrong identity."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "app_id": "cli_old",
+                "token": "t-old-app",
+                "expire_at": 9999999999,
+            }))
+        fetch = _FetchRec(result={"token": "t-new-app", "expire_at": 9999999999})
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_new", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, cache_path=cache)
+        assert token == "t-new-app"
+        assert len(fetch.calls) == 1
+        assert fetch.calls[0]["args"] == ["cli_new", "s"]
+        with open(cache, "r", encoding="utf-8") as fh:
+            rewritten = json.loads(fh.read())
+        assert rewritten["app_id"] == "cli_new"
+        assert rewritten["token"] == "t-new-app"
+
+
+def test_ensure_tenant_token_default_cache_path_is_app_scoped():
+    """Default cache files include the app id so two bots on the same host
+    don't share `/tmp/claudeteam_tenant_token.json`."""
+    assert lark._tenant_token_cache_path("cli_a").endswith(
+        "claudeteam_tenant_token_cli_a.json"
+    )
+    assert lark._tenant_token_cache_path("cli_b").endswith(
+        "claudeteam_tenant_token_cli_b.json"
+    )
+    assert lark._tenant_token_cache_path("cli_a") != lark._tenant_token_cache_path("cli_b")
 
 
 def test_ensure_tenant_token_fetches_when_no_cache():
@@ -593,11 +662,17 @@ def test_subprocess_env_injects_token_when_available():
     import tempfile
     from helpers import attr_patch
     with tempfile.TemporaryDirectory() as td:
-        cache = _cache_path(td)
-        with open(cache, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"token": "t-via-env", "expire_at": 9999999999}))
         # Stub the cache path module-level for the duration of the test
-        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+        base_cache = _cache_path(td)
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache):
+            cache = lark._tenant_token_cache_path("cli_x")
+            with open(cache, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "app_id": "cli_x",
+                    "token": "t-via-env",
+                    "expire_at": 9999999999,
+                }))
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache), \
              env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
                        FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
             env = lark.subprocess_env()
@@ -631,10 +706,16 @@ def test_subprocess_env_pairs_token_with_app_id_and_secret():
     import tempfile
     from helpers import attr_patch
     with tempfile.TemporaryDirectory() as td:
-        cache = _cache_path(td)
-        with open(cache, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"token": "t-paired", "expire_at": 9999999999}))
-        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+        base_cache = _cache_path(td)
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache):
+            cache = lark._tenant_token_cache_path("cli_paired")
+            with open(cache, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "app_id": "cli_paired",
+                    "token": "t-paired",
+                    "expire_at": 9999999999,
+                }))
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache), \
              env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
                        FEISHU_APP_ID="cli_paired", FEISHU_APP_SECRET="s-x",
                        LARKSUITE_CLI_APP_ID=None,
@@ -656,7 +737,11 @@ def test_subprocess_env_skips_token_when_no_app_id_resolvable():
     with tempfile.TemporaryDirectory() as td:
         cache = _cache_path(td)
         with open(cache, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"token": "t-orphan", "expire_at": 9999999999}))
+            fh.write(json.dumps({
+                "app_id": "cli_orphan",
+                "token": "t-orphan",
+                "expire_at": 9999999999,
+            }))
         with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
              env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
                        FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,

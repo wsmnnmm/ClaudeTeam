@@ -24,7 +24,8 @@ from claudeteam.feishu import pane_state
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
 from claudeteam.util import (
-    ago_ms, env_str, maybe_print_help, pop_bool_flag, print_json, reject_extra_args,
+    ago_ms, env_str, maybe_print_help, now_ms, pop_bool_flag, print_json,
+    reject_extra_args,
 )
 
 
@@ -32,6 +33,7 @@ _OK = "✅"
 _BAD = "❌"
 _WARN = "⚠️ "
 _INFO = "ℹ️ "
+_STALE_HEARTBEAT_MS = 30 * 60 * 1000
 
 
 @dataclass
@@ -155,9 +157,13 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
             text = tmux.capture_pane(target, lines=80)
             ready = any(m in text for m in adapter.ready_markers())
             emoji, brief = pane_state.parse(text)
+            stale_hb = bool(hb and now_ms() - hb > _STALE_HEARTBEAT_MS)
             if ready and emoji in ("⚠️", "⛔", "🛑"):
                 rep.yellow(
                     f"  {agent}: pane reachable but {brief} ({cli}){hb_suffix}")
+            elif ready and stale_hb:
+                rep.yellow(
+                    f"  {agent}: pane ready ({cli}) but heartbeat is stale{hb_suffix}")
             elif ready:
                 rep.ok(f"  {agent}: pane ready ({cli}){hb_suffix}")
             elif cfg.get("lazy"):

@@ -14,6 +14,15 @@ class _ClaudeFake:
         return "claude"
 
 
+class _CodexFake:
+    """Minimal Codex adapter stand-in for tests."""
+    def ready_markers(self):
+        return [" high · "]
+
+    def process_name(self):
+        return "codex"
+
+
 def _capturer(text_per_call: list[str]):
     """Return a capture_pane fake that yields one text per call."""
     iterator = iter(text_per_call)
@@ -246,6 +255,33 @@ def test_wait_until_ready_accepts_focus_cycled_bypass_warning():
     assert ok is True
     assert sent_text == []
     assert sent_keys == [("S:manager", ("BTab", "Enter"))]
+
+
+def test_wait_until_ready_keeps_existing_codex_model_on_upgrade_prompt():
+    target = tmux.Target("S", "worker_frontend")
+    capture = _capturer([
+        "Introducing GPT-5.4\n"
+        "› 1. Try new model\n"
+        "  2. Use existing model\n",
+        "gpt-5.3-codex high · ~/Project/work-assistant-team",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _CodexFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == []
+    assert sent_keys == [("S:worker_frontend", ("Down", "Enter"))]
 
 
 def test_wake_bootstraps_claude_home_before_first_lazy_spawn():

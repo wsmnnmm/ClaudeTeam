@@ -46,6 +46,30 @@ _TENANT_TOKEN_CACHE = "/tmp/claudeteam_tenant_token.json"
 _TENANT_TOKEN_REFRESH_BUFFER_S = 60   # refetch when within 60s of expiry
 
 
+def _tenant_token_cache_path(app_id: str | None,
+                             cache_path: str | None = None) -> str:
+    """Return the tenant-token cache path for the current Feishu app.
+
+    Multiple ClaudeTeam teams can run on the same host with different
+    Feishu bots. A single global cache lets one bot reuse another bot's
+    tenant_access_token, which makes messages appear from the wrong app.
+    Default cache files are therefore app-scoped:
+    `/tmp/claudeteam_tenant_token_<app_id>.json`.
+
+    Tests and specialised callers may pass `cache_path` to force an exact
+    path; those entries are still guarded by the `app_id` stored in JSON.
+    """
+    if cache_path is not None:
+        return cache_path
+    if not app_id:
+        return _TENANT_TOKEN_CACHE
+    root, ext = os.path.splitext(_TENANT_TOKEN_CACHE)
+    safe_app_id = "".join(
+        ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in app_id
+    )
+    return f"{root}_{safe_app_id}{ext or '.json'}"
+
+
 def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
     """POST app_id+app_secret → Feishu tenant_access_token endpoint.
 
@@ -82,10 +106,12 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     """Return a usable tenant_access_token from env / cache / live fetch.
 
     Resolution order:
-      1. `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` already in env — use as-is.
-      2. Cache file at `cache_path` with `expire_at > now` — use it.
-      3. `FEISHU_APP_ID` + `FEISHU_APP_SECRET` (or `LARKSUITE_CLI_*`
-         aliases) in env — fetch a fresh token, write to cache, return.
+      1. `FEISHU_APP_ID` + `FEISHU_APP_SECRET` (or `LARKSUITE_CLI_*`
+         aliases) in env — use only that app's cache/fetch path.
+      2. `LARKSUITE_CLI_TENANT_ACCESS_TOKEN` already in env and no
+         app creds are available — use as-is.
+      3. Current app's cache file with `expire_at > now` and matching
+         `app_id` — use it.
       4. None of the above — return None and let lark-cli's own auth
          path try (works on macOS host with keychain).
 
@@ -94,32 +120,36 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     """
     import json as _json
     import time as _time
+    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
+    app_secret = (env_str("FEISHU_APP_SECRET")
+                  or env_str("LARKSUITE_CLI_APP_SECRET"))
+    existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
+    if existing and not (app_id and app_secret):
+        return existing
     # Resolve cache_path at call time so test patches of the
     # module-level _TENANT_TOKEN_CACHE constant take effect; default
     # args bind at function-definition time and would freeze the
     # original /tmp path before any patch could land.
-    if cache_path is None:
-        cache_path = _TENANT_TOKEN_CACHE
-    existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
-    if existing:
-        return existing
+    cache_path = _tenant_token_cache_path(app_id, cache_path)
     now_fn = now or _time.time
     now_t = int(now_fn())
     try:
         with open(cache_path, "r", encoding="utf-8") as fh:
             cached = _json.loads(fh.read())
-        if int(cached.get("expire_at", 0)) > now_t and cached.get("token"):
+        cached_app_id = cached.get("app_id")
+        if (cached_app_id == app_id
+                and int(cached.get("expire_at", 0)) > now_t
+                and cached.get("token")):
             return str(cached["token"])
     except (OSError, _json.JSONDecodeError, ValueError):
         pass
-    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
-    app_secret = (env_str("FEISHU_APP_SECRET")
-                  or env_str("LARKSUITE_CLI_APP_SECRET"))
     if not (app_id and app_secret):
         return None
     fresh = (fetch or _fetch_tenant_token)(app_id, app_secret)
     if not fresh or not fresh.get("token"):
         return None
+    fresh = dict(fresh)
+    fresh["app_id"] = app_id
     try:
         with open(cache_path, "w", encoding="utf-8") as fh:
             fh.write(_json.dumps(fresh))

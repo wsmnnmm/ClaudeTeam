@@ -92,6 +92,12 @@ _BYPASS_FOCUS_WARNING_MARKERS = (
     "shift+tab to cycle",
 )
 
+_CODEX_MODEL_UPGRADE_MARKERS = (
+    "Introducing GPT-5.4",
+    "Try new model",
+    "Use existing model",
+)
+
 
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
@@ -128,6 +134,15 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                 # above. In that variant, back-tab selects the affirmative
                 # button and Enter confirms it.
                 tmux.send_keys(target, "BTab", "Enter")
+                last_dismiss_at = t
+        elif all(m in text for m in _CODEX_MODEL_UPGRADE_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Codex can prompt to migrate gpt-5.3-codex sessions to
+                # gpt-5.4. ClaudeTeam has already chosen the model in team
+                # config, so automated workers should keep the requested
+                # model instead of accepting the highlighted upgrade.
+                tmux.send_keys(target, "Down", "Enter")
                 last_dismiss_at = t
         if any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS):
             t = now()
