@@ -302,7 +302,30 @@ def test_provision_codex_writes_project_local_custom_provider_config():
     assert auth == {"OPENAI_API_KEY": "sk-flux-123"}
     assert 'model_provider = "custom"' in cfg
     assert 'model = "gpt-5.5"' in cfg
+    assert 'model_verbosity = "medium"' in cfg
     assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
+
+
+def test_provision_codex_sets_medium_verbosity_for_gpt_5_2():
+    """REGRESSION: gpt-5.2 rejects Codex's default low text verbosity."""
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+            }
+        }
+    }
+    with isolated_env(team=team), tmux_patch(
+            spawn_agent=lambda *a, **kw: True,
+            inject=lambda *a, **kw: True), \
+            attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+        outcome = provision_pane("manager", tmux.Target("S", "manager"))
+        cfg = paths.codex_config_file("manager").read_text(encoding="utf-8")
+
+    assert outcome == READY_NO_INIT
+    assert 'model = "gpt-5.2"' in cfg
+    assert 'model_verbosity = "medium"' in cfg
 
 
 def test_provision_codex_inherits_host_custom_provider_base_url():

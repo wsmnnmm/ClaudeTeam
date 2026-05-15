@@ -401,6 +401,7 @@ def _render_codex_config(provider_env: dict[str, str]) -> str:
         lines.append(f'model = {json.dumps(model, ensure_ascii=False)}')
     if effort:
         lines.append(f'model_reasoning_effort = {json.dumps(effort, ensure_ascii=False)}')
+    lines.append('model_verbosity = "medium"')
     lines.append(f"disable_response_storage = {'true' if disable_response_storage else 'false'}")
     # Codex TUI may show an update prompt before the chat input. In an
     # automated tmux worker, our injected Enter can select "Update now",
