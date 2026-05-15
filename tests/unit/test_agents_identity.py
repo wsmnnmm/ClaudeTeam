@@ -33,6 +33,7 @@ def test_render_worker_uses_worker_template():
     assert "team worker" in text
     assert "Pick up tasks" in text
     assert "claudeteam task list --assignee worker_cc" in text
+    assert "--artifact <path> --done" in text
 
 
 # ── render() — substitutions ──────────────────────────────────────
@@ -69,6 +70,7 @@ def test_render_argument_order_contract_present_in_manager():
     assert "claudeteam send <recipient> <sender>" in text
     assert "claudeteam say <agent>" in text
     assert "claudeteam task list --assignee manager" in text
+    assert "没 artifact 不准关单" in text
     assert "❌" in text and "✅" in text
 
 

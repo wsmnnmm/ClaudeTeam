@@ -227,7 +227,8 @@ def _compose_inject_text(agent: str, decision: Decision,
                 f"没有新事实就继续执行或明确真实 blocker。{summary_hint}{read_hint}")
     else:
         hint = (f"[同事·{sender}] {task_list_hint}回 `claudeteam send {sender} {agent} "
-                f"\"...\"`；要公告到群用 `claudeteam say {agent} "
+                f"\"...\"`；进度回报带 `--task-id <T-id>`，完工回报再加 "
+                f"`--artifact <path> --done`；要公告到群用 `claudeteam say {agent} "
                 f"\"...\" --to user`。{read_hint}")
     return f"{hint}\n\n{decision.text}"
 

@@ -437,6 +437,7 @@ def test_compose_inject_text_peer_message_uses_send_back_to_sender():
         "worker_cc", _decision("question for you", sender="manager"))
     assert "claudeteam send manager worker_cc" in out
     assert "claudeteam task list --assignee worker_cc" in out
+    assert "--artifact <path> --done" in out
     assert "question for you" in out
     assert "[同事·manager]" in out
 

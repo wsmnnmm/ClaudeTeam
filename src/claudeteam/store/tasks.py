@@ -5,12 +5,13 @@ One JSON file (`$CLAUDETEAM_STATE_DIR/tasks.json`) with shape:
 
 Each task:
     {id, title, description, assignee, creator,
-     status, created_at, updated_at, completed_at}
+     status, artifact_path, reviewed_by, reviewed_at,
+     created_at, updated_at, completed_at}
 
 Pure file-locked CRUD; lifecycle (assignment, completion, etc.) is whatever
 the agents agree on — the store is opinion-free.
 
-Status vocabulary: 待处理 / 进行中 / 已完成 / 已取消
+Status vocabulary: 待处理 / 进行中 / 待验收 / 已完成 / 已取消
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from claudeteam.runtime import paths
 from claudeteam.util import flock, now_ms, read_json, write_json
 
 
-VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
+VALID_STATUSES = {"待处理", "进行中", "待验收", "已完成", "已取消"}
 DEFAULT_STATUS = "待处理"
 TERMINAL_STATUSES = {"已完成", "已取消"}
 
@@ -45,7 +46,8 @@ def _save(data: dict) -> None:
 
 
 def create(assignee: str, title: str, *,
-           description: str = "", creator: str = "") -> str:
+           description: str = "", creator: str = "",
+           artifact_path: str = "") -> str:
     """Create a new task; return its task_id (T-<n>)."""
     if not title.strip():
         raise ValueError("title cannot be empty")
@@ -61,6 +63,9 @@ def create(assignee: str, title: str, *,
             "assignee": assignee,
             "creator": creator,
             "status": DEFAULT_STATUS,
+            "artifact_path": artifact_path,
+            "reviewed_by": "",
+            "reviewed_at": None,
             "created_at": now,
             "updated_at": now,
             "completed_at": None,
@@ -71,7 +76,9 @@ def create(assignee: str, title: str, *,
 
 def update(task_id: str, *, status: str | None = None,
            assignee: str | None = None, title: str | None = None,
-           description: str | None = None) -> bool:
+           description: str | None = None,
+           artifact_path: str | None = None,
+           reviewed_by: str | None = None) -> bool:
     """Apply non-None fields. Returns False if task_id not found."""
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status} (valid: {sorted(VALID_STATUSES)})")
@@ -92,6 +99,11 @@ def update(task_id: str, *, status: str | None = None,
                 task["title"] = title.strip()
             if description is not None:
                 task["description"] = description
+            if artifact_path is not None:
+                task["artifact_path"] = artifact_path
+            if reviewed_by is not None:
+                task["reviewed_by"] = reviewed_by
+                task["reviewed_at"] = now_ms() if reviewed_by else None
             task["updated_at"] = now_ms()
             _save(data)
             return True

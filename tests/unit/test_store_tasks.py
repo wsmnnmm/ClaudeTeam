@@ -36,6 +36,13 @@ def test_create_with_metadata_persists_creator_and_description():
         assert t["description"] == "root cause is Y"
 
 
+def test_create_with_artifact_persists_path():
+    with isolated_env():
+        tid = tasks.create("worker", "fix X", artifact_path="artifacts/T-1/out.md")
+        t = tasks.get(tid)
+        assert t["artifact_path"] == "artifacts/T-1/out.md"
+
+
 def test_create_empty_title_rejects():
     with isolated_env():
         try:
@@ -98,6 +105,19 @@ def test_update_only_changes_specified_fields():
         assert t["title"] == "title-1"
         assert t["description"] == "d-1"
         assert t["creator"] == "c-1"
+
+
+def test_update_can_store_artifact_and_reviewer():
+    with isolated_env():
+        tid = tasks.create("w1", "old")
+        tasks.update(tid, status="待验收",
+                     artifact_path="artifacts/T-1/report.md",
+                     reviewed_by="manager")
+        t = tasks.get(tid)
+        assert t["status"] == "待验收"
+        assert t["artifact_path"] == "artifacts/T-1/report.md"
+        assert t["reviewed_by"] == "manager"
+        assert t["reviewed_at"] is not None
 
 
 def test_update_can_reassign_and_retitle():

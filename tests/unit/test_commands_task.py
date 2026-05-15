@@ -29,6 +29,14 @@ def test_task_create_with_by_and_desc():
         assert t["description"] == "root cause Y"
 
 
+def test_task_create_with_artifact():
+    with isolated_env():
+        run_cli(["task", "create", "worker", "task name",
+              "--artifact", "artifacts/T-1/out.md"])
+        t = tasks.list_tasks()[0]
+        assert t["artifact_path"] == "artifacts/T-1/out.md"
+
+
 def test_task_create_title_with_spaces():
     with isolated_env():
         run_cli(["task", "create", "worker", "fix", "the", "broken", "thing"])
@@ -78,17 +86,56 @@ def test_task_update_can_reassign_and_retitle():
         assert t["title"] == "new"
 
 
+def test_task_update_can_add_artifact_and_reviewer():
+    with isolated_env():
+        tasks.create("w1", "old")
+        rc, out, err = run_cli([
+            "task", "update", "T-1",
+            "--artifact", "artifacts/T-1/out.md",
+            "--by", "manager",
+        ])
+        assert rc == 0, err
+        t = tasks.get("T-1")
+        assert t["artifact_path"] == "artifacts/T-1/out.md"
+        assert t["reviewed_by"] == "manager"
+
+
 # ── done shortcut ────────────────────────────────────────────────
 
 
 def test_task_done_marks_completed():
     with isolated_env():
         tasks.create("w", "x")
-        rc, out, _ = run_cli(["task", "done", "T-1"])
-        assert rc == 0
+        rc, out, err = run_cli([
+            "task", "done", "T-1",
+            "--artifact", "artifacts/T-1/out.md",
+            "--by", "manager",
+        ])
+        assert rc == 0, err
         t = tasks.get("T-1")
         assert t["status"] == "已完成"
         assert t["completed_at"] is not None
+        assert t["artifact_path"] == "artifacts/T-1/out.md"
+        assert t["reviewed_by"] == "manager"
+
+
+def test_task_done_rejects_missing_artifact():
+    with isolated_env():
+        tasks.create("w", "x")
+        rc, _, err = run_cli(["task", "done", "T-1"])
+        assert rc == 1
+        assert "cannot be marked 已完成 without an artifact" in err
+
+
+def test_task_done_uses_existing_artifact_when_present():
+    with isolated_env():
+        tasks.create("w", "x", artifact_path="artifacts/T-1/out.md")
+        rc, out, err = run_cli(["task", "done", "T-1"])
+        assert rc == 0, err
+        t = tasks.get("T-1")
+        assert t["status"] == "已完成"
+        assert t["completed_at"] is not None
+        assert t["artifact_path"] == "artifacts/T-1/out.md"
 
 
 # ── list / get ────────────────────────────────────────────────────
@@ -131,11 +178,15 @@ def test_task_list_filter_by_status_and_assignee():
 
 def test_task_get_existing_renders_full_card():
     with isolated_env():
-        tasks.create("w", "task one", description="d")
+        tasks.create("w", "task one", description="d",
+                     artifact_path="artifacts/T-1/out.md")
+        tasks.update("T-1", reviewed_by="manager")
         rc, out, _ = run_cli(["task", "get", "T-1"])
         assert rc == 0
         assert "T-1" in out and "task one" in out
         assert "desc: d" in out
+        assert "artifact: artifacts/T-1/out.md" in out
+        assert "reviewed_by: manager" in out
 
 
 def test_task_get_unknown_id_returns_one():

@@ -103,6 +103,55 @@ def test_send_can_bind_existing_task_id():
         assert len(tasks.list_tasks()) == 1
 
 
+def test_worker_report_auto_binds_single_open_task():
+    with isolated_env():
+        tasks.create("worker_cc", "existing", creator="manager")
+        rc, out, err = run_cli([
+            "send", "manager", "worker_cc", "progress update"
+        ])
+        assert rc == 0, err
+        assert "task_id=T-1" in out
+        rows = local_facts.list_messages("manager")
+        assert rows[0]["task_id"] == "T-1"
+
+
+def test_worker_report_rejects_multiple_open_tasks_without_task_id():
+    with isolated_env():
+        tasks.create("worker_cc", "a", creator="manager")
+        tasks.create("worker_cc", "b", creator="manager")
+        rc, _, err = run_cli([
+            "send", "manager", "worker_cc", "progress update"
+        ])
+        assert rc == 1
+        assert "multiple open tasks" in err
+
+
+def test_worker_done_requires_artifact_and_marks_waiting_review():
+    with isolated_env():
+        tasks.create("worker_cc", "existing", creator="manager")
+        rc, out, err = run_cli([
+            "send", "manager", "worker_cc", "fix ready",
+            "--done", "--artifact", "artifacts/T-1/result.md",
+        ])
+        assert rc == 0, err
+        assert "status=待验收" in out
+        rows = local_facts.list_messages("manager")
+        assert rows[0]["artifact"] == "artifacts/T-1/result.md"
+        assert "Artifact: artifacts/T-1/result.md" in rows[0]["content"]
+        assert tasks.get("T-1")["status"] == "待验收"
+        assert tasks.get("T-1")["artifact_path"] == "artifacts/T-1/result.md"
+
+
+def test_worker_done_rejects_missing_artifact():
+    with isolated_env():
+        tasks.create("worker_cc", "existing", creator="manager")
+        rc, _, err = run_cli([
+            "send", "manager", "worker_cc", "fix ready", "--done"
+        ])
+        assert rc == 1
+        assert "must include --artifact" in err
+
+
 def test_send_default_inject_best_effort_when_no_tmux():
     """Without a live tmux session, the inject step is best-effort —
     `has_window` returns False (or the wrapper raises) and the command
@@ -220,6 +269,7 @@ def test_inbox_lists_unread_with_local_id_and_returns_zero():
         rc, out, _ = run_cli(["inbox", "w"])
         assert rc == 0
         assert "📬 w: 2 unread" in out
+        assert "T-1" in out and "T-2" in out
         assert "first" in out and "second" in out
 
 

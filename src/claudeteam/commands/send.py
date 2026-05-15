@@ -1,4 +1,4 @@
-"""`claudeteam send <to> <from> <message> [priority] [--task-id <T-id>] [--no-task] [--no-inject]`
+"""`claudeteam send <to> <from> <message> [priority] [--task-id <T-id>] [--artifact <path>] [--done] [--no-task] [--no-inject]`
 
 Append a message to the local inbox AND poke the recipient's tmux
 pane so they know to read it.
@@ -26,7 +26,7 @@ from claudeteam.util import error_exit, pop_bool_flag, pop_flag, usage_error
 
 USAGE = (
     "usage: claudeteam send <to> <from> <message> [priority] "
-    "[--task-id <T-id>] [--no-task] [--no-inject]"
+    "[--task-id <T-id>] [--artifact <path>] [--done] [--no-task] [--no-inject]"
 )
 
 
@@ -37,34 +37,91 @@ def _task_title(message: str) -> str:
     return line if len(line) <= 80 else (line[:77].rstrip() + "...")
 
 
+def _is_worker(agent: str) -> bool:
+    return bool(agent) and agent.startswith("worker")
+
+
+def _worker_report_to_manager(to: str, frm: str) -> bool:
+    return to == "manager" and _is_worker(frm)
+
+
+def _open_tasks_for(agent: str) -> list[dict]:
+    return [
+        t for t in tasks.list_tasks(assignee=agent)
+        if t.get("status") not in tasks.TERMINAL_STATUSES
+    ]
+
+
 def main(argv: list[str]) -> int:
     rest = list(argv)
     task_id = pop_flag(rest, "--task-id") or ""
+    artifact = pop_flag(rest, "--artifact") or ""
+    done = pop_bool_flag(rest, "--done")
     no_task = pop_bool_flag(rest, "--no-task")
     no_inject = pop_bool_flag(rest, "--no-inject")
     if len(rest) < 3:
         return usage_error(USAGE)
     if task_id and no_task:
         return error_exit("❌ --task-id and --no-task cannot be used together")
+    if (artifact or done) and no_task:
+        return error_exit("❌ --artifact/--done require a tracked task; remove --no-task")
     to, frm, message = rest[0], rest[1], rest[2]
     priority = rest[3] if len(rest) > 3 else "中"
     local_facts.touch_heartbeat(frm)
+    worker_report = _worker_report_to_manager(to, frm)
+    bound_task = None
     if task_id:
-        if tasks.get(task_id) is None:
+        bound_task = tasks.get(task_id)
+        if bound_task is None:
             return error_exit(f"❌ no such task: {task_id}")
+    elif worker_report and not no_task:
+        open_tasks = _open_tasks_for(frm)
+        if len(open_tasks) == 1:
+            bound_task = open_tasks[0]
+            task_id = str(bound_task.get("id") or "")
+        elif not open_tasks:
+            return error_exit(
+                f"❌ {frm} has no open tracked task; ask manager to派单 or use --no-task")
+        else:
+            task_list = ", ".join(str(t.get("id") or "?") for t in open_tasks[:5])
+            return error_exit(
+                f"❌ {frm} has multiple open tasks ({task_list}); send progress with --task-id <T-id>")
     elif not no_task:
         title = _task_title(message)
         desc = message if message.strip() != title else ""
         task_id = tasks.create(to, title, description=desc, creator=frm)
+        bound_task = tasks.get(task_id)
+    if worker_report and bound_task is not None:
+        assignee = str(bound_task.get("assignee") or "")
+        if assignee != frm:
+            return error_exit(f"❌ task {task_id} belongs to {assignee}, not {frm}")
+    effective_artifact = artifact or str((bound_task or {}).get("artifact_path") or "")
+    if done and not effective_artifact:
+        return error_exit(
+            f"❌ worker completion for {task_id or '?'} must include --artifact <path>")
+    if artifact and task_id:
+        tasks.update(task_id, artifact_path=artifact)
+    if done and task_id:
+        tasks.update(task_id, status="待验收", artifact_path=effective_artifact)
+    visible_message = message
+    if artifact and artifact not in visible_message:
+        visible_message = f"{visible_message}\nArtifact: {artifact}"
+    if done and "待验收" not in visible_message:
+        visible_message = f"{visible_message}\nStatus: 待验收"
     local_id = local_facts.append_message(
-        to, frm, message, priority=priority, task_id=task_id)
+        to, frm, visible_message, priority=priority, task_id=task_id,
+        artifact=effective_artifact)
     task_prefix = f"[{task_id}] " if task_id else ""
-    memory.append(to, "task_assigned", f"{task_prefix}{message}", ref=local_id)
+    memory.append(to, "task_assigned", f"{task_prefix}{visible_message}", ref=local_id)
     if frm:
         memory.append(frm, "task_assigned",
-                      f"已派给 {to}{f' ({task_id})' if task_id else ''}: {message}",
+                      f"已派给 {to}{f' ({task_id})' if task_id else ''}: {visible_message}",
                       ref=local_id)
     suffix = f"  [task_id={task_id}]" if task_id else ""
+    if effective_artifact:
+        suffix += f"  [artifact={effective_artifact}]"
+    if done:
+        suffix += "  [status=待验收]"
     print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]{suffix}")
     if no_inject:
         return 0

@@ -24,10 +24,13 @@ def main(argv: list[str]) -> int:
     sender = str(row.get("from", "") or "?")
     content = str(row.get("content", "") or "")
     task_id = str(row.get("task_id", "") or "")
+    artifact = str(row.get("artifact", "") or "")
     if agent and content:
         prefix = f"[{task_id}] " if task_id else ""
+        artifact_note = f" artifact={artifact}" if artifact else ""
         memory.append(agent, "note",
-                      f"{prefix}已接手来自 {sender} 的任务: {content}", ref=local_id)
+                      f"{prefix}已接手来自 {sender} 的任务: {content}{artifact_note}",
+                      ref=local_id)
     task_note = ""
     if task_id:
         task = tasks.get(task_id)

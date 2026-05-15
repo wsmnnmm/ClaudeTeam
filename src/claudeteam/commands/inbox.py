@@ -26,7 +26,14 @@ def main(argv: list[str]) -> int:
         local_id = m.get("local_id", "")
         frm = m.get("from", "?")
         priority = m.get("priority", "?")
+        task_id = m.get("task_id", "")
+        artifact = m.get("artifact", "")
         content = m.get("content", "")
-        print(f"── [{ts}] {frm} → {agent}  [{priority}]  {local_id}")
+        meta = f"  {local_id}"
+        if task_id:
+            meta += f"  {task_id}"
+        print(f"── [{ts}] {frm} → {agent}  [{priority}]{meta}")
         print(f"   {content}")
+        if artifact:
+            print(f"   artifact: {artifact}")
     return 0

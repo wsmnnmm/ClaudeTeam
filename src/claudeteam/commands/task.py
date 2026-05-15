@@ -1,10 +1,10 @@
 """`claudeteam task <subcommand>`
 
-  task create <assignee> <title> [--by <agent>] [--desc <text>]
-  task update <id>       [--status S] [--assignee A] [--title T] [--desc D]
+  task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>]
+  task update <id>       [--status S] [--assignee A] [--title T] [--desc D] [--artifact <path>] [--by <agent>]
   task list              [--status S] [--assignee A]
   task get <id>
-  task done <id>          (alias for `update <id> --status 已完成`)
+  task done <id>         [--artifact <path>] [--by <agent>]
 """
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from claudeteam.util import (
 
 USAGE = (
     "usage:\n"
-    "  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>]\n"
-    "  claudeteam task update <id>  [--status S] [--assignee A] [--title T] [--desc D]\n"
+    "  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>]\n"
+    "  claudeteam task update <id>  [--status S] [--assignee A] [--title T] [--desc D] [--artifact <path>] [--by <agent>]\n"
     "  claudeteam task list  [--status S] [--assignee A]\n"
     "  claudeteam task get <id>\n"
-    "  claudeteam task done <id>"
+    "  claudeteam task done <id> [--artifact <path>] [--by <agent>]"
 )
 
 
@@ -32,6 +32,10 @@ def _fmt_task(t: dict) -> list[str]:
         body.append(f"  by: {t['creator']}")
     if t.get("description"):
         body.append(f"  desc: {t['description']}")
+    if t.get("artifact_path"):
+        body.append(f"  artifact: {t['artifact_path']}")
+    if t.get("reviewed_by"):
+        body.append(f"  reviewed_by: {t['reviewed_by']}")
     body.append(f"  created: {ts}")
     return [head] + body
 
@@ -39,16 +43,25 @@ def _fmt_task(t: dict) -> list[str]:
 def _cmd_create(rest: list[str]) -> int:
     by = pop_flag(rest, "--by") or ""
     desc = pop_flag(rest, "--desc") or ""
+    artifact = pop_flag(rest, "--artifact") or ""
     if len(rest) < 2:
         return usage_error(USAGE)
     assignee = rest[0]
     title = " ".join(rest[1:])
     try:
-        tid = tasks.create(assignee, title, description=desc, creator=by)
+        tid = tasks.create(
+            assignee, title, description=desc, creator=by, artifact_path=artifact)
     except ValueError as e:
         return error_exit(f"❌ {e}")
     print(f"✅ created {tid}: {title} → {assignee}")
     return 0
+
+
+def _artifact_for_close(tid: str, supplied: str) -> str:
+    task = tasks.get(tid)
+    if task is None:
+        raise ValueError(f"no such task: {tid}")
+    return supplied or str(task.get("artifact_path") or "")
 
 
 def _cmd_update(rest: list[str]) -> int:
@@ -56,12 +69,25 @@ def _cmd_update(rest: list[str]) -> int:
     assignee = pop_flag(rest, "--assignee")
     title = pop_flag(rest, "--title")
     desc = pop_flag(rest, "--desc")
+    artifact = pop_flag(rest, "--artifact")
+    reviewed_by = pop_flag(rest, "--by")
     if len(rest) < 1:
         return usage_error(USAGE)
     tid = rest[0]
+    if status == "已完成":
+        try:
+            effective_artifact = _artifact_for_close(tid, artifact or "")
+        except ValueError as e:
+            return error_exit(f"❌ {e}")
+        if not effective_artifact:
+            return error_exit(
+                f"❌ task {tid} cannot be marked 已完成 without an artifact; "
+                "pass --artifact <path> or set one first")
+        artifact = effective_artifact
     try:
         ok = tasks.update(tid, status=status, assignee=assignee,
-                          title=title, description=desc)
+                          title=title, description=desc,
+                          artifact_path=artifact, reviewed_by=reviewed_by)
     except ValueError as e:
         return error_exit(f"❌ {e}")
     if not ok:
@@ -73,7 +99,15 @@ def _cmd_update(rest: list[str]) -> int:
 def _cmd_done(rest: list[str]) -> int:
     if len(rest) < 1:
         return usage_error(USAGE)
-    return _cmd_update([rest[0], "--status", "已完成"])
+    tid = rest[0]
+    artifact = pop_flag(rest, "--artifact")
+    reviewed_by = pop_flag(rest, "--by")
+    args = [tid, "--status", "已完成"]
+    if artifact:
+        args.extend(["--artifact", artifact])
+    if reviewed_by:
+        args.extend(["--by", reviewed_by])
+    return _cmd_update(args)
 
 
 def _cmd_list(rest: list[str]) -> int:

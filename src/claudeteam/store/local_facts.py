@@ -59,7 +59,8 @@ def _locked():
 
 
 def append_message(to: str, frm: str, content: str, *,
-                   priority: str = "中", task_id: str = "") -> str:
+                   priority: str = "中", task_id: str = "",
+                   artifact: str = "") -> str:
     """Append a message to the inbox; return its local id."""
     with _locked():
         path = _inbox_file()
@@ -72,6 +73,7 @@ def append_message(to: str, frm: str, content: str, *,
             "content": str(content or ""),
             "priority": priority,
             "task_id": task_id,
+            "artifact": str(artifact or ""),
             "created_at": now_ms(),
             "read": False,
             "read_at": None,
