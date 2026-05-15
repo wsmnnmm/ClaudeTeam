@@ -56,8 +56,6 @@ class CodexCliAdapter(CliAdapter):
         # reasoning-effort markers catch compact captures where only the
         # bottom status line remains, e.g. "gpt-5.5 xhigh · /work".
         return [
-            "OpenAI Codex",
-            "permissions: YOLO",
             " default · ",
             " low · ",
             " medium · ",
@@ -67,7 +65,12 @@ class CodexCliAdapter(CliAdapter):
         ]
 
     def busy_markers(self) -> list[str]:
-        return ["esc to interrupt", "Booting MCP server", *SPINNER_CHARS]
+        return [
+            "esc to interrupt",
+            "Booting MCP server",
+            "Starting MCP servers",
+            *SPINNER_CHARS,
+        ]
 
     def process_name(self) -> str:
         return "codex"

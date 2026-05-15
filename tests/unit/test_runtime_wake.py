@@ -10,6 +10,9 @@ class _ClaudeFake:
     def ready_markers(self):
         return ["bypass permissions on", "? for shortcuts"]
 
+    def busy_markers(self):
+        return []
+
     def process_name(self):
         return "claude"
 
@@ -18,6 +21,9 @@ class _CodexFake:
     """Minimal Codex adapter stand-in for tests."""
     def ready_markers(self):
         return [" high · "]
+
+    def busy_markers(self):
+        return ["Starting MCP servers"]
 
     def process_name(self):
         return "codex"
@@ -48,6 +54,12 @@ def test_is_ready_false_when_pane_blank():
     target = tmux.Target("S", "manager")
     capture = _capturer(["$ "])
     assert wake.is_ready(target, _ClaudeFake(), capture=capture) is False
+
+
+def test_is_ready_false_when_ready_marker_is_still_busy():
+    target = tmux.Target("S", "worker_codex")
+    capture = _capturer(["Starting MCP servers (0/2)\n\n  gpt-5.2 high · /work"])
+    assert wake.is_ready(target, _CodexFake(), capture=capture) is False
 
 
 # ── wake_if_dormant ──────────────────────────────────────────────
@@ -158,6 +170,22 @@ def test_wait_until_ready_polls_with_sleep_then_returns_true():
     sleeps = []
     ok = wake.wait_until_ready(
         target, _ClaudeFake(), capture=capture,
+        sleep=lambda s: sleeps.append(s),
+        timeout_s=5.0, poll_interval_s=0.1,
+    )
+    assert ok is True
+    assert len(sleeps) == 1
+
+
+def test_wait_until_ready_ignores_codex_status_line_while_mcp_boots():
+    target = tmux.Target("S", "worker_codex")
+    capture = _capturer([
+        "Starting MCP servers (0/2)\n\n  gpt-5.2 high · /work",
+        "  gpt-5.2 high · /work",
+    ])
+    sleeps = []
+    ok = wake.wait_until_ready(
+        target, _CodexFake(), capture=capture,
         sleep=lambda s: sleeps.append(s),
         timeout_s=5.0, poll_interval_s=0.1,
     )

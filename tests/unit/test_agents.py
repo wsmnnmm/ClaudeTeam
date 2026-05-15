@@ -193,7 +193,9 @@ def test_kimi_spawn_uses_yolo_flag_and_disable_update():
 def test_codex_busy_markers_include_boot_phase():
     """R-busy fix carries over: Booting MCP server must be a busy marker so
     inject_when_idle waits past the boot race."""
-    assert "Booting MCP server" in CodexCliAdapter().busy_markers()
+    markers = CodexCliAdapter().busy_markers()
+    assert "Booting MCP server" in markers
+    assert "Starting MCP servers" in markers
 
 
 def test_codex_ready_markers_include_reasoning_status_line():

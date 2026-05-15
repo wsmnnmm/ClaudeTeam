@@ -424,6 +424,8 @@ def test_compose_inject_text_user_message_says_use_claudeteam_say():
     after the hint."""
     out = _compose_inject_text("worker_cc", _decision("hello there"))
     assert "claudeteam say worker_cc" in out
+    assert "先做最小真实动作" in out
+    assert "禁止只说" in out
     assert "hello there" in out
     assert "[群聊·老板]" in out
 

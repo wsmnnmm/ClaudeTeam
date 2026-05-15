@@ -625,7 +625,15 @@ def pane_env_prefix(agent: str | None = None) -> str:
     pane_path = _venv_path_prefix()
     if pane_path:
         parts.append(f"PATH={pane_path}")
+    cli = ""
+    if agent:
+        try:
+            cli = config.agent_cli(agent)
+        except KeyError:
+            cli = ""
     for var in _PROPAGATED_ENV:
+        if agent and cli == "codex-cli" and var in providers.PROVIDER_ENV_KEYS:
+            continue
         val = env_str(var)
         if val:
             parts.append(f"{var}={shlex.quote(val)}")
@@ -652,6 +660,13 @@ def lazy_spawn_cmd(agent: str) -> str:
     return f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
 
 
+def _has_unread_inbox(agent: str) -> bool:
+    try:
+        return bool(local_facts.list_messages(agent, unread_only=True))
+    except Exception:
+        return False
+
+
 # Outcome strings returned by provision_pane. Callers print/log differently
 # (start uses loop-style "  → spawned", hire uses "✅ hired") so the helper
 # stays I/O-free and lets the caller render.
@@ -670,7 +685,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
 
     Steps:
       1. Render + persist agent's identity.md (`agents/<name>/identity.md`).
-      2. If agent is `lazy` in team.json: set status 待命, return LAZY.
+      2. If agent is `lazy` in team.json and has no unread inbox: set status 待命, return LAZY.
       3. For codex CLI: ensure cwd is trusted in ~/.codex/config.toml.
       4. Spawn the adapter's CLI in the pane (with pane_env_prefix).
       5. Wait up to 20s for the adapter's ready marker to appear.
@@ -710,7 +725,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     # defaulting to `agent` matches render's own fallback so the
     # rendered file is byte-identical.
     identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
-    if cfg.get("lazy"):
+    if cfg.get("lazy") and not _has_unread_inbox(agent):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY
     if cli == "codex-cli":

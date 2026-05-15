@@ -23,7 +23,7 @@ def _isolated_team(team_data):
 # and a 3-agent test took 180s of pure idle sleep.
 _ALL_READY_MARKERS = (
     "bypass permissions on\n? for shortcuts\n"        # claude-code
-    "OpenAI Codex\npermissions: YOLO\n"                # codex-cli
+    "gpt-5.2 medium · /work\n"                         # codex-cli
     "Welcome to Kimi Code CLI\nSend /help for help\n"  # kimi-code
     ">\nType your request\n"                            # gemini-cli / qwen-code
 )

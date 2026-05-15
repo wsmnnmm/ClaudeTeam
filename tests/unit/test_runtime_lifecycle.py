@@ -132,6 +132,32 @@ def test_pane_env_prefix_uses_agent_specific_provider_preset_when_present():
     assert "global.example" not in prefix
 
 
+def test_pane_env_prefix_skips_host_provider_env_for_codex_agents():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+                "provider_preset": "flux-gpt-tiered",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp, env_patch(
+            ANTHROPIC_BASE_URL="https://dashscope.example/anthropic",
+            ANTHROPIC_AUTH_TOKEN="sk-aliyun-old"):
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"flux-gpt-tiered":{"ANTHROPIC_BASE_URL":"https://flux.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-flux","ANTHROPIC_DEFAULT_SONNET_MODEL":"gpt-5.2"}}}',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix("worker_codex")
+    assert "dashscope.example" not in prefix
+    assert "sk-aliyun-old" not in prefix
+    assert "ANTHROPIC_BASE_URL=https://flux.example/v1" in prefix
+    assert "ANTHROPIC_AUTH_TOKEN=sk-flux" in prefix
+
+
 def test_pane_env_prefix_runtime_agent_override_beats_team_config_preset():
     team = {
         "agents": {
@@ -191,6 +217,25 @@ def test_provision_lazy_agent_sets_待命_and_skips_spawn():
         snap = local_facts.get_status("sleepy")
         assert snap["status"] == "待命"
         assert "lazy" in snap["task"]
+
+
+def test_provision_lazy_agent_with_unread_inbox_wakes_on_start():
+    """Queued work must survive a down/up: lazy workers with unread inbox
+    rows should boot and process instead of staying at a shell prompt."""
+    team = {"agents": {"sleepy": {"cli": "claude-code", "lazy": True}}}
+    spawn_calls = []
+    inject_calls = []
+    with isolated_env(team=team), tmux_patch(
+            spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
+            inject=lambda t, text, **kw: inject_calls.append((str(t), text)) or True), \
+            attr_patch(wake, wait_until_ready=lambda *a, **kw: True):
+        local_facts.append_message("sleepy", "manager", "do pending work", priority="高")
+        outcome = provision_pane("sleepy", tmux.Target("S", "sleepy"))
+
+    assert outcome == READY
+    assert spawn_calls
+    assert inject_calls
+    assert "claudeteam inbox sleepy" in inject_calls[0][1]
 
 
 # ── provision_pane: SPAWN_FAILED ──────────────────────────────────

@@ -51,10 +51,24 @@ def _has_marker(target: tmux.Target, markers: list[str],
     return any(m in text for m in markers)
 
 
+def _busy_markers(adapter: CliAdapter) -> list[str]:
+    try:
+        return list(adapter.busy_markers())
+    except Exception:
+        return []
+
+
 def is_ready(target: tmux.Target, adapter: CliAdapter, *,
              capture: Callable | None = None) -> bool:
     """True if the pane already shows one of the adapter's ready markers."""
-    return _has_marker(target, adapter.ready_markers(), capture)
+    markers = adapter.ready_markers()
+    if not markers:
+        return False
+    capture = capture or tmux.capture_pane
+    text = capture(target, lines=80)
+    return any(m in text for m in markers) and not any(
+        m in text for m in _busy_markers(adapter)
+    )
 
 
 def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
@@ -111,11 +125,13 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
     gets accepted; the next dialog appears; we Enter again until the
     bypass-permissions ready marker shows."""
     ready_markers = adapter.ready_markers()
+    busy_markers = _busy_markers(adapter)
     deadline = now() + timeout_s
     last_dismiss_at = 0.0
     while now() < deadline:
         text = capture(target, lines=80)
-        if any(m in text for m in ready_markers):
+        if (any(m in text for m in ready_markers)
+                and not any(m in text for m in busy_markers)):
             return True
         if all(m in text for m in _BYPASS_WARNING_MARKERS):
             t = now()

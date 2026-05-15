@@ -220,8 +220,10 @@ def _compose_inject_text(agent: str, decision: Decision,
     # 关键指示：哪个频道回 + 怎么 mark read（如果 local_id 已知）+ 是否需
     # 要 send manager 让其汇总。具体命令格式 / --to 选择交给 identity 教。
     if sender == "user" or not sender:
-        hint = (f"[群聊·老板] 用 `claudeteam say {agent} \"...\" --to user` "
-                f"回群。{summary_hint}{read_hint}")
+        hint = (f"[群聊·老板] 先做最小真实动作：查证/跑命令/派活/看日志/看产物，"
+                f"再用 `claudeteam say {agent} \"...\" --to user` 回群。"
+                f"禁止只说“我去核对/稍后给结论”就 `read` 销账；"
+                f"没有新事实就继续执行或明确真实 blocker。{summary_hint}{read_hint}")
     else:
         hint = (f"[同事·{sender}] 回 `claudeteam send {sender} {agent} "
                 f"\"...\"`；要公告到群用 `claudeteam say {agent} "
