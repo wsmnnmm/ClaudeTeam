@@ -9,7 +9,7 @@ import json
 
 from helpers import isolated_env, run_cli
 from claudeteam.runtime import paths
-from claudeteam.store import local_facts, memory
+from claudeteam.store import local_facts, memory, tasks
 
 
 def test_send_writes_inbox_and_prints_local_id():
@@ -18,11 +18,17 @@ def test_send_writes_inbox_and_prints_local_id():
         assert rc == 0, err
         assert "inbox: worker ← manager" in out
         assert "local_id=msg_" in out
+        assert "task_id=T-1" in out
 
         rows = local_facts.list_messages("worker")
         assert len(rows) == 1
         assert rows[0]["content"] == "do task X"
         assert rows[0]["from"] == "manager"
+        assert rows[0]["task_id"] == "T-1"
+        task = tasks.get("T-1")
+        assert task is not None
+        assert task["assignee"] == "worker"
+        assert task["title"] == "do task X"
 
 
 def test_send_touches_sender_heartbeat():
@@ -36,10 +42,10 @@ def test_send_remembers_assignment_for_both_sides():
         run_cli(["send", "worker", "manager", "do X"])
         worker_memory = memory.list_recent("worker", limit=5)
         manager_memory = memory.list_recent("manager", limit=5)
-        assert any(r["kind"] == "task_assigned" and "do X" in r["content"]
+        assert any(r["kind"] == "task_assigned" and "[T-1] do X" in r["content"]
                    for r in worker_memory)
         assert any(r["kind"] == "task_assigned"
-                   and "已派给 worker: do X" in r["content"]
+                   and "已派给 worker (T-1): do X" in r["content"]
                    for r in manager_memory)
 
 
@@ -73,6 +79,28 @@ def test_send_no_inject_flag_skips_pane_inject_after_R168():
         assert "inbox: worker ← manager" in out
         rows = local_facts.list_messages("worker")
         assert len(rows) == 1
+
+
+def test_send_no_task_flag_skips_tracker_creation():
+    with isolated_env():
+        rc, out, err = run_cli(["send", "worker", "manager", "just ping", "--no-task"])
+        assert rc == 0, err
+        assert "task_id=" not in out
+        rows = local_facts.list_messages("worker")
+        assert rows[0]["task_id"] == ""
+        assert tasks.list_tasks() == []
+
+
+def test_send_can_bind_existing_task_id():
+    with isolated_env():
+        tid = tasks.create("worker", "existing", creator="manager")
+        rc, out, err = run_cli(
+            ["send", "worker", "manager", "follow up", "--task-id", tid])
+        assert rc == 0, err
+        assert f"task_id={tid}" in out
+        rows = local_facts.list_messages("worker")
+        assert rows[0]["task_id"] == tid
+        assert len(tasks.list_tasks()) == 1
 
 
 def test_send_default_inject_best_effort_when_no_tmux():
@@ -226,8 +254,9 @@ def test_read_remembers_agent_has_taken_over_task():
         assert "marked read" in out
         rows = memory.list_recent("worker", limit=10)
         assert any(r["kind"] == "note"
-                   and "已接手来自 manager 的任务: task A" in r["content"]
+                   and "[T-1] 已接手来自 manager 的任务: task A" in r["content"]
                    for r in rows)
+        assert tasks.get("T-1")["status"] == "进行中"
 
 
 def test_read_unknown_id_returns_one():

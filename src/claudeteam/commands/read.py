@@ -4,7 +4,7 @@ Mark a message as read by its local id.  Returns 1 if no such message.
 """
 from __future__ import annotations
 
-from claudeteam.store import local_facts, memory
+from claudeteam.store import local_facts, memory, tasks
 from claudeteam.util import error_exit, usage_error
 
 
@@ -23,8 +23,16 @@ def main(argv: list[str]) -> int:
     agent = str(row.get("to", "") or "")
     sender = str(row.get("from", "") or "?")
     content = str(row.get("content", "") or "")
+    task_id = str(row.get("task_id", "") or "")
     if agent and content:
+        prefix = f"[{task_id}] " if task_id else ""
         memory.append(agent, "note",
-                      f"已接手来自 {sender} 的任务: {content}", ref=local_id)
-    print(f"✅ marked read: {local_id}")
+                      f"{prefix}已接手来自 {sender} 的任务: {content}", ref=local_id)
+    task_note = ""
+    if task_id:
+        task = tasks.get(task_id)
+        if task is not None and str(task.get("assignee") or "") == agent:
+            tasks.update(task_id, status="进行中")
+            task_note = f" (task {task_id} -> 进行中)"
+    print(f"✅ marked read: {local_id}{task_note}")
     return 0

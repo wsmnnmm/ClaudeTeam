@@ -436,6 +436,7 @@ def test_compose_inject_text_peer_message_uses_send_back_to_sender():
     out = _compose_inject_text(
         "worker_cc", _decision("question for you", sender="manager"))
     assert "claudeteam send manager worker_cc" in out
+    assert "claudeteam task list --assignee worker_cc" in out
     assert "question for you" in out
     assert "[同事·manager]" in out
 
@@ -446,6 +447,7 @@ def test_compose_inject_text_includes_local_id_for_mark_read():
     out = _compose_inject_text(
         "worker_cc", _decision("ack me"), local_id="msg_42")
     assert "claudeteam read msg_42" in out
+    assert "claudeteam task list --assignee worker_cc" in out
 
 
 def test_compose_inject_text_omits_read_hint_when_local_id_blank():

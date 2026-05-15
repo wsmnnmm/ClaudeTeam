@@ -1,4 +1,4 @@
-"""`claudeteam send <to> <from> <message> [priority] [--no-inject]`
+"""`claudeteam send <to> <from> <message> [priority] [--task-id <T-id>] [--no-task] [--no-inject]`
 
 Append a message to the local inbox AND poke the recipient's tmux
 pane so they know to read it.
@@ -20,30 +20,52 @@ from __future__ import annotations
 
 from claudeteam.agents import adapter_for_agent, identity as _identity
 from claudeteam.runtime import config, lifecycle, tmux, wake
-from claudeteam.store import local_facts, memory
-from claudeteam.util import pop_bool_flag, usage_error
+from claudeteam.store import local_facts, memory, tasks
+from claudeteam.util import error_exit, pop_bool_flag, pop_flag, usage_error
 
 
 USAGE = (
     "usage: claudeteam send <to> <from> <message> [priority] "
-    "[--no-inject]"
+    "[--task-id <T-id>] [--no-task] [--no-inject]"
 )
+
+
+def _task_title(message: str) -> str:
+    line = next((ln.strip() for ln in str(message or "").splitlines() if ln.strip()), "")
+    if not line:
+        return "untitled task"
+    return line if len(line) <= 80 else (line[:77].rstrip() + "...")
 
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
+    task_id = pop_flag(rest, "--task-id") or ""
+    no_task = pop_bool_flag(rest, "--no-task")
     no_inject = pop_bool_flag(rest, "--no-inject")
     if len(rest) < 3:
         return usage_error(USAGE)
+    if task_id and no_task:
+        return error_exit("❌ --task-id and --no-task cannot be used together")
     to, frm, message = rest[0], rest[1], rest[2]
     priority = rest[3] if len(rest) > 3 else "中"
     local_facts.touch_heartbeat(frm)
-    local_id = local_facts.append_message(to, frm, message, priority=priority)
-    memory.append(to, "task_assigned", message, ref=local_id)
+    if task_id:
+        if tasks.get(task_id) is None:
+            return error_exit(f"❌ no such task: {task_id}")
+    elif not no_task:
+        title = _task_title(message)
+        desc = message if message.strip() != title else ""
+        task_id = tasks.create(to, title, description=desc, creator=frm)
+    local_id = local_facts.append_message(
+        to, frm, message, priority=priority, task_id=task_id)
+    task_prefix = f"[{task_id}] " if task_id else ""
+    memory.append(to, "task_assigned", f"{task_prefix}{message}", ref=local_id)
     if frm:
         memory.append(frm, "task_assigned",
-                      f"已派给 {to}: {message}", ref=local_id)
-    print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]")
+                      f"已派给 {to}{f' ({task_id})' if task_id else ''}: {message}",
+                      ref=local_id)
+    suffix = f"  [task_id={task_id}]" if task_id else ""
+    print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]{suffix}")
     if no_inject:
         return 0
     # Best-effort tmux inject so the recipient's pane sees a nudge to
@@ -80,8 +102,12 @@ def main(argv: list[str]) -> int:
                 on_woken=lambda: local_facts.upsert_status(
                     to, "进行中", "responding to first message"),
             )
-        nudge = (f"📥 {frm} → {to}（{local_id}）。"
-                 f"`claudeteam inbox {to}` → 处理 → "
+        task_hint = (f"先 `claudeteam task get {task_id}` 看任务卡；"
+                     if task_id else
+                     f"先 `claudeteam task list --assignee {to}` 对账当前未完成任务；")
+        nudge = (f"📥 {frm} → {to}（{local_id}"
+                 f"{f' / {task_id}' if task_id else ''}）。"
+                 f"{task_hint}`claudeteam inbox {to}` → 处理 → "
                  f"`claudeteam read {local_id}` → 必要时 "
                  f"`claudeteam say {to} \"...\" --to user`。")
         tmux.inject(target, nudge, submit_keys=adapter.submit_keys())

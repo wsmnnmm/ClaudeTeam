@@ -32,6 +32,7 @@ def test_render_worker_uses_worker_template():
                            cli="claude-code", model="sonnet")
     assert "team worker" in text
     assert "Pick up tasks" in text
+    assert "claudeteam task list --assignee worker_cc" in text
 
 
 # ── render() — substitutions ──────────────────────────────────────
@@ -67,6 +68,7 @@ def test_render_argument_order_contract_present_in_manager():
     text = identity.render("manager", role="r", cli="c", model="m")
     assert "claudeteam send <recipient> <sender>" in text
     assert "claudeteam say <agent>" in text
+    assert "claudeteam task list --assignee manager" in text
     assert "❌" in text and "✅" in text
 
 
@@ -74,6 +76,7 @@ def test_render_argument_order_contract_present_in_worker():
     text = identity.render("w", role="r", cli="c", model="m")
     assert "claudeteam send <recipient> <sender>" in text
     assert "claudeteam say <agent>" in text
+    assert "claudeteam task list --assignee w" in text
     assert "❌" in text and "✅" in text
 
 

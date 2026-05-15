@@ -210,6 +210,7 @@ def _compose_inject_text(agent: str, decision: Decision,
     sender = decision.sender or "user"
     read_hint = (f" 完成后用 `claudeteam read {local_id}` 销 inbox。"
                  if local_id else "")
+    task_list_hint = f"先 `claudeteam task list --assignee {agent}` 对账当前未完成任务。"
     summary_hint = ""
     if (agent != "manager"
             and _wants_manager_summary(decision.text)):
@@ -220,12 +221,12 @@ def _compose_inject_text(agent: str, decision: Decision,
     # 关键指示：哪个频道回 + 怎么 mark read（如果 local_id 已知）+ 是否需
     # 要 send manager 让其汇总。具体命令格式 / --to 选择交给 identity 教。
     if sender == "user" or not sender:
-        hint = (f"[群聊·老板] 先做最小真实动作：查证/跑命令/派活/看日志/看产物，"
+        hint = (f"[群聊·老板] {task_list_hint}先做最小真实动作：查证/跑命令/派活/看日志/看产物，"
                 f"再用 `claudeteam say {agent} \"...\" --to user` 回群。"
                 f"禁止只说“我去核对/稍后给结论”就 `read` 销账；"
                 f"没有新事实就继续执行或明确真实 blocker。{summary_hint}{read_hint}")
     else:
-        hint = (f"[同事·{sender}] 回 `claudeteam send {sender} {agent} "
+        hint = (f"[同事·{sender}] {task_list_hint}回 `claudeteam send {sender} {agent} "
                 f"\"...\"`；要公告到群用 `claudeteam say {agent} "
                 f"\"...\" --to user`。{read_hint}")
     return f"{hint}\n\n{decision.text}"
