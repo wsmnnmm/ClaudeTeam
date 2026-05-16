@@ -24,7 +24,7 @@ from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_
 
 USAGE = (
     "usage: claudeteam say <agent> [<message>] "
-    "[--image <path-or-image_key>] "
+    "[--image <path-or-image_key>] [--attach <path-or-image_key>] "
     "[--reply <message_id>] [--as user|bot] [--no-local] "
     "[--to user|manager|worker_<name>]\n"
     "       use '-' as <message> to read message body from stdin"
@@ -250,9 +250,13 @@ def _parse(argv: list[str]) -> _Args | None:
     no_local = pop_bool_flag(rest, "--no-local")
     reply_to = pop_flag(rest, "--reply") or ""
     image = pop_flag(rest, "--image") or ""
+    attach = pop_flag(rest, "--attach") or ""
+    if image and attach:
+        return None
+    image = image or attach
     as_explicit = pop_flag(rest, "--as")
     to_explicit = pop_flag(rest, "--to") or "user"
-    if "--reply" in rest or "--as" in rest or "--to" in rest or "--image" in rest:
+    if "--reply" in rest or "--as" in rest or "--to" in rest or "--image" in rest or "--attach" in rest:
         return None  # flag present but value missing
     if len(rest) < 1:
         return None

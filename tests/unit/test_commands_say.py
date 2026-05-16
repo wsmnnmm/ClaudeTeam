@@ -234,6 +234,29 @@ def test_say_returns_one_when_image_send_fails():
     assert send["calls"] == []
 
 
+def test_say_attach_alias_sends_image():
+    with _isolated(), _fake_send() as send:
+        rc, out, _ = run_cli(["say", "manager", "见附件", "--attach", "artifacts/shot.png"])
+        logs = local_facts.list_logs("manager")
+    assert rc == 0
+    assert "image_id=om_fake_image" in out
+    assert len(send["image_calls"]) == 1
+    assert send["image_calls"][0]["image"] == "artifacts/shot.png"
+    assert len(send["calls"]) == 1
+    assert logs[0]["content"] == "见附件\n[image] artifacts/shot.png"
+
+
+def test_say_rejects_image_and_attach_together():
+    with _isolated():
+        rc, _, err = run_cli([
+            "say", "manager", "msg",
+            "--image", "artifacts/a.png",
+            "--attach", "artifacts/b.png",
+        ])
+    assert rc == 1
+    assert "usage: claudeteam say" in err
+
+
 def test_say_zero_or_one_arg_returns_one():
     rc, _, err = run_cli(["say"])
     assert rc == 1
