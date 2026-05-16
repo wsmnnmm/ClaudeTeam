@@ -169,9 +169,12 @@ def _normalize_visible_escapes(text: str) -> str:
     Keep the transform intentionally narrow:
     - decode only `\r\n`, `\n`, `\t`
     - do not touch other backslash sequences
-    - do not decode path-ish tokens such as `C:\new\test` or `/tmp/\n`
-      where the backslash is more likely literal content than chat
-      formatting.
+    - do not decode path-ish tokens such as `C:\new\test`, `path:\name`,
+      or `/tmp/\n/cache` where the backslash is more likely literal
+      content than chat formatting.
+    - do decode `\n` after URLs. Team reports frequently end list items
+      with `https://.../page\n2) ...`; showing literal `\n` there makes
+      Feishu cards unreadable.
     """
     if "\\" not in text:
         return text
@@ -193,7 +196,12 @@ def _normalize_visible_escapes(text: str) -> str:
 
         prefix = _token_prefix(i)
         nxt = text[i + 1]
-        if any(mark in prefix for mark in (":", "/", "\\")):
+        previous_visible_escape = prefix.endswith(("\\n", "\\r\\n", "\\t"))
+        path_like = (
+            prefix.endswith(("/", "\\", ":"))
+            or ("\\" in prefix and not previous_visible_escape)
+        )
+        if path_like:
             out.append(ch)
             i += 1
             continue

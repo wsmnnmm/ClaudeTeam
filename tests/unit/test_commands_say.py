@@ -323,6 +323,28 @@ def test_say_normalizes_literal_newlines_and_tabs_in_body():
     assert body == "汇总：\n- 第一项\n- 第二项\t已完成"
 
 
+def test_say_normalizes_literal_newlines_after_urls():
+    """Team reports often pass one CLI argument containing URLs followed by
+    visible ``\n`` list breaks. URL text should survive, but the line
+    breaks must render as real Feishu card paragraphs."""
+    with _isolated(), _fake_send_card() as st:
+        rc, _, _ = run_cli([
+            "say", "manager",
+            (
+                r"这次补上链接版：\n\n"
+                r"1) 课程第17章：https://scys.com/deepsea/2001/course/164?chapterId=10838\n"
+                r"2) Cloudflare Turnstile：https://dash.cloudflare.com/?to=/:account/turnstile\n"
+                r"3) QiaChat 当前入口：http://119.91.213.166\n\n"
+                r"结论：推荐先小范围试用。"
+            ),
+        ])
+    assert rc == 0
+    body = st["card_calls"][0]["card"]["body"]["elements"][0]["content"]
+    assert r"\n" not in body
+    assert "https://scys.com/deepsea/2001/course/164?chapterId=10838\n2)" in body
+    assert "http://119.91.213.166\n\n结论" in body
+
+
 def test_say_does_not_overdecode_path_like_backslashes():
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "worker_cc", r"路径 C:\new\test 和 /tmp/\n/cache 保持原样"])

@@ -1,6 +1,7 @@
 """Tests for the top-level claudeteam CLI dispatcher."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from helpers import env_patch, isolated_env, run_cli
@@ -178,7 +179,7 @@ def test_cli_autoloads_project_dotenv_without_overwriting_existing_env():
     assert captured["new_var"] == "loaded"
 
 
-def test_cli_falls_back_to_repo_dotenv_when_cwd_has_no_env(tmp_path):
+def test_cli_falls_back_to_repo_dotenv_when_cwd_has_no_env():
     captured = {}
 
     def handler(argv):
@@ -200,14 +201,15 @@ def test_cli_falls_back_to_repo_dotenv_when_cwd_has_no_env(tmp_path):
         try:
             old_cwd = Path.cwd()
             import os
-            os.chdir(tmp_path)
-            with env_patch(
-                FEISHU_APP_ID=None,
-                FEISHU_APP_SECRET=None,
-                LARKSUITE_CLI_APP_ID=None,
-                LARKSUITE_CLI_APP_SECRET=None,
-            ):
-                rc, _, _ = run_cli(["env-probe-fallback"])
+            with tempfile.TemporaryDirectory() as tmp:
+                os.chdir(tmp)
+                with env_patch(
+                    FEISHU_APP_ID=None,
+                    FEISHU_APP_SECRET=None,
+                    LARKSUITE_CLI_APP_ID=None,
+                    LARKSUITE_CLI_APP_SECRET=None,
+                ):
+                    rc, _, _ = run_cli(["env-probe-fallback"])
         finally:
             os.chdir(old_cwd)
             if original is None:

@@ -19,6 +19,7 @@ expecting recipient to read NOW).
 from __future__ import annotations
 
 from claudeteam.agents import adapter_for_agent, identity as _identity
+from claudeteam.commands.say import _normalize_visible_escapes
 from claudeteam.runtime import config, lifecycle, tmux, wake
 from claudeteam.store import local_facts, memory, tasks
 from claudeteam.util import error_exit, pop_bool_flag, pop_flag, usage_error
@@ -65,7 +66,7 @@ def main(argv: list[str]) -> int:
         return error_exit("❌ --task-id and --no-task cannot be used together")
     if (artifact or done) and no_task:
         return error_exit("❌ --artifact/--done require a tracked task; remove --no-task")
-    to, frm, message = rest[0], rest[1], rest[2]
+    to, frm, message = rest[0], rest[1], _normalize_visible_escapes(rest[2])
     priority = rest[3] if len(rest) > 3 else "中"
     local_facts.touch_heartbeat(frm)
     worker_report = _worker_report_to_manager(to, frm)

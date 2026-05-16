@@ -89,3 +89,26 @@ For user-facing long tasks, require an acceptance checklist derived from the ori
 - Tags: todo002, acceptance-criteria, outcome-drift, long-running-task, study-coach
 
 ---
+
+## [LRN-20260515-001] correction
+
+**Logged**: 2026-05-15T18:30:00+08:00
+**Priority**: high
+**Status**: pending
+**Area**: infra
+
+### Summary
+When a user says "给某个项目换 key", do not assume they mean the team provider presets.
+
+### Details
+The user provided a new Flux-compatible key and asked to configure "恰聊项目". I initially interpreted that as Product Lab / ClaudeTeam provider routing and rotated the local `product-lab/state/provider-presets.json` token before the user corrected me. The actual target was the deployed `qia-chat` app's `/srv/qia-chat/.env.production.local`.
+
+### Suggested Action
+For future key-rotation requests, first resolve the scope explicitly from project names and current deployment layout: application env (`qia-chat/.env.production.local`) vs team orchestration env (`product-lab/state/provider-presets.json`, `.env.local.d/*.env`). If the phrase names an app, inspect that app's runtime env path before touching team-level presets.
+
+### Metadata
+- Source: user_feedback
+- Related Files: `product-lab/state/provider-presets.json`, `/srv/qia-chat/.env.production.local`
+- Tags: secret-rotation, scope-clarity, qia-chat, product-lab
+
+---

@@ -1,7 +1,7 @@
 """Tests for feishu/slash.py — router-level slash command dispatch."""
 from __future__ import annotations
 
-from helpers import attr_patch, tmux_patch
+from helpers import attr_patch, isolated_env, tmux_patch
 from claudeteam.feishu import slash
 from claudeteam.runtime import tmux
 
@@ -80,7 +80,12 @@ def test_team_classifies_each_pane_state_with_emoji():
     def fake_capture(target, lines=80):
         return pane_buffers.get(target.window, "")
 
-    with tmux_patch(capture_pane=fake_capture):
+    team = {"agents": {
+        "manager": {},
+        "worker_cc": {},
+        "worker_codex": {},
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
         reply = slash.dispatch("/team",
                                _ctx(agents=("manager", "worker_cc", "worker_codex")))
 

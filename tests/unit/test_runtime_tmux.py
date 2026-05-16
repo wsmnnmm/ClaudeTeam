@@ -71,6 +71,22 @@ def test_send_text_uses_literal_flag():
     assert rec.calls == [["tmux", "send-keys", "-l", "-t", "S:m", "echo $HOME"]]
 
 
+def test_send_text_chunks_long_payloads():
+    text = "x" * 9001
+    rec = _Recorder()
+    assert send_text(Target("S", "m"), text, run=rec) is True
+    assert len(rec.calls) == 3
+    assert "".join(call[-1] for call in rec.calls) == text
+    assert all(len(call[-1]) <= 4000 for call in rec.calls)
+
+
+def test_send_text_returns_false_if_any_chunk_fails():
+    text = "x" * 9001
+    rec = _Recorder([_FakeResult(), _FakeResult(returncode=1)])
+    assert send_text(Target("S", "m"), text, run=rec) is False
+    assert len(rec.calls) == 2
+
+
 def test_send_keys_sends_named_keys_without_literal():
     rec = _Recorder([_FakeResult()])
     send_keys(Target("S", "m"), "Enter", "C-c", run=rec)

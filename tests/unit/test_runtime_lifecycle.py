@@ -273,6 +273,16 @@ def test_provision_ready_spawns_then_injects_init_prompt():
         assert snap["status"] == "进行中"
 
 
+def test_provision_ready_no_init_when_identity_inject_fails():
+    team = {"agents": {"alice": {"cli": "claude-code", "model": "opus"}}}
+    with isolated_env(team=team), tmux_patch(
+            spawn_agent=lambda *a, **kw: True,
+            inject=lambda *a, **kw: False), \
+            attr_patch(wake, wait_until_ready=lambda *a, **kw: True):
+        outcome = provision_pane("alice", tmux.Target("S", "alice"))
+    assert outcome == READY_NO_INIT
+
+
 def test_provision_ready_pane_env_prefix_baked_into_spawn_cmd():
     team = {"agents": {"a": {"cli": "claude-code"}}}
     spawn_calls = []
