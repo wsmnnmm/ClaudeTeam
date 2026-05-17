@@ -115,6 +115,28 @@ def test_drop_when_text_only_whitespace():
     assert d.is_drop() and d.reason == "empty"
 
 
+def test_drop_when_reply_ping_only_mentions_feishu_cli():
+    d = classify_event(_ev(text="@飞书 CLI"), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_drop_when_only_mentions_known_agent():
+    d = classify_event(_ev(text=" @worker_codex ！ "), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_drop_when_only_mentions_lark_open_id():
+    d = classify_event(_ev(text="@ou_xyz123"), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_mention_with_real_text_still_routes_to_manager():
+    d = classify_event(_ev(text="@飞书 CLI 帮我查一下路由"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.text == "@飞书 CLI 帮我查一下路由"
+
+
 def test_drop_when_known_agent_broadcasts_with_no_target():
     """`[manager] hi everyone` from manager → no human to deliver to."""
     d = classify_event(_ev(text="[manager] hi everyone"), team_agents=_AGENTS)

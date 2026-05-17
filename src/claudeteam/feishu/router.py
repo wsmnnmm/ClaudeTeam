@@ -1,8 +1,8 @@
 """Pure routing decisions for inbound Feishu events.
 
 Given a Feishu message event dict and the team's agent list, decide one of:
-  - DROP:      dedup, cross-team, bot self-talk, empty text, no msg_id,
-               agent message with no @target
+  - DROP:      dedup, cross-team, bot self-talk, empty text, mention-only
+               wake pings, no msg_id, agent message with no @target
   - SLASH:     text starts with `/` after stripping any `[<sender>] `
                prefix → router-level zero-LLM dispatch
                (handled by `feishu/slash.dispatch`)
@@ -18,7 +18,7 @@ acts on the Decision.
 
 Drop reasons (`Decision.reason`) are stable strings so log filters
 can grep for them: `no_msg_id` / `dedup` / `cross_team` / `bot_self`
-/ `empty` / `agent_no_target`.
+/ `empty` / `mention_only` / `agent_no_target`.
 """
 from __future__ import annotations
 
@@ -59,6 +59,8 @@ _MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
 # identity template can teach: "when the boss says @team / @all,
 # you (manager) dispatch each worker individually".
 _BROADCAST_TOKENS = ("@team", "@all", "@everyone")
+_MENTION_ONLY_PUNCT_RE = re.compile(r"[\s,，。.!！?？:：;；、]+")
+_ID_MENTION_RE = re.compile(r"@(?:ou|on|oc|cli|app|user)_[A-Za-z0-9_\-]+")
 
 
 def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
@@ -68,6 +70,33 @@ def _parse_sender(text: str, agents: set[str]) -> tuple[str, str]:
     if not m or m.group(1) not in agents:
         return "", text
     return m.group(1), text[m.end():].lstrip()
+
+
+def _mention_key(text: str) -> str:
+    return _MENTION_ONLY_PUNCT_RE.sub("", text)
+
+
+def _is_mention_only(text: str, agents: set[str]) -> bool:
+    """True for wake-up pings that contain only @mentions.
+
+    Feishu thread replies often arrive as a second event whose body is just
+    "@飞书 CLI". Treating that as a fresh boss request creates duplicate fast
+    acks and can nudge the manager pane even though there is no new task.
+    """
+    key = _mention_key(text)
+    if not key.startswith("@"):
+        return False
+
+    mention_only_keys = {
+        "@飞书CLI",
+        "@飞书机器人",
+        "@机器人",
+        *(_mention_key(token) for token in _BROADCAST_TOKENS),
+        *(_mention_key(f"@{agent}") for agent in agents),
+    }
+    if key in mention_only_keys:
+        return True
+    return _ID_MENTION_RE.fullmatch(key) is not None
 
 
 
@@ -130,6 +159,7 @@ def classify_event(event: dict, *,
         sender == bot_id AND
           card sender is worker → ROUTE to [manager] (manager sees worker say)
         empty text             → DROP "empty"
+        mention-only wake ping → DROP "mention_only"
         text starts with `/`   → SLASH (operator command, zero-LLM dispatch)
         agent-tagged sender + no @target → DROP "agent_no_target"
         else (human sender)    → ROUTE to [default_target]
@@ -168,6 +198,8 @@ def classify_event(event: dict, *,
 
     if not raw_text:
         return Decision(Action.DROP, reason="empty", **common)
+    if _is_mention_only(raw_text, agents):
+        return Decision(Action.DROP, reason="mention_only", **common)
 
     # Slash command: matched at router level, NOT injected into any pane.
     # Deliver layer runs the registered handler and posts the result back
