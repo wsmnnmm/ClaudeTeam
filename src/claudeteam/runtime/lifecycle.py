@@ -637,7 +637,7 @@ def pane_env_prefix(agent: str | None = None) -> str:
         val = env_str(var)
         if val:
             parts.append(f"{var}={shlex.quote(val)}")
-    if agent:
+    if agent and cli != "codex-cli":
         for key, value in providers.provider_env_for_agent(agent).items():
             parts.append(f"{key}={shlex.quote(value)}")
     return " ".join(parts)

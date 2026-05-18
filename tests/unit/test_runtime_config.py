@@ -130,6 +130,51 @@ def test_codex_provider_env_maps_agent_thinking_to_reasoning_effort():
     assert env["OPENAI_REASONING_EFFORT"] == "xhigh"
 
 
+def test_effective_model_prefers_openai_model_for_codex_agent_preset():
+    """A Codex preset with OPENAI_MODEL must drive the CLI --model value.
+
+    Otherwise a team default such as gpt-5.2 can override a backup provider
+    preset and send the pane to an unsupported model.
+    """
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+                "provider_preset": "backup-openai",
+            },
+            "worker_cc": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "backup-openai",
+            },
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "backup-openai": {
+      "OPENAI_BASE_URL": "https://backup.example/v1",
+      "OPENAI_API_KEY": "sk-backup",
+      "OPENAI_MODEL": "gpt-5.4",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        codex_model = providers.effective_model_for_agent("manager", "gpt-5.2")
+        claude_model = providers.effective_model_for_agent("worker_cc", "sonnet")
+
+    assert codex_model == "gpt-5.4"
+    assert claude_model == "claude-sonnet-4"
+
+
 # ── model resolution chain ──────────────────────────────────────
 
 

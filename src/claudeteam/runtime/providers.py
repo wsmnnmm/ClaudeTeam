@@ -237,11 +237,22 @@ def provider_env_for_agent(agent: str) -> dict[str, str]:
 
 def effective_model_for_agent(agent: str, requested_model: str | None = None) -> str:
     requested = (requested_model or config.agent_model(agent) or "").strip()
+    env: dict[str, str] | None = None
     alias_key = ALIAS_ENV_KEY.get(requested.lower())
     if alias_key:
         env = provider_env_for_agent(agent)
         if env.get(alias_key):
             return env[alias_key]
+    try:
+        cli = config.agent_cli(agent)
+    except KeyError:
+        cli = ""
+    if cli == "codex-cli":
+        if env is None:
+            env = provider_env_for_agent(agent)
+        openai_model = env.get("OPENAI_MODEL", "").strip()
+        if openai_model:
+            return openai_model
     return requested
 
 

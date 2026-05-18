@@ -132,7 +132,7 @@ def test_pane_env_prefix_uses_agent_specific_provider_preset_when_present():
     assert "global.example" not in prefix
 
 
-def test_pane_env_prefix_skips_host_provider_env_for_codex_agents():
+def test_pane_env_prefix_skips_provider_env_for_codex_agents():
     team = {
         "agents": {
             "worker_codex": {
@@ -154,8 +154,34 @@ def test_pane_env_prefix_skips_host_provider_env_for_codex_agents():
         prefix = pane_env_prefix("worker_codex")
     assert "dashscope.example" not in prefix
     assert "sk-aliyun-old" not in prefix
-    assert "ANTHROPIC_BASE_URL=https://flux.example/v1" in prefix
-    assert "ANTHROPIC_AUTH_TOKEN=sk-flux" in prefix
+    assert "flux.example" not in prefix
+    assert "sk-flux" not in prefix
+    assert "CODEX_HOME=" in prefix
+
+
+def test_pane_env_prefix_hides_provider_secret_for_codex_agents():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+                "provider_preset": "backup-openai",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"backup-openai":{"OPENAI_BASE_URL":"https://backup.example/v1",'
+            '"OPENAI_API_KEY":"sk-backup","OPENAI_MODEL":"gpt-5.4"}}}',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix("worker_codex")
+    assert "OPENAI_API_KEY=" not in prefix
+    assert "ANTHROPIC_AUTH_TOKEN=" not in prefix
+    assert "OPENAI_BASE_URL=" not in prefix
+    assert "OPENAI_MODEL=" not in prefix
+    assert "CODEX_HOME=" in prefix
 
 
 def test_pane_env_prefix_runtime_agent_override_beats_team_config_preset():
@@ -359,6 +385,47 @@ def test_provision_codex_writes_project_local_custom_provider_config():
     assert 'model = "gpt-5.5"' in cfg
     assert 'model_verbosity = "medium"' in cfg
     assert 'base_url = "https://api.fluxincode.com/v1"' in cfg
+
+
+def test_provision_codex_spawn_model_follows_openai_model_preset():
+    """REGRESSION: Codex homes could be written with the backup model while
+    the actual pane still started with the team/requested model."""
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+                "provider_preset": "backup-openai",
+            }
+        }
+    }
+    spawn_calls = []
+    with isolated_env(team=team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "backup-openai": {
+                        "OPENAI_BASE_URL": "https://backup.example/v1",
+                        "OPENAI_API_KEY": "sk-backup",
+                        "OPENAI_MODEL": "gpt-5.4",
+                    }
+                }
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with tmux_patch(
+                spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
+                inject=lambda *a, **kw: True), \
+                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            outcome = provision_pane("manager", tmux.Target("S", "manager"))
+        cfg = paths.codex_config_file("manager").read_text(encoding="utf-8")
+
+    assert outcome == READY_NO_INIT
+    assert 'model = "gpt-5.4"' in cfg
+    assert "--model gpt-5.4" in spawn_calls[0][1]
+    assert "--model gpt-5.2" not in spawn_calls[0][1]
 
 
 def test_provision_codex_sets_medium_verbosity_for_gpt_5_2():

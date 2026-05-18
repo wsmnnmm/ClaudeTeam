@@ -218,7 +218,7 @@ def test_progress_callback_invoked_per_handled_event():
     process_lines(
         _ndjson(
             _wrapped("om_1", "oc_team", "ou_user", "hi"),
-            _wrapped("om_2", "oc_team", "ou_user", "@worker_cc"),
+            _wrapped("om_2", "oc_team", "ou_user", "@worker_cc please check"),
         ),
         team_agents=_AGENTS,
         chat_id="oc_team",

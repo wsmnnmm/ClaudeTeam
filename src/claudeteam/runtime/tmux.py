@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 
+# tmux parses any bare arg after `send-keys -l -t ...` as a flag unless
+# `--` is present. Keep chunks modest so long prompts fit, and always
+# terminate the option list so a chunk that starts with `-` is still
+# treated as literal text.
 _SEND_TEXT_CHUNK_SIZE = 4000
 
 
@@ -113,7 +117,7 @@ def send_text(target: Target, text: str, *, run: Callable = _default_run) -> boo
         for i in range(0, len(text), _SEND_TEXT_CHUNK_SIZE)
     ] or [""]
     for chunk in chunks:
-        if not _ok(["tmux", "send-keys", "-l", "-t", str(target), chunk], run):
+        if not _ok(["tmux", "send-keys", "-l", "-t", str(target), "--", chunk], run):
             return False
     return True
 

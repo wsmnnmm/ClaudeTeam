@@ -1,5 +1,63 @@
 # Errors
 
+## [ERR-20260517-001] codex_provider_preset_model_override
+
+**Logged**: 2026-05-17T17:13:58+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: infra
+
+### Summary
+Codex provider presets could write the correct project-local Codex config but still spawn panes with the stale requested model.
+
+### Error
+```text
+Codex pane env/config resolved OPENAI_MODEL=gpt-5.4, but spawn command still appended --model gpt-5.2.
+Backup provider did not support gpt-5.2, so quota/provider failover stayed broken at runtime.
+```
+
+### Context
+- Provider failover was being configured through `state/provider-presets.json` and per-agent overrides.
+- `codex_provider_env_for_agent()` honored `OPENAI_MODEL`, while `effective_model_for_agent()` only translated Anthropic aliases.
+- `lifecycle.provision_pane()` and `lazy_spawn_cmd()` pass the effective model into `CodexCliAdapter.spawn_cmd()`, so the stale requested model won at process start.
+
+### Suggested Fix
+For `codex-cli` agents, let `effective_model_for_agent()` prefer non-empty `OPENAI_MODEL` from the resolved provider env. Keep regression coverage on both model resolution and the actual provisioned spawn command.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/claudeteam/runtime/providers.py`, `tests/unit/test_runtime_config.py`, `tests/unit/test_runtime_lifecycle.py`
+
+---
+
+## [ERR-20260517-002] codex_provider_secret_in_tmux_spawn_line
+
+**Logged**: 2026-05-17T17:39:08+08:00
+**Priority**: high
+**Status**: fixed
+**Area**: infra
+
+### Summary
+Codex agents could expose provider secrets in tmux pane scrollback because provider env was appended to the shell spawn prefix.
+
+### Error
+```text
+Codex already had project-local config/auth under CODEX_HOME, but pane_env_prefix still appended provider env to the visible tmux send-keys command.
+```
+
+### Context
+- This is unnecessary for `codex-cli` agents because `_ensure_codex_home()` writes `config.toml` and `auth.json`.
+- The visible spawn line can remain in tmux scrollback, making later pane inspection risky.
+
+### Suggested Fix
+For `codex-cli` agents, keep `CODEX_HOME` and operational env in the pane prefix but do not append provider env. Regression tests should assert that Codex pane prefixes omit provider URL/model/key values while still creating the Codex home config.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/claudeteam/runtime/lifecycle.py`, `tests/unit/test_runtime_lifecycle.py`
+
+---
+
 ## [ERR-20260512-001] feishu_bot_creator_chromium_download_timeout
 
 **Logged**: 2026-05-12T23:50:00+08:00
