@@ -1,6 +1,6 @@
 """Thin wrapper around the lark-cli binary.
 
-Single function: `call(args, *, profile, timeout) -> dict | None`.
+Single function: `call(args, *, profile, timeout, cwd) -> dict | None`.
 
 Returns the `data` field of lark-cli's JSON response on success, `{}` if
 stdout is empty, `None` on any failure.  Proxy bypass is automatic when
@@ -19,10 +19,12 @@ Tests inject a fake subprocess.run via the `run=` kwarg.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pwd
 import shutil
+import signal
 import subprocess
 import time
 from typing import Callable
@@ -30,7 +32,21 @@ from typing import Callable
 from claudeteam.util import env_str
 
 
-_PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+_PROXY_KEYS = (
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+)
+_APP_CREDENTIAL_KEYS = (
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
+    "LARKSUITE_CLI_TENANT_ACCESS_TOKEN",
+)
 
 # Container-deploy token bootstrap. lark-cli on macOS host reads app
 # secrets from the system keychain; that path doesn't work in a
@@ -70,6 +86,51 @@ def _tenant_token_cache_path(app_id: str | None,
     return f"{root}_{safe_app_id}{ext or '.json'}"
 
 
+def _profile_app_id(profile: str, *, home: str | None = None) -> str:
+    """Return the app id configured for a lark-cli profile, if known."""
+    profile = (profile or "").strip()
+    if not profile:
+        return ""
+    root = home or pwd.getpwuid(os.getuid()).pw_dir
+    path = os.path.join(root, ".lark-cli", "config.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.loads(fh.read())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    apps = data.get("apps") if isinstance(data, dict) else None
+    if not isinstance(apps, list):
+        return ""
+    for app in apps:
+        if not isinstance(app, dict):
+            continue
+        if str(app.get("name") or "").strip() == profile:
+            return str(app.get("appId") or "").strip()
+    return ""
+
+
+def _strip_mismatched_profile_credentials(env: dict[str, str],
+                                          profile: str | None) -> None:
+    """Remove inherited app creds when they conflict with the lark profile.
+
+    Agent panes can inherit Feishu app credentials from another running
+    team while still selecting this team's `LARK_CLI_PROFILE`. Passing both
+    to lark-cli makes sends authenticate as the wrong bot and Feishu returns
+    "Bot/User can NOT be out of the chat". If the profile is known locally,
+    trust the profile binding and drop the mismatched app env before token
+    bootstrap.
+    """
+    prof = (profile or env.get("LARK_CLI_PROFILE") or "").strip()
+    expected = _profile_app_id(prof, home=env.get("HOME"))
+    actual = (env.get("FEISHU_APP_ID")
+              or env.get("LARKSUITE_CLI_APP_ID")
+              or "").strip()
+    if not (expected and actual) or expected == actual:
+        return
+    for key in _APP_CREDENTIAL_KEYS:
+        env.pop(key, None)
+
+
 def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
     """POST app_id+app_secret → Feishu tenant_access_token endpoint.
 
@@ -102,7 +163,8 @@ def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
 
 def _ensure_tenant_token(*, fetch: Callable | None = None,
                          now: Callable | None = None,
-                         cache_path: str | None = None) -> str | None:
+                         cache_path: str | None = None,
+                         source_env: dict[str, str] | None = None) -> str | None:
     """Return a usable tenant_access_token from env / cache / live fetch.
 
     Resolution order:
@@ -120,10 +182,15 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     """
     import json as _json
     import time as _time
-    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
-    app_secret = (env_str("FEISHU_APP_SECRET")
-                  or env_str("LARKSUITE_CLI_APP_SECRET"))
-    existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
+    source = source_env if source_env is not None else os.environ
+
+    def _get(key: str) -> str:
+        return str(source.get(key, "") or "").strip()
+
+    app_id = _get("FEISHU_APP_ID") or _get("LARKSUITE_CLI_APP_ID")
+    app_secret = (_get("FEISHU_APP_SECRET")
+                  or _get("LARKSUITE_CLI_APP_SECRET"))
+    existing = _get("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
     if existing and not (app_id and app_secret):
         return existing
     # Resolve cache_path at call time so test patches of the
@@ -158,9 +225,9 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     return str(fresh["token"])
 
 
-def subprocess_env() -> dict[str, str]:
+def subprocess_env(profile: str | None = None) -> dict[str, str]:
     """Build the env to hand to any lark-cli subprocess (one-shot `call` or
-    long-running `event +subscribe`). Strips HTTP/HTTPS proxy vars when
+    long-running `event +subscribe`). Strips HTTP/HTTPS/ALL proxy vars when
     LARK_CLI_NO_PROXY is truthy, since lark-cli doesn't honor that variable
     itself — it's a wrapper-side flag.
 
@@ -192,7 +259,8 @@ def subprocess_env() -> dict[str, str]:
         for key in _PROXY_KEYS:
             env.pop(key, None)
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
-    token = _ensure_tenant_token()
+    _strip_mismatched_profile_credentials(env, profile)
+    token = _ensure_tenant_token(source_env=env)
     if token:
         # lark-cli refuses to start if TENANT_ACCESS_TOKEN is set without a
         # matching LARKSUITE_CLI_APP_ID/SECRET pair — token alone gets
@@ -204,10 +272,10 @@ def subprocess_env() -> dict[str, str]:
         # Propagate all three together; if app_id/secret aren't available
         # in env, skip injection and let lark-cli's profile/keychain
         # path take over.
-        app_id = (env_str("LARKSUITE_CLI_APP_ID")
-                  or env_str("FEISHU_APP_ID"))
-        app_secret = (env_str("LARKSUITE_CLI_APP_SECRET")
-                      or env_str("FEISHU_APP_SECRET"))
+        app_id = (env.get("LARKSUITE_CLI_APP_ID")
+                  or env.get("FEISHU_APP_ID"))
+        app_secret = (env.get("LARKSUITE_CLI_APP_SECRET")
+                      or env.get("FEISHU_APP_SECRET"))
         if app_id and app_secret:
             env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
             env["LARKSUITE_CLI_APP_ID"] = app_id
@@ -279,8 +347,63 @@ def _resolve_timeout(explicit: int | None) -> int:
     return max(1, int(tunables.tunable("router.lark_call_timeout_s", 90)))
 
 
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Best-effort cleanup for lark-cli's node wrapper and child process.
+
+    `subprocess.run(..., timeout=...)` only kills the direct child. The
+    lark-cli wrapper often leaves the real bin process orphaned, which then
+    keeps stale subscribe/list calls alive under PPID=1.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        with contextlib.suppress(OSError):
+            proc.kill()
+        return
+    with contextlib.suppress(OSError):
+        os.killpg(pgid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(OSError):
+        os.killpg(pgid, signal.SIGKILL)
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        proc.wait(timeout=2)
+
+
+def _default_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run lark-cli in its own process group so timeouts clean descendants."""
+    timeout = kwargs.pop("timeout", None)
+    capture_output = bool(kwargs.pop("capture_output", False))
+    text = bool(kwargs.pop("text", False))
+    env = kwargs.pop("env", None)
+    stdout = subprocess.PIPE if capture_output else None
+    stderr = subprocess.PIPE if capture_output else None
+    proc = subprocess.Popen(
+        cmd, stdout=stdout, stderr=stderr, text=text, env=env,
+        start_new_session=True, **kwargs,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_group(proc)
+        try:
+            out, err = proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            out = exc.output
+            err = exc.stderr
+        raise subprocess.TimeoutExpired(
+            cmd=cmd, timeout=timeout, output=out, stderr=err,
+        ) from exc
+    return subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode, stdout=out, stderr=err,
+    )
+
+
 def call(args: list[str], *, profile: str = "", timeout: int | None = None,
-         run: Callable = subprocess.run) -> dict | None:
+         cwd: str | None = None, run: Callable = _default_run) -> dict | None:
     """Execute lark-cli; return parsed `data` JSON, `{}` on empty stdout, None on failure.
 
     `profile` selects the lark-cli profile (`--profile X`).  Pass empty
@@ -294,7 +417,15 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
     timeout_s = _resolve_timeout(timeout)
     t0 = time.monotonic()
     try:
-        r = run(cmd, capture_output=True, text=True, timeout=timeout_s, env=subprocess_env())
+        run_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout_s,
+            "env": subprocess_env(profile=profile),
+        }
+        if cwd:
+            run_kwargs["cwd"] = cwd
+        r = run(cmd, **run_kwargs)
     except subprocess.TimeoutExpired:
         elapsed = (time.monotonic() - t0)
         print(f"  ⚠️ lark-cli timeout ({timeout_s}s after {elapsed:.1f}s): {' '.join(args[:3])}")
@@ -327,10 +458,7 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
                 reason = _extract_error_message(parsed)
                 print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {reason}"[:200])
                 return None
-        head = next(
-            (line for line in ((r.stderr or "") + "\n" + (r.stdout or "")).splitlines() if line.strip()),
-            "",
-        )
+        head = _plain_error_preview(r.stdout, r.stderr)
         print(f"  ⚠️ lark-cli failed (rc={r.returncode}): {head}"[:200])
         return None
     if not r.stdout.strip():
@@ -385,3 +513,23 @@ def _extract_error_message(full: dict) -> str:
     if code := full.get("code"):
         return str(code)
     return "?"
+
+
+def _plain_error_preview(stdout: str | None, stderr: str | None) -> str:
+    """Pick the useful line from non-JSON lark-cli failures.
+
+    Some commands print progress first, then the real cause, e.g.
+    `uploading image: foo.png` followed by `Error: image size ...`.
+    Prefer explicit Error lines so the audit log points at the fix.
+    """
+    lines = [
+        line.strip()
+        for line in f"{stderr or ''}\n{stdout or ''}".splitlines()
+        if line.strip()
+    ]
+    if not lines:
+        return ""
+    for line in lines:
+        if line.lower().startswith("error:"):
+            return line
+    return lines[-1]

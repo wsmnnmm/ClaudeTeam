@@ -19,7 +19,7 @@ from typing import Callable
 # `--` is present. Keep chunks modest so long prompts fit, and always
 # terminate the option list so a chunk that starts with `-` is still
 # treated as literal text.
-_SEND_TEXT_CHUNK_SIZE = 4000
+_SEND_TEXT_CHUNK_SIZE = 800
 
 
 @dataclass(frozen=True)

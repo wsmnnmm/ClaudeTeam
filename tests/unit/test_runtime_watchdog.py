@@ -7,8 +7,10 @@ from pathlib import Path
 
 from helpers import isolated_env
 from claudeteam.runtime.watchdog import (
+    NetworkStatus,
     ProcessSpec,
     ProcessState,
+    check_network,
     default_specs,
     is_alive,
     list_orphan_pids,
@@ -515,3 +517,45 @@ def test_all_known_specs_includes_both_router_and_watchdog():
         # PID reuse — see ProcessSpec.expected_cmdline)
         for s in specs:
             assert s.expected_cmdline == "claudeteam"
+
+
+# ── network probe ──────────────────────────────────────────────────
+
+
+def test_check_network_localhost_dns_ok():
+    """DNS for localhost always resolves; TCP to an unlikely port fails."""
+    status = check_network(targets=[("localhost", 19999)], timeout=1.0)
+    # DNS ok but TCP fails → not ok
+    assert not status.ok
+    assert any("TCP" in f for f in status.failures)
+
+
+def test_check_network_dns_failure():
+    status = check_network(targets=[("this-host-definitely-does-not-exist.invalid", 443)])
+    assert not status.ok
+    assert any("DNS" in f for f in status.failures)
+
+
+def test_check_network_empty_targets_returns_ok():
+    status = check_network(targets=[])
+    assert status.ok
+
+
+def test_check_network_multiple_targets_reports_all_failures():
+    status = check_network(targets=[
+        ("this-host-definitely-does-not-exist.invalid", 443),
+        ("another-bogus-host.invalid", 443),
+    ])
+    assert not status.ok
+    assert len(status.failures) == 2
+
+
+def test_check_network_mixed_results():
+    """DNS failure on first, success on second — overall not ok."""
+    # Two bogus hosts — both should fail DNS, giving 2 failures
+    status = check_network(targets=[
+        ("this-host-definitely-does-not-exist.invalid", 443),
+        ("another-bogus-host.invalid", 443),
+    ])
+    assert not status.ok
+    assert len(status.failures) == 2

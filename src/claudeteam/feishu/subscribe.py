@@ -17,9 +17,20 @@ from typing import Callable, Iterable
 
 from claudeteam.feishu.deliver import apply
 from claudeteam.feishu.router import classify_event
+from claudeteam.runtime import manager_action_guard
 
 
 _PLAIN_POST_IMAGE_RE = re.compile(r"\[Image:\s*([^\]\s]+)\]")
+_REPLY_PARENT_FIELDS = (
+    "reply_to",
+    "parent_id",
+    "parent_message_id",
+    "reply_to_id",
+    "reply_message_id",
+    "quote_message_id",
+    "quoted_message_id",
+)
+_REPLY_THREAD_FIELDS = ("root_id", "thread_id")
 
 
 @dataclass
@@ -87,6 +98,13 @@ def _normalise(raw: dict, *,
     sender_type = (sender.get("sender_type")
                    or sender.get("id_type")
                    or ev.get("sender_type", ""))
+    reply_to = _first_field(msg, ev, names=_REPLY_PARENT_FIELDS)
+    root_id = _first_field(msg, ev, names=("root_id",))
+    thread_id = _first_field(msg, ev, names=("thread_id",))
+    reply_lookup_ids = _dedupe_ids([
+        reply_to,
+        *(_first_field(msg, ev, names=(name,)) for name in _REPLY_THREAD_FIELDS),
+    ])
     return {
         "message_id": message_id,
         "chat_id": msg.get("chat_id") or ev.get("chat_id", ""),
@@ -96,8 +114,35 @@ def _normalise(raw: dict, *,
         "sender_type": sender_type,
         "text": text,
         "msg_type": msg_type,
+        "reply_to": reply_to,
+        "reply_lookup_ids": reply_lookup_ids,
+        "root_id": root_id,
+        "thread_id": thread_id,
         "create_time": msg.get("create_time") or ev.get("create_time", ""),
     }
+
+
+def _first_field(*sources: dict, names: tuple[str, ...]) -> str:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for name in names:
+            value = str(source.get(name) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _dedupe_ids(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
 
 
 def _extract_text(content, msg_type: str, *,
@@ -304,10 +349,13 @@ def process_lines(lines: Iterable[str], *,
                   bot_id: str = "",
                   default_target: str = "manager",
                   apply_fn: Callable = apply,
+                  base_event_fn: Callable | None = None,
                   on_progress: Callable | None = None,
                   on_line_received: Callable | None = None,
                   seen_msg_ids: set[str] | None = None,
-                  resource_downloader: Callable | None = None) -> LoopStats:
+                  resource_downloader: Callable | None = None,
+                  reply_context_resolver: Callable | None = None,
+                  event_lock: object | None = None) -> LoopStats:
     """Run the subscribe loop over `lines` (one Feishu event JSON each).
 
     Designed to be exited by exhausting the iterator.  The production
@@ -323,10 +371,7 @@ def process_lines(lines: Iterable[str], *,
     stats = LoopStats()
     if seen_msg_ids is not None:
         stats.seen_msg_ids = seen_msg_ids
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            continue
+    def _process_one(line: str) -> None:
         # Subscribe-aliveness ping: fire on every non-empty stdout line,
         # before classification. Even DROPs (bot_self / dedup / bad_json)
         # prove the lark-cli WebSocket is still emitting; only by counting
@@ -343,8 +388,40 @@ def process_lines(lines: Iterable[str], *,
             payload = json.loads(line)
         except json.JSONDecodeError:
             _record_drop(stats, "bad_json")
-            continue
+            return
+        if base_event_fn is not None:
+            header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+            event_id = (
+                str(payload.get("event_id") or "")
+                or str(header.get("event_id") or "")
+            )
+            if event_id and event_id in stats.seen_msg_ids:
+                _record_drop(stats, "dedup")
+                return
+            try:
+                handled = int(base_event_fn(payload) or 0)
+            except Exception as e:
+                print(f"  ⚠️ base_event_fn raised: {e}")
+                _record_drop(stats, "base_event_error")
+                return
+            if handled:
+                if event_id:
+                    stats.seen_msg_ids.add(event_id)
+                stats.handled += handled
+                return
         event = _normalise(payload, resource_downloader=resource_downloader)
+        if (event.get("reply_to") or event.get("reply_lookup_ids")) and reply_context_resolver is not None:
+            try:
+                event["reply_context"] = str(reply_context_resolver(event) or "")
+            except Exception as e:
+                parent_id = (
+                    event.get("reply_to")
+                    or next(iter(event.get("reply_lookup_ids") or []), "")
+                )
+                event["reply_context"] = (
+                    f"[飞书回复上下文] 这是一条回复消息，父消息 id={parent_id}；"
+                    f"自动获取父消息失败：{e}。不要按孤立文本回答，先说明需按被回复消息核对。"
+                )
         decision = classify_event(
             event,
             team_agents=team_agents,
@@ -354,8 +431,26 @@ def process_lines(lines: Iterable[str], *,
             default_target=default_target,
         )
         if decision.is_drop():
+            if (decision.reason == "bot_self"
+                    and decision.sender == default_target
+                    and decision.text):
+                try:
+                    manager_action_guard.observe_public_manager_reply(
+                        decision.text, ref=decision.msg_id)
+                except Exception as e:
+                    print(f"  ⚠️ manager public-reply observe failed on {decision.msg_id}: {e}")
             _record_drop(stats, decision.reason or "drop")
-            continue
+            # Permanent drops (bot_self, cross_team, empty, etc.) should
+            # not replay forever on every catchup restart. Apply errors
+            # remain retryable below because they are not permanent drops.
+            if decision.msg_id:
+                stats.seen_msg_ids.add(decision.msg_id)
+            if on_progress is not None:
+                try:
+                    on_progress(decision, stats)
+                except Exception as e:
+                    print(f"  ⚠️ on_progress callback failed on dropped {decision.msg_id}: {e}")
+            return
         try:
             apply_fn(decision)
         except Exception as e:
@@ -369,8 +464,8 @@ def process_lines(lines: Iterable[str], *,
             # (catchup or stream re-receive) can re-attempt later.
             print(f"  ⚠️ apply_fn raised on {decision.msg_id}: {e}")
             _record_drop(stats, "apply_error")
-            continue
-        # Mark seen ONLY after successful apply. Round-63: previous order
+            return
+        # Mark routed events seen ONLY after successful apply. Round-63: previous order
         # added to seen BEFORE apply, which meant a transient apply
         # failure permanently dedup'd the message (no retry possible
         # within the process_lines run). With the new order, retries
@@ -389,4 +484,14 @@ def process_lines(lines: Iterable[str], *,
                 # NOT kill the daemon. Cursor staleness is recoverable
                 # on the next event; daemon death is not.
                 print(f"  ⚠️ on_progress callback failed on {decision.msg_id}: {e}")
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if event_lock is None:
+            _process_one(line)
+        else:
+            with event_lock:
+                _process_one(line)
     return stats

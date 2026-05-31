@@ -33,6 +33,19 @@ def test_write_cursor_skips_when_either_field_blank():
         assert not paths.router_cursor_file().exists()
 
 
+def test_bootstrap_cursor_if_empty_seeds_start_anchor_once():
+    with isolated_env():
+        assert catchup.bootstrap_cursor_if_empty(now_ms=lambda: 1234567890000)
+        cur = catchup.read_cursor()
+        assert cur == {
+            "message_id": "__router_bootstrap__",
+            "create_time": "1234567890000",
+        }
+
+        assert not catchup.bootstrap_cursor_if_empty(now_ms=lambda: 999)
+        assert catchup.read_cursor() == cur
+
+
 def test_read_cursor_returns_empty_on_garbage_json():
     with isolated_env():
         paths.ensure_state_dir()
@@ -187,6 +200,16 @@ def test_pending_lines_emits_subscribe_compatible_shape():
     assert msg["create_time"] == "500"
     assert json.loads(msg["content"])["text"] == "hello world"
     assert line["event"]["sender"]["sender_id"]["open_id"] == "ou_42"
+
+
+def test_pending_lines_preserves_reply_to_parent_message_id():
+    history = [_msg("om_child", "500", text="@bot 这个是什么意思")]
+    history[0]["reply_to"] = "om_parent"
+    with isolated_env():
+        catchup.write_cursor("seed", "1")
+        lines = catchup.pending_lines("oc_chat", list_fn=lambda: history)
+    msg = json.loads(lines[0])["event"]["message"]
+    assert msg["reply_to"] == "om_parent"
 
 
 def test_pending_lines_carries_post_message_through_to_subscribe():

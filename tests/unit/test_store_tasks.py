@@ -43,6 +43,28 @@ def test_create_with_artifact_persists_path():
         assert t["artifact_path"] == "artifacts/T-1/out.md"
 
 
+def test_create_with_topic_persists_clean_name():
+    with isolated_env():
+        tid = tasks.create("worker", "fix X", topic="#学测2025")
+        t = tasks.get(tid)
+        assert t["topic"] == "学测2025"
+
+
+def test_create_with_founder_os_metadata_persists():
+    with isolated_env():
+        tid = tasks.create(
+            "worker", "validate buyer pain",
+            founder_stage="idea",
+            stage_exit_evidence="3 buyer interviews with current workaround",
+            evidence_action="book 1 interview today",
+            non_goal="do not build demo before evidence")
+        t = tasks.get(tid)
+        assert t["founder_stage"] == "idea"
+        assert t["stage_exit_evidence"] == "3 buyer interviews with current workaround"
+        assert t["evidence_action"] == "book 1 interview today"
+        assert t["non_goal"] == "do not build demo before evidence"
+
+
 def test_create_empty_title_rejects():
     with isolated_env():
         try:
@@ -76,13 +98,13 @@ def test_update_invalid_status_rejects():
 
 def test_update_missing_task_returns_false():
     with isolated_env():
-        assert tasks.update("T-99", status="已完成") is False
+        assert tasks.update("T-99", status="已完成", _force=True) is False
 
 
 def test_update_terminal_status_sets_completed_at():
     with isolated_env():
         tid = tasks.create("w", "x")
-        tasks.update(tid, status="已完成")
+        tasks.update(tid, status="已完成", artifact_path="artifacts/test.md", _force=True)
         t = tasks.get(tid)
         assert t["completed_at"] is not None
 
@@ -90,7 +112,7 @@ def test_update_terminal_status_sets_completed_at():
 def test_update_back_from_terminal_clears_completed_at():
     with isolated_env():
         tid = tasks.create("w", "x")
-        tasks.update(tid, status="已完成")
+        tasks.update(tid, status="已完成", artifact_path="artifacts/test.md", _force=True)
         tasks.update(tid, status="进行中")
         assert tasks.get(tid)["completed_at"] is None
 
@@ -120,6 +142,29 @@ def test_update_can_store_artifact_and_reviewer():
         assert t["reviewed_at"] is not None
 
 
+def test_update_can_store_topic():
+    with isolated_env():
+        tid = tasks.create("w1", "old")
+        tasks.update(tid, topic="TeamOps")
+        assert tasks.get(tid)["topic"] == "TeamOps"
+
+
+def test_update_can_store_founder_os_metadata():
+    with isolated_env():
+        tid = tasks.create("w1", "old")
+        tasks.update(
+            tid,
+            founder_stage="launch",
+            stage_exit_evidence="support triage no longer depends on boss",
+            evidence_action="ship one support SOP card",
+            non_goal="do not open a second market")
+        t = tasks.get(tid)
+        assert t["founder_stage"] == "launch"
+        assert t["stage_exit_evidence"] == "support triage no longer depends on boss"
+        assert t["evidence_action"] == "ship one support SOP card"
+        assert t["non_goal"] == "do not open a second market"
+
+
 def test_update_can_reassign_and_retitle():
     with isolated_env():
         tid = tasks.create("w1", "old", description="old-d")
@@ -135,7 +180,7 @@ def test_list_filters_by_status():
     with isolated_env():
         a = tasks.create("w", "a")
         b = tasks.create("w", "b")
-        tasks.update(a, status="已完成")
+        tasks.update(a, status="已完成", artifact_path="artifacts/test.md", _force=True)
         only_done = tasks.list_tasks(status="已完成")
         only_open = tasks.list_tasks(status="待处理")
         assert [t["id"] for t in only_done] == [a]
@@ -149,6 +194,15 @@ def test_list_filters_by_assignee():
         tasks.create("alice", "task-a2")
         out = tasks.list_tasks(assignee="alice")
         assert {t["title"] for t in out} == {"task-a", "task-a2"}
+
+
+def test_list_filters_by_topic_case_insensitive():
+    with isolated_env():
+        tasks.create("alice", "task-a", topic="TeamOps")
+        tasks.create("bob", "task-b", topic="学测2025")
+        tasks.create("alice", "task-c")
+        out = tasks.list_tasks(topic="teamops")
+        assert [t["title"] for t in out] == ["task-a"]
 
 
 def test_list_returns_empty_when_store_missing():

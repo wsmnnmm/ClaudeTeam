@@ -27,6 +27,7 @@ project-level `CODEX_HOME`, and the Feishu env into their
 from __future__ import annotations
 
 import json
+import shutil
 import shlex
 import sys
 from pathlib import Path
@@ -34,7 +35,7 @@ from pathlib import Path
 from claudeteam.agents import get_adapter, identity
 from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.runtime import config, paths, providers, tmux, wake
+from claudeteam.runtime import config, paths, providers, team_command, tmux, wake
 from claudeteam.store import local_facts
 from claudeteam.util import atomic_write_text, env_path, env_str
 
@@ -64,11 +65,47 @@ _PROPAGATED_ENV = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    # Tool/API runtime env for agents. Feishu subprocesses strip proxy vars
+    # when [feishu] no_proxy=true, but model/API tools inside panes still need
+    # the proxy explicitly; macOS system proxy settings do not automatically
+    # enter tmux-spawned shells.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "OPENAI_IMAGE_MODEL",
+    "OPENAI_IMAGE_BASE_URL",
+    "OPENAI_IMAGE_API_KEY",
+    "REPLICATE_API_TOKEN",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
     "LARKSUITE_CLI_APP_ID",
     "LARKSUITE_CLI_APP_SECRET",
 )
+_FEISHU_APP_ENV = {
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
+}
+
+
+def _feishu_env_matches_profile(configured_lark_profile: str) -> bool:
+    if not configured_lark_profile:
+        return True
+    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
+    if not app_id:
+        return True
+    try:
+        from claudeteam.feishu import lark
+        expected = lark._profile_app_id(configured_lark_profile)
+    except Exception:
+        expected = ""
+    return not expected or app_id == expected
 
 
 def _venv_path_prefix() -> str:
@@ -549,6 +586,50 @@ def _codex_mcp_sections(agent: str) -> str:
     return ""
 
 
+def _sync_bundled_codex_skills(codex_home: Path) -> None:
+    """Copy repo-bundled Codex skills into an agent's isolated CODEX_HOME."""
+    source_root = Path(__file__).resolve().parents[3] / "skills"
+    if not source_root.is_dir():
+        return
+    dest_root = codex_home / "skills"
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for source in sorted(source_root.iterdir()):
+        if source.name.startswith(".") or not (source / "SKILL.md").is_file():
+            continue
+        try:
+            shutil.copytree(
+                source,
+                dest_root / source.name,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+            )
+        except OSError:
+            continue
+
+
+def _migrate_codex_wire_api(provider_env: dict[str, str], agent: str) -> None:
+    """Auto-migrate deprecated codex wire_api values before config render.
+
+    codex >= 0.135.0 dropped wire_api="chat" support. If the provider
+    chain (ccswitch.json → agent overrides → host defaults) still resolves
+    to the old value, agents fail to start with a TOML parse error. Detect
+    and migrate so a stale ccswitch.json doesn't silently kill the team.
+    """
+    wire_api = (provider_env.get("OPENAI_WIRE_API") or "").strip().lower()
+    if wire_api == "chat":
+        import sys
+        print(
+            f"  ⚠️ {agent}: OPENAI_WIRE_API='chat' is no longer supported "
+            f"by codex >= 0.135.0; auto-migrating to 'responses'. "
+            f"Update ccswitch.json or agent provider_env to silence this warning.",
+            file=sys.stderr,
+        )
+        provider_env["OPENAI_WIRE_API"] = "responses"
+
+
 def _ensure_codex_home(agent: str, model: str) -> None:
     """Materialise the project-scoped Codex home.
 
@@ -567,6 +648,12 @@ def _ensure_codex_home(agent: str, model: str) -> None:
     except OSError:
         return
     provider_env = providers.codex_provider_env_for_agent(agent)
+    # Config compatibility guard: codex >= 0.135.0 dropped wire_api="chat".
+    # If the provider chain still resolves to the old value (stale
+    # ccswitch.json, agent override, or host defaults), auto-migrate so
+    # the agent doesn't fail to start with "wire_api = \"chat\" is no
+    # longer supported". "responses" was supported before the removal too.
+    _migrate_codex_wire_api(provider_env, agent)
     for key, value in _host_codex_provider_defaults(agent).items():
         provider_env.setdefault(key, value)
     if model and not provider_env.get("OPENAI_MODEL"):
@@ -579,6 +666,7 @@ def _ensure_codex_home(agent: str, model: str) -> None:
         atomic_write_text(paths.codex_config_file(agent), cfg_text)
     except OSError:
         pass
+    _sync_bundled_codex_skills(codex_home)
     dst_auth = paths.codex_auth_file(agent)
     api_key = provider_env.get("OPENAI_API_KEY", "").strip()
     if api_key:
@@ -618,6 +706,7 @@ def pane_env_prefix(agent: str | None = None) -> str:
     workers resolve config from the project-scoped codex home rather
     than falling back to `~/.codex`.
     """
+    team_command.ensure_config_pointer()
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
     parts.append(f"CLAUDETEAM_CONFIG_FILE={shlex.quote(str(paths.config_file()))}")
     codex_home = paths.codex_home_dir(agent) if agent else paths.codex_home_dir()
@@ -631,16 +720,59 @@ def pane_env_prefix(agent: str | None = None) -> str:
             cli = config.agent_cli(agent)
         except KeyError:
             cli = ""
+    configured_lark_profile = ""
+    try:
+        from claudeteam.runtime import tunables
+        raw_profile = tunables.load().get("lark_profile")
+        configured_lark_profile = str(raw_profile).strip() if raw_profile else ""
+    except Exception:
+        configured_lark_profile = ""
+    if configured_lark_profile:
+        parts.append(f"LARK_CLI_PROFILE={shlex.quote(configured_lark_profile)}")
+    feishu_env_ok = _feishu_env_matches_profile(configured_lark_profile)
+
     for var in _PROPAGATED_ENV:
-        if agent and cli == "codex-cli" and var in providers.PROVIDER_ENV_KEYS:
+        if var == "LARK_CLI_PROFILE" and configured_lark_profile:
+            continue
+        if var in _FEISHU_APP_ENV and not feishu_env_ok:
+            continue
+        if agent and var in providers.PROVIDER_ENV_KEYS:
             continue
         val = env_str(var)
         if val:
             parts.append(f"{var}={shlex.quote(val)}")
-    if agent and cli != "codex-cli":
+    if agent and cli not in {"codex-cli", "claude-code"}:
         for key, value in providers.provider_env_for_agent(agent).items():
             parts.append(f"{key}={shlex.quote(value)}")
     return " ".join(parts)
+
+
+def _team_root_dir() -> Path:
+    """Directory an agent CLI should run in.
+
+    Agents may call `claudeteam send` from any pane cwd, but their
+    project identity, config, and local docs live beside claudeteam.toml.
+    Spawn commands therefore cd to the config directory before launching
+    the CLI, instead of trusting whatever cwd the placeholder shell had.
+    """
+    return paths.config_file().parent
+
+
+def _write_spawn_script(agent: str, command: str) -> Path:
+    path = paths.state_dir() / "runtime" / f"spawn-{agent}.sh"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, "#!/usr/bin/env bash\nset -e\n" + command + "\n")
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _agent_spawn_cmd(agent: str, adapter, model: str) -> str:
+    root = shlex.quote(str(_team_root_dir()))
+    command = f"cd {root} && {pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    return f"bash {shlex.quote(str(_write_spawn_script(agent, command)))}"
 
 
 def lazy_spawn_cmd(agent: str) -> str:
@@ -653,11 +785,12 @@ def lazy_spawn_cmd(agent: str) -> str:
     cli = config.agent_cli(agent)
     requested = config.agent_model(agent)
     model = providers.effective_model_for_agent(agent, requested)
+    root = _team_root_dir()
     if cli == "codex-cli":
         _ensure_codex_home(agent, model)
-        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file(agent))
+        ensure_workdir_trusted(root, config_path=paths.codex_config_file(agent))
     adapter = get_adapter(cli)
-    return f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    return _agent_spawn_cmd(agent, adapter, model)
 
 
 def _has_unread_inbox(agent: str) -> bool:
@@ -727,10 +860,11 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
     if cfg.get("lazy") and not _has_unread_inbox(agent):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
+        local_facts.touch_heartbeat(agent)
         return LAZY
     if cli == "codex-cli":
         _ensure_codex_home(agent, model)
-        ensure_workdir_trusted(Path.cwd(), config_path=paths.codex_config_file(agent))
+        ensure_workdir_trusted(_team_root_dir(), config_path=paths.codex_config_file(agent))
     if cli == "claude-code":
         _ensure_claude_agent_home(agent)
     try:
@@ -742,7 +876,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    cmd = _agent_spawn_cmd(agent, adapter, model)
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
     # 60s ready timeout (was 20s): fresh container claude panes go
@@ -761,4 +895,5 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     else:
         outcome = READY_NO_INIT
     local_facts.upsert_status(agent, "进行中", "initializing")
+    local_facts.touch_heartbeat(agent)
     return outcome

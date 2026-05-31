@@ -53,22 +53,26 @@ session = "{session}"
 #   provider_env 可选  inline env 覆盖, 例如 ANTHROPIC_BASE_URL / AUTH_TOKEN / DEFAULT_*_MODEL
 #   card_color  可选  飞书 v2 色: blue/green/red/yellow/purple/orange/grey
 #   lazy        可选  true=首消息触发起 CLI; 默认 false
+#   identity_profile 可选  slim=常驻短身份 + skill/SOP 按需加载; full=历史长身份
 [team.agents.manager]
 cli   = "claude-code"
 model = "opus"
 role  = "团队主管"
+identity_profile = "slim"
 card_color = "blue"
 
 [team.agents.worker_cc]
 cli   = "claude-code"
 model = "sonnet"
 role  = "Claude Code 员工"
+identity_profile = "slim"
 card_color = "green"
 
 [team.agents.worker_codex]
 cli   = "codex-cli"
 model = "gpt-5.5"
 role  = "Codex 员工"
+identity_profile = "slim"
 card_color = "purple"
 
 # ── [chat.publish]  群里能看到什么消息 ─────────────────────
@@ -106,16 +110,94 @@ ready_marker_timeout_s = 60
 # 漏的事件而不是 ~10 min. Linux WebSocket 稳定, 600s 避免空闲群被反复
 # 重启 (180s 太紧, 1200s 太松, 都踩过坑).
 # stale_event_threshold_s     = 600
+catchup_poll_interval_s       = 30.0   # 显式 REST 心跳/补漏周期；老板消息最坏按此级别补进来
+catchup_failure_reconnect_count = 3    # 连续心跳失败后让 router 重连
+restart_on_catchup_miss       = true   # 回补抓到漏消息后重连 subscribe 快路径
+catchup_miss_reconnect_grace_s = 5.0   # subscribe 空闲超过此值才因漏消息重连
 lark_call_timeout_s            = 90     # 单次 lark-cli 调用超时
 alarm_card_color               = "red"  # 守护进入 cooldown 时报警卡片颜色
 seen_max_lines                 = 5000   # router.seen 去重表 trim 阈值
 subscribe_watchdog_period_s    = 20.0   # 内部订阅子进程健康检查周期
+
+[router.fast_ack]
+enabled = true
+max_age_s = 180
+text = "收到，已进入主管前台。这只是自动入队回执，不代表已完成处理；我会先分诊话题/任务，再给事实、卡点和下一步。"
+
+[router.first_response]
+enabled = false      # true=老板->manager 时走独立真实模型首响通道，默认保守关闭
+provider = "anthropic"
+endpoint = "responses" # responses=OpenAI兼容快通道；失败时自动回退 messages/chat
+model = "haiku"      # haiku/sonnet/opus alias 会从 provider env 解析
+timeout_s = 8.0
+max_age_s = 180
+max_tokens = 180
+max_chars = 180
+temperature = 0.2
+send_as_user = false
+reply_to_original = false
+
+[router.boss_preempt]
+enabled = true       # 老板→manager 高优先级消息可中断 busy manager pane
+keys    = "C-c"      # tmux send-keys 语法；必要时可改成 "Esc"
 
 # ── [watchdog]  daemon 守护循环 ────────────────────────────
 [watchdog]
 check_interval_s        = 30    # 守护 tick 周期 (查 router 是否还活)
 cred_check_interval_s   = 300   # 多久查一次 Claude OAuth 是否快过期
 cred_refresh_ahead_s    = 1800  # 剩余 < 此值时强制 refresh OAuth
+
+# ── [manager_watch]  manager 派工超时兜底 ──────────────────
+[manager_watch]
+enabled          = true   # manager 派给 worker 后, 由 watchdog 做超时兜底
+check_interval_s = 30     # 多久扫描一次未闭环任务
+overdue_s        = 600    # worker 超过多久无信号就私下提醒 manager
+repeat_s         = 900    # 同一个未变化任务多久重复提醒一次
+max_task_age_s   = 21600  # 首次上线只盯最近 6h 的任务, 避免历史旧卡刷屏
+public_overdue_s = 1800   # 群里兜底卡阈值；待验收+已有产物只私下提醒 manager
+chat_alert       = true   # true=严重超时才群里发兜底卡; false=只提醒 manager inbox/pane
+card_color       = "orange"
+boss_inbox_overdue_s = 300        # 老板消息快回后多久未读就重投给 manager
+boss_inbox_repeat_s = 300         # 同一条老板未读消息多久重复提醒
+boss_inbox_public_overdue_s = 600 # 超过多久在群里发“已自动重投”兜底卡
+boss_inbox_max_age_s = 21600      # 首次上线只盯最近 6h 的老板消息
+
+# ── [topic_digest]  每日话题恢复卡快照 ─────────────────────
+[topic_digest]
+enabled = true
+interval_s = 86400
+out_dir = "reports/topic-digests"
+include_closed = false
+
+# ── [cockpit_sync]  老板驾驶舱事实流 ───────────────────────
+# off by default because this writes to a real Feishu Base.
+# Enable it in exactly one "owner" team so multiple watchdogs do not race.
+[cockpit_sync]
+enabled    = false
+root       = ""     # 多团队根目录；如 /Users/wsm/Project。空=只同步当前 team cwd
+interval_s = 120    # watchdog 周期写回；事实变化也可手动跑 cockpit-sync
+base_token = "Hjsibewe7aL9RmsYiUEcjq3bn3e"
+table_id   = "tblEyoEGZOZ0gfJr"
+agent_table_id = ""  # 可选：员工级明细表，如“员工状态明细”
+task_table_id = "tblJ67mLhY9oM91G"  # 可选：老板任务流/任务卡片表
+remote_state_dir = ""  # 可选：云上事实快照目录，如 product-lab/state/remote-teams
+profile    = ""     # 空=使用本 team 的 lark_profile
+
+# ── [base_intake]  多维表格编辑 -> 团队任务下发 ─────────────
+# off by default. Enable only in the same cockpit owner team.
+[base_intake]
+enabled          = false
+root             = ""     # 多团队根目录；通常与 cockpit_sync.root 一致
+base_token       = "Hjsibewe7aL9RmsYiUEcjq3bn3e"
+task_table_id    = "tblJ67mLhY9oM91G"
+cockpit_table_id = "tblEyoEGZOZ0gfJr"
+event_types      = ["drive.file.bitable_record_changed_v1"]
+trigger_statuses = ["待下发", "老板已决策", "已确认", "执行", "立即执行"]
+decision_fields  = ["老板决策", "决策指令", "执行指令"]
+action_fields    = ["老板操作", "人工操作"]
+writeback        = true
+writeback_field  = "下发回执"
+clear_action_after_dispatch = true
 
 # ── [feishu]  飞书桥接 ─────────────────────────────────────
 [feishu]
@@ -177,6 +259,7 @@ def _upgrade_from_legacy(session: str) -> str:
                     lines.append(f'model = "{model}"')
                 if role := cfg.get("role"):
                     lines.append(f'role  = "{role}"')
+                lines.append('identity_profile = "slim"')
                 if cfg.get("lazy"):
                     lines.append("lazy  = true")
                 # default card_color by name prefix

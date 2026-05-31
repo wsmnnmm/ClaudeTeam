@@ -23,7 +23,12 @@ def _fake_tmux(session_alive=False):
         state["session_killed"] = True
         return True
 
-    with tmux_patch(has_session=has_session, kill_session=kill_session):
+    def has_window(t):
+        state["calls"].append(("has_window", str(t)))
+        return False
+
+    with tmux_patch(has_session=has_session, kill_session=kill_session,
+                    has_window=has_window):
         yield state
 
 

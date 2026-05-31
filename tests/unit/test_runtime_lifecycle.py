@@ -14,15 +14,21 @@ import shlex
 from pathlib import Path
 
 from helpers import attr_patch, env_patch, isolated_env, tmux_patch
+from claudeteam.agents import get_adapter
 from claudeteam.runtime import lifecycle, paths, tmux, wake
 from claudeteam.runtime.lifecycle import (
     LAZY, READY, READY_NO_INIT, SPAWN_FAILED, CONFIG_ERROR,
-    pane_env_prefix, provision_pane,
+    _migrate_codex_wire_api, lazy_spawn_cmd, pane_env_prefix,
+    provision_pane,
 )
 from claudeteam.store import local_facts
 
 
 # ── pane_env_prefix ───────────────────────────────────────────────
+
+
+def _spawn_script_text(cmd: str) -> str:
+    return Path(shlex.split(cmd)[1]).read_text(encoding="utf-8")
 
 
 def test_pane_env_prefix_always_includes_state_dir():
@@ -48,6 +54,18 @@ def test_pane_env_prefix_propagates_lark_profile_when_set():
     assert "LARK_CLI_PROFILE=prod" in prefix
 
 
+def test_pane_env_prefix_prefers_toml_lark_profile_over_stale_env():
+    with isolated_env(team={"agents": {"a": {}}}) as tmp, env_patch(
+            LARK_CLI_PROFILE="todo002-study-coach"):
+        (tmp / "claudeteam.toml").write_text(
+            'lark_profile = "product-lab"\n',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix()
+    assert "LARK_CLI_PROFILE=product-lab" in prefix
+    assert "todo002-study-coach" not in prefix
+
+
 def test_pane_env_prefix_uses_project_codex_home_even_when_host_env_set():
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             CODEX_HOME="/tmp/project codex"):
@@ -66,7 +84,8 @@ def test_pane_env_prefix_uses_agent_specific_codex_home_for_codex_agent():
 
 
 def test_pane_env_prefix_injects_venv_path_and_pythonpath_when_set():
-    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+    with isolated_env(team={"agents": {"a": {}}}), attr_patch(
+            lifecycle, _venv_path_prefix=lambda: "/tmp/ct/bin:$PATH"), env_patch(
             PYTHONPATH="/tmp/src"):
         prefix = pane_env_prefix()
     assert "PATH=" in prefix and ":$PATH" in prefix
@@ -105,7 +124,55 @@ def test_pane_env_prefix_propagates_feishu_app_credentials():
     assert "LARKSUITE_CLI_APP_SECRET=newSecret123" in prefix
 
 
-def test_pane_env_prefix_uses_agent_specific_provider_preset_when_present():
+def test_pane_env_prefix_skips_feishu_credentials_when_profile_app_mismatches():
+    """A stale operator env from another team must not be baked into newly
+    spawned panes when claudeteam.toml selects a different lark profile."""
+    with isolated_env(team={"agents": {"a": {}}}) as tmp, \
+            attr_patch(lifecycle, _feishu_env_matches_profile=lambda profile: False), \
+            env_patch(FEISHU_APP_ID="cli_OTHER",
+                      FEISHU_APP_SECRET="oldSecret123",
+                      LARKSUITE_CLI_APP_ID="cli_OTHER",
+                      LARKSUITE_CLI_APP_SECRET="oldSecret123"):
+        (tmp / "claudeteam.toml").write_text(
+            'lark_profile = "work-assistant"\n',
+            encoding="utf-8",
+        )
+        prefix = pane_env_prefix()
+    assert "LARK_CLI_PROFILE=work-assistant" in prefix
+    assert "FEISHU_APP_ID=" not in prefix
+    assert "FEISHU_APP_SECRET=" not in prefix
+    assert "LARKSUITE_CLI_APP_ID=" not in prefix
+    assert "LARKSUITE_CLI_APP_SECRET=" not in prefix
+
+
+def test_pane_env_prefix_propagates_agent_tool_network_env():
+    """Agent tools need explicit proxy/token env inside tmux panes.
+
+    macOS system proxy settings do not enter spawned shells, so OpenAI can
+    time out directly even while a local proxy is healthy. Lark calls still
+    strip proxy vars via feishu.no_proxy before launching lark-cli.
+    """
+    with isolated_env(team={"agents": {"worker_codex": {"cli": "codex-cli"}}}), env_patch(
+            HTTPS_PROXY="http://127.0.0.1:7897",
+            HTTP_PROXY="http://127.0.0.1:7897",
+            ALL_PROXY="socks5://127.0.0.1:7897",
+            NO_PROXY="localhost,127.0.0.1",
+            OPENAI_IMAGE_MODEL="gpt-image-2",
+            OPENAI_IMAGE_BASE_URL="https://relay.example/v1",
+            OPENAI_IMAGE_API_KEY="sk-image",
+            REPLICATE_API_TOKEN="r8_dummy"):
+        prefix = pane_env_prefix("worker_codex")
+    assert "HTTPS_PROXY=http://127.0.0.1:7897" in prefix
+    assert "HTTP_PROXY=http://127.0.0.1:7897" in prefix
+    assert "ALL_PROXY=socks5://127.0.0.1:7897" in prefix
+    assert "NO_PROXY=localhost,127.0.0.1" in prefix
+    assert "OPENAI_IMAGE_MODEL=gpt-image-2" in prefix
+    assert "OPENAI_IMAGE_BASE_URL=https://relay.example/v1" in prefix
+    assert "OPENAI_IMAGE_API_KEY=sk-image" in prefix
+    assert "REPLICATE_API_TOKEN=r8_dummy" in prefix
+
+
+def test_claude_agent_spawn_cmd_uses_agent_specific_provider_preset_when_present():
     team = {
         "agents": {
             "worker_translate": {
@@ -126,10 +193,41 @@ def test_pane_env_prefix_uses_agent_specific_provider_preset_when_present():
             '"ANTHROPIC_AUTH_TOKEN":"sk-cm","ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
             encoding="utf-8",
         )
-        prefix = pane_env_prefix("worker_translate")
-    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in prefix
-    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in prefix
-    assert "global.example" not in prefix
+        cmd = lifecycle._agent_spawn_cmd(
+            "worker_translate", get_adapter("claude-code"), "minimax-m25")
+        script = _spawn_script_text(cmd)
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in script
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in script
+    assert "global.example" not in script
+
+
+def test_claude_agent_spawn_cmd_skips_env_provider_keys_with_preset():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "claude-code",
+                "model": "opus",
+                "provider_preset": "local-claude",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp, env_patch(
+            ANTHROPIC_BASE_URL="https://stale.example/v1",
+            ANTHROPIC_AUTH_TOKEN="sk-stale"):
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            '{"presets":{"local-claude":{"ANTHROPIC_BASE_URL":"https://local.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-local","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-opus-4-7"}}}',
+            encoding="utf-8",
+        )
+        cmd = lifecycle._agent_spawn_cmd(
+            "manager", get_adapter("claude-code"), "claude-opus-4-7")
+        script = _spawn_script_text(cmd)
+    assert "stale.example" not in script
+    assert "sk-stale" not in script
+    assert "ANTHROPIC_BASE_URL=https://local.example/v1" in script
+    assert "ANTHROPIC_AUTH_TOKEN=sk-local" in script
+    assert script.count("ANTHROPIC_BASE_URL=") == 1
 
 
 def test_pane_env_prefix_skips_provider_env_for_codex_agents():
@@ -184,7 +282,7 @@ def test_pane_env_prefix_hides_provider_secret_for_codex_agents():
     assert "CODEX_HOME=" in prefix
 
 
-def test_pane_env_prefix_runtime_agent_override_beats_team_config_preset():
+def test_claude_agent_spawn_cmd_runtime_agent_override_beats_team_config_preset():
     team = {
         "agents": {
             "worker_translate": {
@@ -211,10 +309,12 @@ def test_pane_env_prefix_runtime_agent_override_beats_team_config_preset():
             '{"agents":{"worker_translate":{"provider_preset":"cm-minimax-m25"}}}',
             encoding="utf-8",
         )
-        prefix = pane_env_prefix("worker_translate")
-    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in prefix
-    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in prefix
-    assert "cheap.example" not in prefix
+        cmd = lifecycle._agent_spawn_cmd(
+            "worker_translate", get_adapter("claude-code"), "minimax-m25")
+        script = _spawn_script_text(cmd)
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in script
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in script
+    assert "cheap.example" not in script
 
 
 def test_pane_env_prefix_shell_quotes_paths_with_spaces():
@@ -225,6 +325,22 @@ def test_pane_env_prefix_shell_quotes_paths_with_spaces():
         prefix = pane_env_prefix()
     # quoted form: 'my profile' (single quotes) — never raw `my profile`
     assert "'my profile'" in prefix
+
+
+def test_lazy_spawn_cmd_cd_to_config_dir_not_caller_cwd():
+    """A lazy worker may be woken by a manager pane whose cwd drifted into
+    another checkout. Spawn from claudeteam.toml's directory so Codex trusts
+    and reads the intended project, not the caller's shell cwd."""
+    team = {"agents": {"worker_codex": {"cli": "codex-cli", "model": "gpt-5.5"}}}
+    with isolated_env(team=team) as tmp:
+        cmd = lazy_spawn_cmd("worker_codex")
+        script = _spawn_script_text(cmd)
+        expected = f"cd {shlex.quote(str(tmp))} && "
+        cfg = paths.codex_config_file("worker_codex").read_text(encoding="utf-8")
+    assert cmd.startswith("bash ")
+    assert expected in script
+    assert f'[projects."{tmp}"]' in cfg
+    assert 'trust_level = "trusted"' in cfg
 
 
 # ── provision_pane: LAZY ──────────────────────────────────────────
@@ -243,6 +359,7 @@ def test_provision_lazy_agent_sets_待命_and_skips_spawn():
         snap = local_facts.get_status("sleepy")
         assert snap["status"] == "待命"
         assert "lazy" in snap["task"]
+        assert local_facts.get_heartbeat("sleepy") is not None
 
 
 def test_provision_lazy_agent_with_unread_inbox_wakes_on_start():
@@ -261,7 +378,7 @@ def test_provision_lazy_agent_with_unread_inbox_wakes_on_start():
     assert outcome == READY
     assert spawn_calls
     assert inject_calls
-    assert "claudeteam inbox sleepy" in inject_calls[0][1]
+    assert "bin/ct inbox sleepy" in inject_calls[0][1]
 
 
 # ── provision_pane: SPAWN_FAILED ──────────────────────────────────
@@ -297,6 +414,7 @@ def test_provision_ready_spawns_then_injects_init_prompt():
         assert "identity.md" in inject_calls[0][1]
         snap = local_facts.get_status("alice")
         assert snap["status"] == "进行中"
+        assert local_facts.get_heartbeat("alice") is not None
 
 
 def test_provision_ready_no_init_when_identity_inject_fails():
@@ -312,15 +430,19 @@ def test_provision_ready_no_init_when_identity_inject_fails():
 def test_provision_ready_pane_env_prefix_baked_into_spawn_cmd():
     team = {"agents": {"a": {"cli": "claude-code"}}}
     spawn_calls = []
-    with isolated_env(team=team), tmux_patch(
+    with isolated_env(team=team) as tmp, tmux_patch(
             spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
             inject=lambda *a, **kw: True), \
             attr_patch(wake, wait_until_ready=lambda *a, **kw: True):
         provision_pane("a", tmux.Target("S", "a"))
-    cmd = spawn_calls[0][1]
-    assert "CLAUDETEAM_STATE_DIR=" in cmd
+        cmd = spawn_calls[0][1]
+        script = _spawn_script_text(cmd)
+    assert cmd.startswith("bash ")
+    assert script.startswith("#!/usr/bin/env bash\nset -e\n")
+    assert f"cd {shlex.quote(str(tmp))} && " in script
+    assert "CLAUDETEAM_STATE_DIR=" in script
     # Adapter contributed the actual CLI spawn after the env prefix
-    assert "claude" in cmd
+    assert "claude" in script
 
 
 def test_provision_codex_bootstraps_project_auth_and_single_codex_home():
@@ -339,12 +461,12 @@ def test_provision_codex_bootstraps_project_auth_and_single_codex_home():
             outcome = provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
             copied_auth = paths.codex_auth_file("worker_codex").read_text(encoding="utf-8")
             expected_codex_home = shlex.quote(str(paths.codex_home_dir("worker_codex")))
+            script = _spawn_script_text(spawn_calls[0][1])
     assert outcome == READY_NO_INIT
     assert copied_auth == src_auth_text
-    cmd = spawn_calls[0][1]
-    assert cmd.count("CODEX_HOME=") == 1
-    assert f"CODEX_HOME={expected_codex_home}" in cmd
-    assert str(host_codex) not in cmd
+    assert script.count("CODEX_HOME=") == 1
+    assert f"CODEX_HOME={expected_codex_home}" in script
+    assert str(host_codex) not in script
 
 
 def test_provision_codex_writes_project_local_custom_provider_config():
@@ -418,14 +540,15 @@ def test_provision_codex_spawn_model_follows_openai_model_preset():
         with tmux_patch(
                 spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
                 inject=lambda *a, **kw: True), \
-                attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+            attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
             outcome = provision_pane("manager", tmux.Target("S", "manager"))
+            script = _spawn_script_text(spawn_calls[0][1])
         cfg = paths.codex_config_file("manager").read_text(encoding="utf-8")
 
     assert outcome == READY_NO_INIT
     assert 'model = "gpt-5.4"' in cfg
-    assert "--model gpt-5.4" in spawn_calls[0][1]
-    assert "--model gpt-5.2" not in spawn_calls[0][1]
+    assert "--model gpt-5.4" in script
+    assert "--model gpt-5.2" not in script
 
 
 def test_provision_codex_sets_medium_verbosity_for_gpt_5_2():
@@ -528,6 +651,32 @@ def test_provision_codex_copies_shared_mcp_sections_to_agent_home():
     assert "chrome-devtools-mcp@latest" in cfg
 
 
+def test_provision_codex_copies_bundled_repo_skills_to_agent_home():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            }
+        }
+    }
+    with isolated_env(team=team), tmux_patch(
+            spawn_agent=lambda *a, **kw: True,
+            inject=lambda *a, **kw: True), \
+            attr_patch(wake, wait_until_ready=lambda *a, **kw: False):
+        provision_pane("worker_codex", tmux.Target("S", "worker_codex"))
+        skill = (
+            paths.codex_home_dir("worker_codex")
+            / "skills"
+            / "cross-team-flow"
+            / "SKILL.md"
+        )
+        assert skill.exists()
+        text = skill.read_text(encoding="utf-8")
+    assert "cross-team AI-agent collaboration" in text
+    assert "Three-Layer Check" in text
+
+
 # ── provision_pane: READY_NO_INIT ─────────────────────────────────
 
 
@@ -547,6 +696,7 @@ def test_provision_ready_no_init_when_marker_never_appears():
         assert inject_calls == []  # no identity init when CLI not ready
         snap = local_facts.get_status("a")
         assert snap["status"] == "进行中"  # status still flips
+        assert local_facts.get_heartbeat("a") is not None
 
 
 # ── provision_pane: CONFIG_ERROR (round-61) ──────────────────────
@@ -732,3 +882,36 @@ def test_ensure_claude_agent_home_writes_managed_mcp_and_bypass_project_state():
                 claude_json.unlink(missing_ok=True)
             else:
                 claude_json.write_text(orig_claude_json, encoding="utf-8")
+
+
+# ── _migrate_codex_wire_api ─────────────────────────────────────────
+
+
+def test_migrate_wire_api_chat_to_responses():
+    env = {"OPENAI_WIRE_API": "chat"}
+    _migrate_codex_wire_api(env, "worker_cc")
+    assert env["OPENAI_WIRE_API"] == "responses"
+
+
+def test_migrate_wire_api_preserves_responses():
+    env = {"OPENAI_WIRE_API": "responses"}
+    _migrate_codex_wire_api(env, "worker_cc")
+    assert env["OPENAI_WIRE_API"] == "responses"
+
+
+def test_migrate_wire_api_preserves_other_values():
+    env = {"OPENAI_WIRE_API": "custom-wire-format"}
+    _migrate_codex_wire_api(env, "worker_cc")
+    assert env["OPENAI_WIRE_API"] == "custom-wire-format"
+
+
+def test_migrate_wire_api_noop_when_key_missing():
+    env: dict[str, str] = {}
+    _migrate_codex_wire_api(env, "worker_cc")
+    assert "OPENAI_WIRE_API" not in env
+
+
+def test_migrate_wire_api_case_insensitive():
+    env = {"OPENAI_WIRE_API": "CHAT"}
+    _migrate_codex_wire_api(env, "worker_cc")
+    assert env["OPENAI_WIRE_API"] == "responses"

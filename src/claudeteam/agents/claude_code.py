@@ -180,5 +180,6 @@ class ClaudeCodeAdapter(CliAdapter):
             "Approaching usage limit",
             "5-hour limit reached",
             "Try again at",
-            "rate limit",
+            "Claude usage limit reached",
+            "usage limit reached",
         ]

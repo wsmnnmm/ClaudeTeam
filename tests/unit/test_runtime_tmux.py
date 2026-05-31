@@ -75,14 +75,14 @@ def test_send_text_chunks_long_payloads():
     text = "x" * 9001
     rec = _Recorder()
     assert send_text(Target("S", "m"), text, run=rec) is True
-    assert len(rec.calls) == 3
+    assert len(rec.calls) == 12
     assert "".join(call[-1] for call in rec.calls) == text
-    assert all(len(call[-1]) <= 4000 for call in rec.calls)
+    assert all(len(call[-1]) <= 800 for call in rec.calls)
     assert all(call[-2] == "--" for call in rec.calls)
 
 
 def test_send_text_stops_tmux_option_parsing_for_dash_chunks():
-    text = ("x" * 4000) + "-3 must stay literal"
+    text = ("x" * 800) + "-3 must stay literal"
     rec = _Recorder()
     assert send_text(Target("S", "m"), text, run=rec) is True
     assert rec.calls[1] == [

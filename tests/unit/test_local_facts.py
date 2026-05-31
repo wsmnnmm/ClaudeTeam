@@ -39,6 +39,16 @@ def test_list_filters_by_agent_and_unread_only():
         assert all_b[0]["content"] == "to b"
 
 
+def test_high_priority_messages_sort_before_normal_backlog():
+    with isolated_env():
+        low = local_facts.append_message("manager", "worker", "normal", priority="中")
+        high = local_facts.append_message("manager", "user", "boss", priority="高")
+
+        rows = local_facts.list_messages("manager")
+
+        assert [r["local_id"] for r in rows] == [high, low]
+
+
 def test_mark_read_sets_flag_and_returns_false_on_miss():
     with isolated_env():
         mid = local_facts.append_message("a", "b", "x")
@@ -62,6 +72,58 @@ def test_get_message_returns_row_by_local_id():
 def test_get_message_returns_none_on_miss():
     with isolated_env():
         assert local_facts.get_message("msg_missing") is None
+
+
+def test_mark_first_response_stores_contract_without_reading_message():
+    with isolated_env():
+        mid = local_facts.append_message("manager", "user", "查一下速度为什么慢", priority="高")
+        ok = local_facts.mark_first_response(
+            mid,
+            response_message_id="om_first",
+            elapsed_ms=5300,
+            response_contract={"type": "verification", "next_step": "补链路耗时证据"},
+        )
+        row = local_facts.get_message(mid)
+
+    assert ok is True
+    assert row["read"] is False
+    assert row["first_response_message_id"] == "om_first"
+    assert row["first_response_elapsed_ms"] == 5300
+    assert row["first_response_contract"] == {
+        "type": "verification",
+        "next_step": "补链路耗时证据",
+    }
+
+
+def test_latest_unfulfilled_response_contract_then_mark_fulfilled():
+    with isolated_env():
+        old = local_facts.append_message("manager", "user", "旧问题")
+        new = local_facts.append_message("manager", "user", "新问题")
+        local_facts.mark_first_response(
+            old,
+            response_contract={"type": "quick_answer", "next_step": "直接判断"},
+        )
+        local_facts.mark_first_response(
+            new,
+            response_contract={"type": "research", "next_step": "补资料依据"},
+        )
+
+        row = local_facts.latest_unfulfilled_response_contract("manager")
+        marked = local_facts.mark_response_contract_fulfilled(
+            new,
+            ok=True,
+            note="matched",
+            response_message_id="om_final",
+        )
+        next_row = local_facts.latest_unfulfilled_response_contract("manager")
+        stored = local_facts.get_message(new)
+
+    assert row["local_id"] == new
+    assert marked is True
+    assert next_row["local_id"] == old
+    assert stored["first_response_contract_fulfilled_ok"] is True
+    assert stored["first_response_contract_fulfilled_note"] == "matched"
+    assert stored["first_response_contract_fulfilled_message_id"] == "om_final"
 
 
 def test_status_upsert_then_get():

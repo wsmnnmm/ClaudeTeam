@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 
+from claudeteam.agents import get_adapter, identity
 from claudeteam.commands import start as _start
 from claudeteam.runtime import config, tmux, watchdog
 from claudeteam.util import error_exit, maybe_print_help
@@ -28,8 +29,48 @@ def _ensure_started() -> int:
     session = config.session_name()
     if tmux.has_session(session):
         print(f"⏭  tmux session {session} already running, skipping start")
+        _refresh_stale_identities(session)
         return 0
     return _start.main([])
+
+
+def _refresh_stale_identities(session: str) -> None:
+    """Pick up claudeteam.toml identity edits for already-running panes.
+
+    This closes the operator footgun where `identity_profile = "slim"` is
+    written to config but live panes keep reading an old full `identity.md`
+    until someone remembers to run `claudeteam reidentify`.
+    """
+    try:
+        agents = config.load_team().get("agents", {})
+    except Exception as e:
+        print(f"  ⚠️ identity refresh skipped: {e}")
+        return
+    refreshed = 0
+    for agent, cfg in sorted(agents.items()):
+        target = tmux.Target(session, agent)
+        if not tmux.has_window(target):
+            continue
+        try:
+            _, changed = identity.write_if_changed(agent)
+        except Exception as e:
+            print(f"  ⚠️ {agent}: identity refresh skipped: {e}")
+            continue
+        if not changed:
+            continue
+        try:
+            adapter = get_adapter(cfg.get("cli", "claude-code"))
+        except KeyError as e:
+            print(f"  ⚠️ {agent}: {e}")
+            continue
+        if tmux.inject(target, identity.init_prompt(agent),
+                       submit_keys=adapter.submit_keys()):
+            refreshed += 1
+            print(f"  🔁 {agent}: refreshed identity from current config")
+        else:
+            print(f"  ⚠️ {agent}: identity changed but init inject failed")
+    if refreshed:
+        print(f"🔁 refreshed {refreshed} live identities")
 
 
 def _ensure_daemon(spec: watchdog.ProcessSpec) -> int:

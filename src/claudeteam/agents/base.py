@@ -21,9 +21,10 @@ from abc import ABC, abstractmethod
 SPINNER_CHARS = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 
 
-# Submit-key sequence for multi-line CLIs (Codex / Kimi use Ink + prompt_toolkit
-# style multi-line input where Enter inserts a newline, M-Enter commits the
-# buffer). Plain `Enter` is kept as a fallback for single-line edge cases.
+# Submit-key sequence for multi-line CLIs (Kimi/Gemini/Qwen use Ink +
+# prompt_toolkit-style input where Enter may insert a newline and M-Enter
+# commits the buffer). Codex now uses its own ordering in codex_cli.py because
+# recent Codex TUI builds submit reliably with plain Enter first.
 MULTILINE_SUBMIT_KEYS = ("M-Enter", "Enter", "C-m", "C-j")
 
 

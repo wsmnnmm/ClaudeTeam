@@ -12,6 +12,7 @@ import json
 from typing import Callable
 
 from claudeteam.feishu.lark import call as _real_run
+from claudeteam.feishu.text import normalize_visible_escapes, sanitize_card_payload
 
 
 def _as(as_user: bool) -> list[str]:
@@ -34,6 +35,7 @@ def send_text(chat_id: str, text: str, *, profile: str = "", as_user: bool = Fal
     """
     if not chat_id:
         return None
+    text = normalize_visible_escapes(text)
     if reply_to:
         args = [
             "im", "+messages-reply",
@@ -56,6 +58,7 @@ def send_card(chat_id: str, card: dict, *, profile: str = "", as_user: bool = Fa
     """Send an interactive card.  `card` is the Feishu card schema (dict)."""
     if not chat_id:
         return None
+    card = sanitize_card_payload(card)
     args = [
         "im", "+messages-send",
         "--chat-id", chat_id,
@@ -103,4 +106,7 @@ def list_recent(chat_id: str, *, page_size: int = 20, profile: str = "",
     data = lark_run(args, profile=profile)
     if not data:
         return []
-    return list(data.get("messages") or [])
+    messages = data.get("messages")
+    if messages is None and isinstance(data.get("data"), dict):
+        messages = data["data"].get("messages")
+    return list(messages or [])

@@ -105,6 +105,17 @@ def test_user_sender_type_does_not_trigger_bot_self():
     assert d.targets == ["manager"]
 
 
+def test_route_carries_feishu_reply_metadata():
+    d = classify_event(
+        _ev(text="@bot 这个是什么意思", reply_to="om_parent",
+            reply_context="[飞书回复上下文]\n父消息摘要"),
+        team_agents=_AGENTS,
+    )
+    assert d.action is Action.ROUTE
+    assert d.reply_to == "om_parent"
+    assert "父消息摘要" in d.reply_context
+
+
 def test_drop_when_text_empty():
     d = classify_event(_ev(text=""), team_agents=_AGENTS)
     assert d.is_drop() and d.reason == "empty"

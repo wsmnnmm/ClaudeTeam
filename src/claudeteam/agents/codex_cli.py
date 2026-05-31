@@ -10,7 +10,7 @@ import os
 import shlex
 from pathlib import Path
 
-from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
+from .base import CliAdapter, SPINNER_CHARS
 
 
 def ensure_workdir_trusted(workdir: Path,
@@ -76,7 +76,10 @@ class CodexCliAdapter(CliAdapter):
         return "codex"
 
     def submit_keys(self) -> list[str]:
-        return list(MULTILINE_SUBMIT_KEYS)
+        # Codex 0.130 submits injected buffers with plain Enter. Sending
+        # M-Enter first can leave boss messages sitting in the input area on
+        # some panes, producing a fast-ack-without-follow-up failure.
+        return ["Enter", "M-Enter", "C-m", "C-j"]
 
     def rate_limit_markers(self) -> list[str]:
         # Codex TUI keeps recent scrollback in-pane; marker-based preflight

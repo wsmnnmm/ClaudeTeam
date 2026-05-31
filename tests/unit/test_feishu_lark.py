@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import subprocess
 
-from helpers import CallRecorder, FakeProc, env_patch
+from helpers import CallRecorder, FakeProc, attr_patch, env_patch
 from claudeteam.feishu import lark
 
 
@@ -14,8 +14,12 @@ def _Recorder(result=None) -> CallRecorder:
 
 
 def _no_proxy_env():
-    """Stage the env so lark-cli will strip HTTPS_PROXY before invoking npx."""
-    return env_patch(LARK_CLI_NO_PROXY="1", HTTPS_PROXY="http://proxy.example:7890")
+    """Stage the env so lark-cli will strip proxy vars before invoking npx."""
+    return env_patch(
+        LARK_CLI_NO_PROXY="1",
+        HTTPS_PROXY="http://proxy.example:7890",
+        ALL_PROXY="socks5://proxy.example:7897",
+    )
 
 
 def test_run_builds_lark_cli_argv_with_profile():
@@ -45,6 +49,12 @@ def test_run_omits_profile_when_empty():
     lark.call(["foo"], profile="", run=rec)
     sent = rec.calls[0]["args"]
     assert "--profile" not in sent
+
+
+def test_run_passes_optional_cwd_to_subprocess():
+    rec = _Recorder(FakeProc(stdout='{"data":{}}'))
+    lark.call(["foo"], cwd="/tmp/artifacts", run=rec)
+    assert rec.calls[0]["kwargs"]["cwd"] == "/tmp/artifacts"
 
 
 def test_resolve_cli_prefix_uses_explicit_env_override():
@@ -197,6 +207,27 @@ def test_api_error_falls_back_to_code_when_no_message():
     assert "42" in out.getvalue()
 
 
+def test_non_json_failure_prefers_error_line_over_progress():
+    """lark-cli media upload failures print a progress line before the
+    useful cause. Surface the real error, not just `uploading image: ...`."""
+    import io
+    import contextlib
+    rec = _Recorder(FakeProc(
+        returncode=1,
+        stdout="",
+        stderr=(
+            "uploading image: large.png\n"
+            "Error: image upload failed: image size 5.8 MB exceeds limit (max 5MB)\n"
+        ),
+    ))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        lark.call(["x"], run=rec)
+    log = out.getvalue()
+    assert "image size 5.8 MB exceeds limit" in log
+    assert "rc=1): uploading image" not in log
+
+
 def test_run_returns_data_when_ok_true():
     """Belt-and-suspenders: ok=true with data should still unwrap data."""
     rec = _Recorder(FakeProc(stdout='{"ok":true,"data":{"message_id":"om_2"}}'))
@@ -212,6 +243,93 @@ def test_run_returns_none_on_timeout():
     def fake(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=["lark"], timeout=90)
     assert lark.call(["x"], run=fake) is None
+
+
+def test_default_run_kills_lark_process_group_on_timeout():
+    """REGRESSION: timed-out node lark-cli wrappers left bin children
+    orphaned under PPID=1. The default runner must kill the whole group."""
+    import signal
+
+    popen_calls = []
+    kill_calls = []
+
+    class FakePopen:
+        pid = 1234
+        returncode = None
+
+        def __init__(self, *args, **kwargs):
+            popen_calls.append({"args": args, "kwargs": kwargs})
+            self._communicate_calls = 0
+
+        def communicate(self, timeout=None):
+            self._communicate_calls += 1
+            if self._communicate_calls == 1:
+                raise subprocess.TimeoutExpired(cmd=["lark"], timeout=timeout)
+            self.returncode = -15
+            return "partial-out", "partial-err"
+
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    with attr_patch(lark.subprocess, Popen=FakePopen), \
+            attr_patch(lark.os, getpgid=lambda pid: 4321,
+                       killpg=lambda pgid, sig: kill_calls.append((pgid, sig))):
+        try:
+            lark._default_run(
+                ["lark"], capture_output=True, text=True, timeout=1, env={},
+            )
+        except subprocess.TimeoutExpired as exc:
+            assert exc.output == "partial-out"
+            assert exc.stderr == "partial-err"
+        else:
+            raise AssertionError("expected TimeoutExpired")
+
+    assert popen_calls[0]["kwargs"]["start_new_session"] is True
+    assert kill_calls == [(4321, signal.SIGTERM)]
+
+
+def test_default_run_does_not_block_forever_when_child_ignores_kill():
+    """If lark-cli is stuck in an uninterruptible wait, cleanup may fail;
+    the wrapper must still return control to the router."""
+    import signal
+
+    kill_calls = []
+
+    class StuckPopen:
+        pid = 1234
+        returncode = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(
+                cmd=["lark"], timeout=timeout, output="before", stderr="err")
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd=["lark"], timeout=timeout)
+
+        def kill(self):
+            self.returncode = -9
+
+    with attr_patch(lark.subprocess, Popen=StuckPopen), \
+            attr_patch(lark.os, getpgid=lambda pid: 4321,
+                       killpg=lambda pgid, sig: kill_calls.append((pgid, sig))):
+        try:
+            lark._default_run(
+                ["lark"], capture_output=True, text=True, timeout=1, env={},
+            )
+        except subprocess.TimeoutExpired as exc:
+            assert exc.output == "before"
+            assert exc.stderr == "err"
+        else:
+            raise AssertionError("expected TimeoutExpired")
+
+    assert kill_calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
 
 
 def test_run_returns_none_when_npx_not_on_path():
@@ -282,6 +400,7 @@ def test_run_strips_https_proxy_when_no_proxy_env_set():
         lark.call(["x"], run=rec)
     env = rec.calls[0]["kwargs"]["env"]
     assert "HTTPS_PROXY" not in env
+    assert "ALL_PROXY" not in env
     assert env.get("LARK_CLI_NO_PROXY") == "1"
 
 
@@ -309,10 +428,12 @@ def test_subprocess_env_strips_proxy_when_no_proxy_set():
     the same proxy-stripped env that lark.call uses."""
     with env_patch(LARK_CLI_NO_PROXY="1",
                    HTTPS_PROXY="http://proxy.example:7890",
-                   HTTP_PROXY="http://proxy.example:7890"):
+                   HTTP_PROXY="http://proxy.example:7890",
+                   ALL_PROXY="socks5://proxy.example:7897"):
         env = lark.subprocess_env()
     assert "HTTPS_PROXY" not in env
     assert "HTTP_PROXY" not in env
+    assert "ALL_PROXY" not in env
     assert env.get("LARK_CLI_NO_PROXY") == "1"
 
 
@@ -338,6 +459,24 @@ def test_subprocess_env_pins_home_to_pw_dir():
         env = lark.subprocess_env()
     assert env["HOME"] == expected_home
     assert env["HOME"] != "/data/agent-home/manager"
+
+
+def test_subprocess_env_strips_mismatched_profile_app_credentials():
+    """If a pane inherited another team's Feishu app creds but is sending
+    through this team's lark profile, drop the inherited creds so lark-cli
+    uses the profile/keychain identity instead of the wrong bot."""
+    with attr_patch(lark, _profile_app_id=lambda profile, home=None: "cli_expected"), \
+            env_patch(FEISHU_APP_ID="cli_other",
+                      FEISHU_APP_SECRET="other-secret",
+                      LARKSUITE_CLI_APP_ID="cli_other",
+                      LARKSUITE_CLI_APP_SECRET="other-secret",
+                      LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-other"):
+        env = lark.subprocess_env(profile="work-assistant")
+    assert "FEISHU_APP_ID" not in env
+    assert "FEISHU_APP_SECRET" not in env
+    assert "LARKSUITE_CLI_APP_ID" not in env
+    assert "LARKSUITE_CLI_APP_SECRET" not in env
+    assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env
 
 
 # ── _resolve_timeout (env-driven default override) ────────────────

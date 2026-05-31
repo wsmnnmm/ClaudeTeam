@@ -1,6 +1,10 @@
 """Tests for runtime/config.py — team.json + runtime_config.json loading."""
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 from helpers import env_patch, isolated_env
 
 from claudeteam.agents import adapter_for_agent
@@ -130,6 +134,35 @@ def test_codex_provider_env_maps_agent_thinking_to_reasoning_effort():
     assert env["OPENAI_REASONING_EFFORT"] == "xhigh"
 
 
+def test_service_override_defaults_to_codex_agents_not_claude_code():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "claude-code",
+                "model": "opus",
+                "provider_preset": "local-claude",
+            },
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            },
+        }
+    }
+    with _team_env(team):
+        providers.save_service_state({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-backup",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+            },
+        })
+        codex_env = providers.provider_env_for_agent("worker_codex")
+        claude_env = providers.provider_env_for_agent("manager")
+    assert codex_env["ANTHROPIC_BASE_URL"] == "https://zyapi.tuluo.top:8888/v1"
+    assert "ANTHROPIC_BASE_URL" not in claude_env
+
+
 def test_effective_model_prefers_openai_model_for_codex_agent_preset():
     """A Codex preset with OPENAI_MODEL must drive the CLI --model value.
 
@@ -210,6 +243,30 @@ def test_load_runtime_config_returns_empty_dict_when_missing():
         assert config.load_runtime_config() == {}
 
 
+def test_legacy_json_paths_infer_team_root_from_state_dir_when_cwd_drifted():
+    """Agent panes may keep only CLAUDETEAM_STATE_DIR after cwd drift.
+    Legacy team/runtime JSON should still resolve from the team root."""
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+        team_root = Path(tmp) / "team-a"
+        state = team_root / "state"
+        state.mkdir(parents=True)
+        team_json = team_root / "team.json"
+        runtime_json = team_root / "runtime_config.json"
+        team_json.write_text('{"agents": {"manager": {}}}', encoding="utf-8")
+        runtime_json.write_text('{"chat_id": "oc_x"}', encoding="utf-8")
+
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(other)
+            with env_patch(CLAUDETEAM_STATE_DIR=str(state),
+                           CLAUDETEAM_TEAM_FILE=None,
+                           CLAUDETEAM_RUNTIME_CONFIG=None):
+                assert config.team_file() == team_json
+                assert config.runtime_config_file() == runtime_json
+        finally:
+            os.chdir(old_cwd)
+
+
 def test_chat_id_reads_runtime_config():
     with _team_env({"agents": {}}, runtime_data={"chat_id": "oc_xxx"}):
         assert config.chat_id() == "oc_xxx"
@@ -286,16 +343,19 @@ def test_chat_id_falls_back_to_legacy_runtime_config():
             assert config.chat_id() == "oc_legacy"
 
 
-def test_lark_profile_priority_env_then_toml_then_legacy():
-    """Three-way priority. env beats both; toml beats legacy json."""
+def test_lark_profile_priority_toml_then_env_then_legacy():
+    """Three-way priority. Team toml beats stale env; env beats legacy json."""
     with _team_env({"agents": {}}, runtime_data={"lark_profile": "legacy"}) as tmp:
         _write_toml(tmp, 'lark_profile = "from-toml"\n')
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
                        LARK_CLI_PROFILE="from-env"):
-            assert config.lark_profile() == "from-env"
+            assert config.lark_profile() == "from-toml"
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
                        LARK_CLI_PROFILE=None):
             assert config.lark_profile() == "from-toml"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml"),
+                       LARK_CLI_PROFILE="from-env"):
+            assert config.lark_profile() == "from-env"
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml"),
                        LARK_CLI_PROFILE=None):
             assert config.lark_profile() == "legacy"

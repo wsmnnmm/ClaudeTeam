@@ -10,10 +10,13 @@ Resolution order for an agent:
   1. global project-local provider env from `ccswitch.json`
   2. agent `provider_preset = "<name>"` from `provider-presets.json`
   3. agent inline `[team.agents.<name>.provider_env]`
+  4. team-wide service override from `provider-service.json`
 
 That gives us a safe default: most agents keep following the current
 project provider, while specific roles (for example translation /
-integration) can be routed to a cheaper or older backend.
+integration) can be routed to a cheaper or older backend. The service
+override is deliberately last so an operator can move the whole Codex
+fleet off a broken provider without editing every employee preset.
 """
 from __future__ import annotations
 
@@ -55,6 +58,19 @@ ALIAS_ENV_KEY = {
 _PRESETS_FILE = "provider-presets.json"
 _MANAGED_PROVIDER_ENV = "claudeteam-provider.env"
 _AGENT_OVERRIDES_FILE = "agent-provider-overrides.json"
+_SERVICE_STATE_FILE = "provider-service.json"
+
+SERVICE_ENV_KEYS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENAI_MODEL_PROVIDER",
+    "OPENAI_WIRE_API",
+    "OPENAI_REQUIRES_OPENAI_AUTH",
+    "OPENAI_DISABLE_RESPONSE_STORAGE",
+)
 
 
 def presets_path() -> Path:
@@ -65,11 +81,26 @@ def agent_overrides_path() -> Path:
     return paths.state_file(_AGENT_OVERRIDES_FILE)
 
 
+def service_state_path() -> Path:
+    return paths.state_file(_SERVICE_STATE_FILE)
+
+
 def _clean_provider_env(raw: dict | None) -> dict[str, str]:
     out: dict[str, str] = {}
     if not isinstance(raw, dict):
         return out
     for key in PROVIDER_ENV_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
+    return out
+
+
+def _clean_service_env(raw: dict | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key in SERVICE_ENV_KEYS:
         value = raw.get(key)
         if isinstance(value, str) and value:
             out[key] = value
@@ -154,6 +185,54 @@ def load_presets() -> dict[str, dict[str, str]]:
     return out
 
 
+def load_service_state() -> dict:
+    path = service_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_service_state(state: dict) -> None:
+    clean = dict(state)
+    clean["env"] = _clean_service_env(clean.get("env"))
+    path = service_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, clean)
+
+
+def clear_service_state() -> None:
+    try:
+        service_state_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def service_env_for_agent(agent: str) -> dict[str, str]:
+    """Return the team-wide service override for an agent.
+
+    The service override is intentionally applied after agent presets so
+    operators can switch the whole team from flux → zyapi/onekey without
+    editing every employee's `provider_preset`. Agents listed under
+    `[provider_service].exclude_agents` are left untouched so rescue lanes
+    can remain on a different backend.
+    """
+    from claudeteam.runtime import tunables
+
+    excluded = tunables.tunable("provider_service.exclude_agents", ["worker_rescue"])
+    if isinstance(excluded, list) and agent in {str(v) for v in excluded}:
+        return {}
+    try:
+        cli = config.agent_cli(agent)
+    except KeyError:
+        cli = ""
+    if cli == "claude-code" and not bool(
+            tunables.tunable("provider_service.apply_to_claude_code", False)):
+        return {}
+    return _clean_service_env(load_service_state().get("env"))
+
+
 def _clean_agent_override(raw: dict | None) -> dict:
     if not isinstance(raw, dict):
         return {}
@@ -232,6 +311,7 @@ def _agent_provider_overrides(agent: str) -> dict[str, str]:
 def provider_env_for_agent(agent: str) -> dict[str, str]:
     env = _global_provider_env()
     env.update(_agent_provider_overrides(agent))
+    env.update(service_env_for_agent(agent))
     return env
 
 

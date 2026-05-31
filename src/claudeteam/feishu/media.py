@@ -63,10 +63,10 @@ def download_message_resource(
         return None
 
     stem = f"{resource_type}-{_safe_part(resource_key, fallback='resource')}"
+    prof = profile or config.lark_profile()
     argv = [
         *lark.resolve_cli_prefix(),
-        *(["--profile", profile] if profile else (
-            ["--profile", config.lark_profile()] if config.lark_profile() else [])),
+        *(["--profile", prof] if prof else []),
         "im", "+messages-resources-download",
         "--message-id", message_id,
         "--file-key", resource_key,
@@ -80,7 +80,7 @@ def download_message_resource(
             capture_output=True,
             text=True,
             timeout=lark._resolve_timeout(None),
-            env=lark.subprocess_env(),
+            env=lark.subprocess_env(profile=prof),
             cwd=str(out_dir),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

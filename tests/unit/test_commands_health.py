@@ -1,11 +1,23 @@
 """Tests for `claudeteam health`."""
 from __future__ import annotations
 
+import contextlib
 import shutil
+import tempfile
+from pathlib import Path
 
 from helpers import attr_patch, env_patch, isolated_env, run_cli, tmux_patch
+from claudeteam.commands import health as health_cmd
 
 
+@contextlib.contextmanager
+def _stub_host_checks():
+    with attr_patch(health_cmd, _lark_process_rows=lambda: []), \
+            attr_patch(shutil, which=lambda name, *a, **kw: f"/usr/bin/{name}"):
+        yield
+
+
+@contextlib.contextmanager
 def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
                panes_without_cli: list[str] = ()):
     """Replace tmux.has_session/has_window/capture_pane for health probing."""
@@ -16,11 +28,12 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
             return "bypass permissions on\n? for shortcuts\n>"
         return "$ "
 
-    return tmux_patch(
-        has_session=lambda s: session_alive,
-        has_window=lambda target: target.window in all_panes,
-        capture_pane=capture_pane,
-    )
+    with tmux_patch(
+            has_session=lambda s: session_alive,
+            has_window=lambda target: target.window in all_panes,
+            capture_pane=capture_pane), \
+            _stub_host_checks():
+        yield
 
 
 # ── happy path ──────────────────────────────────────────────────
@@ -78,6 +91,42 @@ def test_health_returns_one_when_team_config_missing():
         assert "team config missing" in out
 
 
+def test_health_returns_one_when_state_and_toml_config_mismatch():
+    """If state points at one team but config points elsewhere, health is red.
+
+    This catches the dangerous operator mistake where tasks are written to
+    one team's state while commands read another team's claudeteam.toml.
+    """
+    from claudeteam.runtime import tunables
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        real = root / "real-team"
+        wrong = root / "wrong-team"
+        (real / "state").mkdir(parents=True)
+        wrong.mkdir()
+        (real / "claudeteam.toml").write_text("[team]\nsession = 'Real'\n", encoding="utf-8")
+        (wrong / "claudeteam.toml").write_text(
+            "chat_id = 'oc_wrong'\nlark_profile = 'prod'\n"
+            "[team]\nsession = 'Wrong'\n"
+            "[team.agents.manager]\ncli = 'claude-code'\n",
+            encoding="utf-8",
+        )
+        tunables.reset_cache()
+        with env_patch(
+                CLAUDETEAM_STATE_DIR=str(real / "state"),
+                CLAUDETEAM_CONFIG_FILE=str(wrong / "claudeteam.toml"),
+                CLAUDETEAM_TEAM_FILE=str(wrong / "team.json"),
+                CLAUDETEAM_RUNTIME_CONFIG=str(wrong / "runtime_config.json"),
+        ), _stub_tmux(session_alive=True, panes_with_cli=["manager"]):
+            rc, out, _ = run_cli(["health"])
+        tunables.reset_cache()
+
+    assert rc == 1
+    assert "config/state mismatch" in out
+    assert str(real / "claudeteam.toml") in out
+
+
 def test_health_returns_one_when_pane_window_missing():
     team = {"session": "S", "agents": {"manager": {}, "missing_w": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
@@ -105,7 +154,7 @@ def test_health_warns_when_ready_pane_heartbeat_is_stale():
     from claudeteam.util import now_ms
 
     team = {"session": "S", "agents": {"manager": {"cli": "codex-cli"}}}
-    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), tmux_patch(
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_host_checks(), tmux_patch(
             has_session=lambda s: True,
             has_window=lambda target: target.window == "manager",
             capture_pane=lambda target, lines=80: "\n\n  gpt-5.5 xhigh · /work"):
@@ -121,6 +170,57 @@ def test_health_warns_when_ready_pane_heartbeat_is_stale():
         assert "warning" in out
 
 
+def test_health_footer_separates_stale_heartbeat_from_feishu_auth():
+    import json
+    from claudeteam.runtime import paths
+    from claudeteam.util import now_ms
+
+    team = {"session": "S", "agents": {"worker": {"cli": "codex-cli"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": "prod"}), \
+            _stub_host_checks(), \
+            attr_patch(health_cmd.watchdog, all_known_specs=lambda: []), \
+            tmux_patch(
+                has_session=lambda s: True,
+                has_window=lambda target: target.window == "worker",
+                capture_pane=lambda target, lines=80: "\n\n  gpt-5.5 xhigh · /work"):
+        paths.facts_dir().mkdir(parents=True, exist_ok=True)
+        stale = now_ms() - 31 * 60 * 1000
+        (paths.facts_dir() / "heartbeats.json").write_text(
+            json.dumps({"worker": stale}), encoding="utf-8")
+
+        rc, out, _ = run_cli(["health"])
+
+        assert rc == 0
+        assert "worker: pane ready (codex-cli) but heartbeat is stale" in out
+        assert "agent heartbeat stale only" in out
+        assert "not a Feishu CLI/App Secret warning" in out
+
+
+def test_health_json_includes_warning_categories():
+    import json
+    from claudeteam.runtime import paths
+    from claudeteam.util import now_ms
+
+    team = {"session": "S", "agents": {"worker": {"cli": "codex-cli"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": "prod"}), \
+            _stub_host_checks(), \
+            attr_patch(health_cmd.watchdog, all_known_specs=lambda: []), \
+            tmux_patch(
+                has_session=lambda s: True,
+                has_window=lambda target: target.window == "worker",
+                capture_pane=lambda target, lines=80: "\n\n  gpt-5.5 xhigh · /work"):
+        paths.facts_dir().mkdir(parents=True, exist_ok=True)
+        stale = now_ms() - 31 * 60 * 1000
+        (paths.facts_dir() / "heartbeats.json").write_text(
+            json.dumps({"worker": stale}), encoding="utf-8")
+
+        rc, out, _ = run_cli(["health", "--json"])
+
+        assert rc == 0
+        data = json.loads(out)
+        assert data["warn_categories"] == {"stale_heartbeat": 1}
+
+
 def test_health_warns_when_ready_pane_contains_provider_error():
     team = {"session": "S", "agents": {"manager": {}}}
 
@@ -131,7 +231,7 @@ def test_health_warns_when_ready_pane_contains_provider_error():
             "⏵⏵ bypass permissions on (shift+tab to cycle)\n"
         )
 
-    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), tmux_patch(
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_host_checks(), tmux_patch(
             has_session=lambda s: True,
             has_window=lambda target: target.window == "manager",
             capture_pane=capture_pane):
@@ -147,7 +247,7 @@ def test_health_treats_codex_xhigh_status_line_as_ready():
     def capture_pane(target, lines=80):
         return "\n\n  gpt-5.5 xhigh · /srv/ai/projects/product-lab"
 
-    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), tmux_patch(
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_host_checks(), tmux_patch(
             has_session=lambda s: True,
             has_window=lambda target: target.window == "manager",
             capture_pane=capture_pane):
@@ -269,21 +369,21 @@ def test_health_warns_when_proxy_set_without_no_proxy():
             session_alive=True, panes_with_cli=["m"]), \
             env_patch(HTTPS_PROXY="http://proxy:7890", LARK_CLI_NO_PROXY=None):
         rc, out, _ = run_cli(["health"])
-        assert "HTTPS_PROXY=http://proxy:7890 set without LARK_CLI_NO_PROXY" in out
+        assert "proxy env=http://proxy:7890 set without LARK_CLI_NO_PROXY" in out
 
 
 def test_health_silent_when_proxy_unset():
     team = {"session": "S", "agents": {"m": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=["m"]), \
-            env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
+            env_patch(HTTPS_PROXY=None, HTTP_PROXY=None, ALL_PROXY=None):
         rc, out, _ = run_cli(["health"])
-        assert "HTTPS_PROXY" not in out
+        assert "proxy env" not in out
 
 
 
 def test_health_info_when_proxy_set_with_no_proxy_flag():
-    """HTTPS_PROXY set + LARK_CLI_NO_PROXY=1 → informational ℹ️ rather
+    """Proxy env set + LARK_CLI_NO_PROXY=1 → informational ℹ️ rather
     than warning ⚠️. The wrapper strips proxy at lark.subprocess_env(),
     so this is intentional + harmless — but the env var still shows
     so operators don't get confused why their proxy isn't applying."""
@@ -292,11 +392,37 @@ def test_health_info_when_proxy_set_with_no_proxy_flag():
             session_alive=True, panes_with_cli=["m"]), \
             env_patch(HTTPS_PROXY="http://proxy:7890", LARK_CLI_NO_PROXY="1"):
         rc, out, _ = run_cli(["health"])
-        assert "HTTPS_PROXY set" in out
+        assert "proxy env set" in out
         assert "wrapper will strip" in out
         # Confirm it's INFO not WARNING — the test would also fire a
         # warning on bad emoji selection, so check the explicit string.
         assert "ℹ️" in out
+
+
+def test_health_info_when_proxy_set_with_toml_no_proxy_flag():
+    """`[feishu] no_proxy = true` is just as effective as the legacy env
+    flag, so health should not scare the operator with a false warning."""
+    team = {"session": "S", "agents": {"m": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}) as tmp, \
+            _stub_tmux(session_alive=True, panes_with_cli=["m"]), \
+            env_patch(HTTPS_PROXY="http://proxy:7890", LARK_CLI_NO_PROXY=None):
+        (tmp / "claudeteam.toml").write_text(
+            """
+chat_id = "oc_x"
+lark_profile = "prod"
+[team]
+session = "S"
+[team.agents.m]
+cli = "claude-code"
+[feishu]
+no_proxy = true
+""".strip(),
+            encoding="utf-8",
+        )
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "feishu.no_proxy=true" in out
+        assert "set without LARK_CLI_NO_PROXY" not in out
 
 
 def test_health_no_proxy_flag_truthy_variants_all_recognised():
@@ -310,6 +436,40 @@ def test_health_no_proxy_flag_truthy_variants_all_recognised():
             rc, out, _ = run_cli(["health"])
             assert "wrapper will strip" in out, (
                 f"LARK_CLI_NO_PROXY={truthy!r} should be recognised as truthy")
+
+
+def test_health_red_when_lark_cli_process_is_stuck_for_profile():
+    """A stuck lark-cli child means the message transport is not healthy
+    even when router/watchdog pid files look alive."""
+    team = {"session": "S", "agents": {"m": {}}}
+    rows = [{
+        "pid": "123",
+        "ppid": "1",
+        "stat": "UE",
+        "command": "lark-cli --profile prod event +subscribe --as bot",
+    }]
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": "prod"}), \
+            _stub_tmux(session_alive=True, panes_with_cli=["m"]), \
+            attr_patch(health_cmd, _lark_process_rows=lambda: rows):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 1
+        assert "lark-cli stuck process(es): 1 for profile prod" in out
+
+
+def test_health_ignores_stuck_lark_cli_from_other_profile():
+    team = {"session": "S", "agents": {"m": {}}}
+    rows = [{
+        "pid": "123",
+        "ppid": "1",
+        "stat": "UE",
+        "command": "lark-cli --profile other event +subscribe --as bot",
+    }]
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": "prod"}), \
+            _stub_tmux(session_alive=True, panes_with_cli=["m"]), \
+            attr_patch(health_cmd, _lark_process_rows=lambda: rows):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "lark-cli stuck process" not in out
 
 
 # ── help ────────────────────────────────────────────────────────

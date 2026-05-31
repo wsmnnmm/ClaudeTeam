@@ -6,7 +6,7 @@ emits `Decision(Action.SLASH, text=raw_text)`. `feishu/deliver.py` calls
 back to the chat — `str` via `chat.send_text`, `dict` (Feishu card
 schema) via `chat.send_card`. **No worker pane is touched, no LLM runs.**
 
-Supported commands (matches main's 9-command surface):
+Supported commands:
 
     /help                              card listing every command
     /team                              card with each agent's pane state
@@ -15,6 +15,7 @@ Supported commands (matches main's 9-command surface):
                                        (yellow on ❌ / ⚠️)
     /usage [view]                      card wrapping `claudeteam usage`
                                        (default view = daily)
+    /topic [subcommand]                card-backed conversation topic map
     /tmux [agent] [N]                  card with last N (default 10) pane lines
     /send <agent> <msg>                tmux send-keys + Enter into agent pane
     /compact [agent]                   inject /compact then schedule reidentify
@@ -49,7 +50,7 @@ from claudeteam.feishu.cards import (
     remaining_color, rich_card, simple_card,
 )
 from claudeteam.runtime import tmux
-from claudeteam.store import local_facts
+from claudeteam.store import local_facts, topics
 from claudeteam.util import fmt_bytes
 
 
@@ -103,7 +104,7 @@ def _tmux_max_lines() -> int:
     return int(tunables.tunable("limits.tmux_capture_max_lines", 2000))
 
 
-def _live_agents() -> tuple[list[str], frozenset[str], frozenset[str], dict]:
+def _live_agents(ctx: SlashContext | None = None) -> tuple[list[str], frozenset[str], frozenset[str], dict]:
     """Return (ordered_list, name_set, lazy_set, agents_dict) read from
     config NOW. Slash handlers use this instead of ctx.team_agents /
     ctx.agent_set / ctx.lazy_agents so editing claudeteam.toml takes
@@ -112,13 +113,16 @@ def _live_agents() -> tuple[list[str], frozenset[str], frozenset[str], dict]:
     from claudeteam.runtime import config as _config
     agents_dict = _config.load_team().get("agents", {})
     names = list(agents_dict.keys())
+    if not names and ctx is not None:
+        names = list(ctx.team_agents)
+        agents_dict = {name: {"lazy": name in ctx.lazy_agents} for name in names}
     return (names, frozenset(names),
             frozenset(n for n, c in agents_dict.items() if c.get("lazy")),
             agents_dict)
 
 
 def _default_agent(ctx: SlashContext) -> str:
-    names, _, _, _ = _live_agents()
+    names, _, _, _ = _live_agents(ctx)
     return names[0] if names else "manager"
 
 
@@ -126,7 +130,7 @@ def _bad_agent(agent: str, ctx: SlashContext) -> str | None:
     """Return a Chinese warning string if `agent` is unknown, else None."""
     if not _AGENT_NAME_RE.fullmatch(agent):
         return f"⚠️ 非法 agent 名: `{agent}`"
-    _, agent_set, _, _ = _live_agents()
+    _, agent_set, _, _ = _live_agents(ctx)
     if agent not in agent_set:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(agent_set)}）"
     return None
@@ -151,6 +155,7 @@ _HELP_TEXT = """🆘 ClaudeTeam 自定义斜杠命令（零 LLM，router/hook �
 /help                    → 本帮助
 /team                    → 所有员工实时 tmux 状态（卡片）
 /usage                   → claude-code 用量（ccusage 包装，卡片）
+/topic                   → 当前话题 / 子对话胶囊（卡片）
 /health                  → 主机 + 员工资源占用（卡片）
 /tmux [agent] [lines]    → capture-pane 窗口（默认 manager/10 行）
 /send <agent> <msg>      → 直接注入消息到 agent 窗口
@@ -182,7 +187,7 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     """
     # _live_agents reads config every call so claudeteam.toml edits
     # take effect on the next /team without a router restart.
-    team_agents, _, lazy_agents, _ = _live_agents()
+    team_agents, _, lazy_agents, _ = _live_agents(ctx)
 
     rows = []
     tally: Counter[str] = Counter()
@@ -359,7 +364,7 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     — common inside the container on macOS Docker Desktop.
     """
     from claudeteam.runtime import server_metrics
-    _, agent_set, _, _ = _live_agents()
+    _, agent_set, _, _ = _live_agents(ctx)
     data = server_metrics.collect_server_load(
         agent_set=agent_set,
         session=ctx.session,
@@ -545,6 +550,125 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     )
 
 
+def _topic_list_body(*, include_closed: bool = False) -> str:
+    rows = topics.list_topics(include_closed=include_closed)
+    current = topics.current()
+    lines = []
+    if current:
+        lines.extend([topics.render_topic_card(current), "", "**话题列表**"])
+    else:
+        lines.extend([
+            "**当前**: 无",
+            "",
+            "用 `#话题名` 或 `/topic switch 话题名` 开始一个子话题。",
+            "",
+            "**话题列表**",
+        ])
+    if not rows:
+        lines.append("（暂无）")
+    else:
+        cur_name = str(current.get("name") or "") if current else ""
+        for row in rows[:12]:
+            marker = "→" if row.get("name") == cur_name else " "
+            status = "已关闭" if row.get("status") == "closed" else "进行中"
+            preview = str(row.get("capsule") or "无胶囊").splitlines()[0]
+            preview = preview.replace("本轮说明：", "", 1)[:60]
+            lines.append(f"{marker} `#{row.get('name')}` · {status} · {preview}")
+        if len(rows) > 12:
+            lines.append(f"… 另有 {len(rows) - 12} 个话题未显示")
+    lines.extend([
+        "",
+        "`/topic show [话题]` 查看；`/topic note [#话题] 内容` 补胶囊；`/topic close [话题]` 关闭。",
+    ])
+    return "\n".join(lines)
+
+
+def _split_first(args: str) -> tuple[str, str]:
+    parts = args.strip().split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _handle_topic(args: str, ctx: SlashContext) -> str | dict:
+    """`/topic` — visible control panel for the lightweight topic store."""
+    sub, rest = _split_first(args)
+    if not sub or sub in {"current", "list"}:
+        include_closed = "--all" in rest.split()
+        return simple_card(
+            f"🧭 /topic — 话题地图 {beijing_stamp(ctx.now)}",
+            _topic_list_body(include_closed=include_closed),
+            color="blue",
+        )
+
+    if sub == "switch":
+        name, extra = _split_first(rest)
+        if not name or extra:
+            return "用法: /topic switch <话题名>"
+        row = topics.switch(name)
+        return simple_card(
+            f"🧭 /topic switch #{row.get('name')} {beijing_stamp(ctx.now)}",
+            topics.render_topic_card(row),
+            color="blue",
+        )
+
+    if sub == "show":
+        name, extra = _split_first(rest)
+        if extra:
+            return "用法: /topic show [话题名]"
+        row = topics.get(name) if name else topics.current()
+        return simple_card(
+            f"🧭 /topic show {('#' + row.get('name')) if row else ''} {beijing_stamp(ctx.now)}",
+            topics.render_topic_card(row),
+            color="blue" if row else "yellow",
+        )
+
+    if sub == "note":
+        first, note = _split_first(rest)
+        if not first:
+            return "用法: /topic note [#话题名] <补充到胶囊的一句话>"
+        name = ""
+        text = rest
+        if first.startswith("#"):
+            name = topics.normalize_name(first)
+            text = note
+        if not text.strip():
+            return "用法: /topic note [#话题名] <补充到胶囊的一句话>"
+        row = topics.add_note(name, text)
+        return simple_card(
+            f"🧭 /topic note #{row.get('name')} {beijing_stamp(ctx.now)}",
+            topics.render_topic_card(row),
+            color="green",
+        )
+
+    if sub == "set":
+        name, capsule = _split_first(rest)
+        if not name or not capsule:
+            return "用法: /topic set <话题名> <完整胶囊摘要>"
+        row = topics.set_capsule(name, capsule)
+        return simple_card(
+            f"🧭 /topic set #{row.get('name')} {beijing_stamp(ctx.now)}",
+            topics.render_topic_card(row),
+            color="green",
+        )
+
+    if sub == "close":
+        name, extra = _split_first(rest)
+        if extra:
+            return "用法: /topic close [话题名]"
+        row = topics.close(name)
+        if row is None:
+            return "⚠️ 没有可关闭的话题"
+        return simple_card(
+            f"🧭 /topic close #{row.get('name')} {beijing_stamp(ctx.now)}",
+            topics.render_topic_card(row),
+            color="yellow",
+        )
+
+    return ("用法: /topic [list|show|switch|note|set|close]\n"
+            "例: /topic switch 工作Bug；/topic note #工作Bug 下一步只查一条链路")
+
+
 def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     """`/tmux [agent] [N]` — capture last N pane lines as a Feishu card.
 
@@ -560,7 +684,7 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     raw_lines = (int(parts[1]) if len(parts) >= 2 and parts[1].isdigit()
                  else _tmux_default_lines())
     n_lines = max(1, min(raw_lines, _tmux_max_lines()))
-    _, agent_set, _, _ = _live_agents()
+    _, agent_set, _, _ = _live_agents(ctx)
     if agent not in agent_set:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(agent_set)}）"
     target = tmux.Target(ctx.session, agent)
@@ -662,18 +786,19 @@ def _handle_clear(args: str, ctx: SlashContext) -> str:
     return f"✅ /clear → {ctx.session}:{agent} · 已 /clear + 重新入职 init_msg"
 
 
-_HANDLERS: dict[str, Callable[[str, SlashContext], str]] = {
+_HANDLERS: dict[str, Callable[[str, SlashContext], str | dict]] = {
     "/help": _handle_help,
     "/team": _handle_team,
     "/health": _handle_health,
     "/usage": _handle_usage,
+    "/topic": _handle_topic,
     "/tmux": _handle_tmux,
     "/send": _handle_send,
     "/compact": _handle_compact,
     "/stop": _handle_stop,
     "/clear": _handle_clear,
 }
-# 9 chat slash commands: /help /team /health /usage /tmux /send
+# 10 chat slash commands: /help /team /health /usage /topic /tmux /send
 # /compact /stop /clear. Memory commands (`claudeteam recall` /
 # `forget` / `remember`) live only as agent-pane CLIs, not chat slash.
 

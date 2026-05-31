@@ -5,6 +5,9 @@ import json
 
 from claudeteam.feishu.router import Decision
 from claudeteam.feishu.subscribe import process_lines
+from claudeteam.runtime import manager_action_guard
+from claudeteam.store import local_facts
+from helpers import isolated_env
 
 
 _AGENTS = ["manager", "worker_cc", "worker_codex"]
@@ -97,6 +100,28 @@ def test_blank_lines_are_skipped_silently():
     assert stats.dropped == 0
 
 
+def test_base_event_handler_receives_non_message_events_before_chat_routing():
+    calls = []
+    payload = {
+        "header": {
+            "event_id": "evt_base_1",
+            "event_type": "drive.file.bitable_record_changed_v1",
+        },
+        "event": {"table_id": "tbl_x", "record_id": "rec_x"},
+    }
+    stats = process_lines(
+        _ndjson(payload, payload),
+        team_agents=_AGENTS,
+        apply_fn=lambda d: (_ for _ in ()).throw(AssertionError("should not route")),
+        base_event_fn=lambda raw: calls.append(raw) or 1,
+    )
+
+    assert stats.handled == 1
+    assert stats.dropped == 1
+    assert stats.drops_by_reason.get("dedup") == 1
+    assert calls == [payload]
+
+
 def test_cross_team_chat_id_is_dropped():
     stats = process_lines(
         _ndjson(_wrapped("om_1", "oc_other", "ou", "hi")),
@@ -118,6 +143,35 @@ def test_bot_self_messages_are_dropped():
     )
     assert stats.dropped == 1
     assert "bot_self" in stats.drops_by_reason
+
+
+def test_manager_bot_card_observes_public_reply_and_closes_guard():
+    with isolated_env(team={"session": "S", "agents": {
+        "manager": {"cli": "codex-cli"},
+        "worker_cc": {"cli": "codex-cli"},
+        "worker_codex": {"cli": "codex-cli"},
+    }}):
+        local_id = local_facts.append_message("manager", "user", "网络不好要及时反馈")
+        local_facts.mark_read(local_id)
+        manager_action_guard.record_boss_read(local_facts.get_message(local_id))
+
+        stats = process_lines(
+            _ndjson(_wrapped(
+                "om_mgr_1", "oc_team", "cli_bot",
+                '<card title="🎯 manager · 工作分身团队主管">收到，这条我已经按当前执行门禁处理了。</card>'
+            )),
+            team_agents=_AGENTS,
+            chat_id="oc_team",
+            bot_id="cli_bot",
+            apply_fn=lambda d: (_ for _ in ()).throw(AssertionError("manager bot card should not route")),
+        )
+        rows = manager_action_guard.list_records()
+
+    assert stats.handled == 0
+    assert stats.dropped == 1
+    assert rows[0]["closed_at"]
+    assert rows[0]["closure_kind"] == "boss_say"
+    assert rows[0]["closure_ref"] == "om_mgr_1"
 
 
 def test_human_message_routes_to_manager_r174():
@@ -230,7 +284,29 @@ def test_progress_callback_invoked_per_handled_event():
     assert progress[1][0] == "om_2"
 
 
-def test_seen_msg_ids_grows_only_with_handled_events():
+def test_progress_callback_invoked_for_dropped_events_too():
+    """Dropped-but-classified messages still advance catchup cursor.
+
+    Otherwise bot self/cards/system messages replay forever after each
+    router restart, and every restart re-hits the same Feishu history
+    calls instead of moving on.
+    """
+    progress = []
+
+    def on_progress(decision, stats):
+        progress.append((decision.msg_id, decision.reason, stats.dropped))
+
+    process_lines(
+        _ndjson(_wrapped("om_drop", "oc_other", "ou_user", "cross-team")),
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=lambda d: None,
+        on_progress=on_progress,
+    )
+    assert progress == [("om_drop", "cross_team", 1)]
+
+
+def test_seen_msg_ids_grows_with_handled_and_dropped_decisions():
     stats = process_lines(
         _ndjson(
             _wrapped("om_1", "oc_team", "ou_user", "hi"),
@@ -240,8 +316,9 @@ def test_seen_msg_ids_grows_only_with_handled_events():
         chat_id="oc_team",
         apply_fn=lambda d: None,
     )
-    # om_1 handled (added); om_2 cross_team dropped (not added)
-    assert stats.seen_msg_ids == {"om_1"}
+    # om_1 handled; om_2 classified as a permanent cross-team drop.
+    # Both are safe to remember so catchup does not replay them forever.
+    assert stats.seen_msg_ids == {"om_1", "om_2"}
 
 
 def test_normalises_flat_event_with_top_level_fields():
@@ -675,6 +752,104 @@ def test_text_message_extraction_unchanged_after_b1():
     process_lines([line], team_agents=_AGENTS,
                   chat_id="oc_team", apply_fn=applied.append)
     assert applied[0].text == "hello world"
+
+
+def test_reply_to_metadata_and_parent_context_are_delivered():
+    line = json.dumps({
+        "event": {
+            "message": {
+                "message_id": "om_child",
+                "chat_id": "oc_team",
+                "message_type": "text",
+                "content": json.dumps({"text": "@bot 这个是什么意思"}),
+                "reply_to": "om_parent",
+            },
+            "sender": {"sender_id": {"open_id": "ou_user"}, "sender_type": "user"},
+        }
+    })
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        reply_context_resolver=lambda event: (
+            f"[飞书回复上下文] parent={event['reply_to']} 原消息摘要"
+        ),
+    )
+    assert stats.handled == 1
+    assert applied[0].reply_to == "om_parent"
+    assert "原消息摘要" in applied[0].reply_context
+
+
+def test_parent_message_id_alias_triggers_parent_context_lookup():
+    """Feishu/lark-cli reply metadata is not stable across event sources.
+
+    Cloud catchup/subscription variants may call the parent message
+    `parent_message_id` instead of `reply_to`; it must still resolve the
+    parent before the manager sees the message.
+    """
+    line = json.dumps({
+        "event": {
+            "message": {
+                "message_id": "om_child",
+                "chat_id": "oc_team",
+                "message_type": "text",
+                "content": json.dumps({"text": "@bot 继续"}),
+                "parent_message_id": "om_parent_alias",
+            },
+            "sender": {"sender_id": {"open_id": "ou_user"}, "sender_type": "user"},
+        }
+    })
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        reply_context_resolver=lambda event: (
+            f"[飞书回复上下文] parent={event['reply_to']} 原消息摘要"
+        ),
+    )
+    assert stats.handled == 1
+    assert applied[0].reply_to == "om_parent_alias"
+    assert "原消息摘要" in applied[0].reply_context
+
+
+def test_root_id_only_reply_metadata_still_triggers_context_lookup():
+    """Some Feishu history rows only preserve the reply thread root.
+
+    That is weaker than the direct parent id, but still enough to give the
+    manager a non-isolated context instead of answering a short follow-up
+    from the current topic by mistake.
+    """
+    line = json.dumps({
+        "event": {
+            "message": {
+                "message_id": "om_child_root_only",
+                "chat_id": "oc_team",
+                "message_type": "text",
+                "content": json.dumps({"text": "@bot 展开"}),
+                "root_id": "om_root_parent",
+            },
+            "sender": {"sender_id": {"open_id": "ou_user"}, "sender_type": "user"},
+        }
+    })
+    seen = []
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        reply_context_resolver=lambda event: (
+            seen.extend(event.get("reply_lookup_ids") or [])
+            or "[飞书回复上下文] root 原消息摘要"
+        ),
+    )
+    assert stats.handled == 1
+    assert "om_root_parent" in seen
+    assert "root 原消息摘要" in applied[0].reply_context
 
 
 def test_on_line_received_fires_for_every_non_empty_line_including_drops():

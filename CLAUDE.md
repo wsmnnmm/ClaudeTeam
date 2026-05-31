@@ -98,6 +98,23 @@ Team operating rule:
 - If the team cannot resolve it quickly, report a blocker with the failing
   command, symptom, checks already performed, and the next retry/action.
 
+## Founder OS gate
+
+For startup/product work, ClaudeTeam should run as a Founder OS, not a
+generic task machine. Before proposing or dispatching substantial work,
+classify the stage as `Idea`, `MVP`, `Launch`, or `Scale`.
+
+- `Idea`: collect evidence before building; use AI as a devil's advocate.
+- `MVP`: build the smallest core interaction and measure PMF evidence.
+- `Launch`: systematize growth/support/bug triage so the founder is not
+  the bottleneck.
+- `Scale`: compound domain knowledge, user data, integrations, and workflow
+  lock-in.
+
+Use `claudeteam founder-os` for the stage gates and boss cockpit fields.
+Boss-visible updates should name the current stage, exit evidence, today's
+smallest evidence action, and what the team is deliberately not doing.
+
 ## How modules cooperate (the message flow)
 
 ```

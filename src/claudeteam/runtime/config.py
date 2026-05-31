@@ -35,11 +35,33 @@ from claudeteam.util import env_path, env_str, read_json, write_json
 
 
 def team_file() -> Path:
-    return env_path("CLAUDETEAM_TEAM_FILE") or Path.cwd() / "team.json"
+    explicit = env_path("CLAUDETEAM_TEAM_FILE")
+    if explicit:
+        return explicit
+    cwd_file = Path.cwd() / "team.json"
+    if cwd_file.exists():
+        return cwd_file
+    state = env_path("CLAUDETEAM_STATE_DIR")
+    if state and state.name == "state":
+        inferred = state.parent / "team.json"
+        if inferred.exists():
+            return inferred
+    return cwd_file
 
 
 def runtime_config_file() -> Path:
-    return env_path("CLAUDETEAM_RUNTIME_CONFIG") or Path.cwd() / "runtime_config.json"
+    explicit = env_path("CLAUDETEAM_RUNTIME_CONFIG")
+    if explicit:
+        return explicit
+    cwd_file = Path.cwd() / "runtime_config.json"
+    if cwd_file.exists():
+        return cwd_file
+    state = env_path("CLAUDETEAM_STATE_DIR")
+    if state and state.name == "state":
+        inferred = state.parent / "runtime_config.json"
+        if inferred.exists():
+            return inferred
+    return cwd_file
 
 
 def claude_code_settings_file() -> Path:
@@ -180,11 +202,16 @@ def chat_id() -> str:
 
 
 def lark_profile() -> str:
-    """Resolve the lark-cli profile name. Priority: env > toml > legacy json."""
-    if env := env_str("LARK_CLI_PROFILE"):
-        return env
+    """Resolve the lark-cli profile name. Priority: toml > env > legacy json.
+
+    Team-local toml is the authority when present. A stale or ad-hoc
+    `LARK_CLI_PROFILE` in a pane can otherwise make one team's manager post
+    through another team's bot.
+    """
     from claudeteam.runtime import tunables
     toml_val = tunables.load().get("lark_profile")
     if toml_val is not None:
         return str(toml_val)
+    if env := env_str("LARK_CLI_PROFILE"):
+        return env
     return load_runtime_config().get("lark_profile", "")

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import time as _time
 from typing import Callable, Iterable
 
 from claudeteam.feishu import chat as _chat
@@ -52,6 +53,25 @@ def write_cursor(message_id: str, create_time: str) -> None:
         return
     write_json(paths.router_cursor_file(),
                {"message_id": message_id, "create_time": str(create_time)})
+
+
+def bootstrap_cursor_if_empty(*,
+                              now_ms: Callable[[], int] | None = None) -> bool:
+    """Seed a fresh router cursor at startup.
+
+    `pending_lines` deliberately returns nothing with an empty cursor so a
+    brand-new team does not replay arbitrary chat history. The router still
+    needs an anchor for future heartbeat catchup though; otherwise a fresh
+    team whose live subscribe silently stalls has no cursor and can never
+    recover missed messages. This writes a sentinel "start now" cursor only
+    when none exists.
+    """
+    cur = read_cursor()
+    if cur.get("message_id") and cur.get("create_time"):
+        return False
+    now = now_ms or (lambda: int(_time.time() * 1000))
+    write_cursor("__router_bootstrap__", str(int(now())))
+    return True
 
 
 def record_decision(decision: Decision) -> None:
@@ -90,6 +110,15 @@ def _msg_to_event_line(fei_msg: dict) -> str:
                 "chat_id": fei_msg.get("chat_id", ""),
                 "message_type": fei_msg.get("msg_type", "text"),
                 "content": _extract_content(fei_msg),
+                "reply_to": fei_msg.get("reply_to", ""),
+                "parent_id": fei_msg.get("parent_id", ""),
+                "parent_message_id": fei_msg.get("parent_message_id", ""),
+                "reply_to_id": fei_msg.get("reply_to_id", ""),
+                "reply_message_id": fei_msg.get("reply_message_id", ""),
+                "quote_message_id": fei_msg.get("quote_message_id", ""),
+                "quoted_message_id": fei_msg.get("quoted_message_id", ""),
+                "root_id": fei_msg.get("root_id", ""),
+                "thread_id": fei_msg.get("thread_id", ""),
                 "create_time": fei_msg.get("create_time", ""),
             },
             "sender": {

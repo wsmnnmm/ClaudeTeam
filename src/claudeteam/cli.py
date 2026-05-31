@@ -11,10 +11,13 @@ import sys
 from typing import Callable
 
 from claudeteam.commands import (
-    init, send, inbox, read, status, log, team, workspace,
-    start, hire, fire, up, down, reset, reidentify, switch,
-    say, router, watchdog, task, remember, recall, forget, peek,
-    health, usage, install_hooks, version,
+    api_budget, init, send, cross_send, cross_track, cross_learnings,
+    inbox, read, status, log, team, workspace,
+    start, hire, fire, recycle, up, down, reset, reidentify, switch,
+    say, router, watchdog, task, topic, remember, recall, forget, peek,
+    health, fleet_health, cockpit_sync, cockpit_brief, founder_os,
+    boss_experience_audit, correction_cases, evolution_health,
+    mentor_request, traffic_brief, usage, install_hooks, version,
 )
 from claudeteam.runtime.envfile import load_dotenv
 from claudeteam.util import error_exit
@@ -34,6 +37,9 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
     ]),
     ("local store I/O", [
         ("send", send.main),
+        ("cross-send", cross_send.main),
+        ("cross-track", cross_track.main),
+        ("cross-learnings", cross_learnings.main),
         ("inbox", inbox.main),
         ("read", read.main),
         ("status", status.main),
@@ -46,6 +52,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
         ("start", start.main),
         ("hire", hire.main),
         ("fire", fire.main),
+        ("recycle", recycle.main),
         ("up", up.main),
         ("down", down.main),
         ("reset", reset.main),
@@ -58,9 +65,11 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
     ]),
     ("supervision", [
         ("watchdog", watchdog.main),
+        ("api-budget", api_budget.main),
     ]),
     ("task tracking", [
         ("task", task.main),
+        ("topic", topic.main),
     ]),
     ("durable agent memory", [
         ("remember", remember.main),
@@ -69,6 +78,15 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
     ]),
     ("operational", [
         ("health", health.main),
+        ("fleet-health", fleet_health.main),
+        ("cockpit-sync", cockpit_sync.main),
+        ("cockpit-brief", cockpit_brief.main),
+        ("founder-os", founder_os.main),
+        ("boss-experience-audit", boss_experience_audit.main),
+        ("correction-cases", correction_cases.main),
+        ("evolution-health", evolution_health.main),
+        ("mentor-request", mentor_request.main),
+        ("traffic-brief", traffic_brief.main),
         ("usage", usage.main),
         ("install-hooks", install_hooks.main),
         ("version", version.main),

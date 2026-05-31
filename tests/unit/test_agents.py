@@ -67,13 +67,16 @@ def test_every_adapter_implements_required_methods():
 
 
 def test_default_submit_keys_are_enter_variants():
-    # base default lists Enter / C-m / C-j; ClaudeCode keeps it, Codex/Kimi prepend M-Enter
+    # base default lists Enter / C-m / C-j; Codex now leads with Enter
+    # because current Codex TUI submits that way; Kimi still needs M-Enter.
     cc = ClaudeCodeAdapter().submit_keys()
     assert cc[0] == "Enter"
-    for adapter in (CodexCliAdapter(), KimiCodeAdapter()):
-        keys = adapter.submit_keys()
-        assert keys[0] == "M-Enter"
-        assert "Enter" in keys
+    codex = CodexCliAdapter().submit_keys()
+    assert codex[0] == "Enter"
+    assert "M-Enter" in codex
+    kimi = KimiCodeAdapter().submit_keys()
+    assert kimi[0] == "M-Enter"
+    assert "Enter" in kimi
 
 
 # ── per-adapter spawn shape ──────────────────────────────────────
@@ -87,6 +90,15 @@ def test_claude_code_spawn_is_dangerously_skip_permissions_with_model():
     assert "--model sonnet-4-6" in cmd
     assert "--name worker_cc" in cmd
     assert "IS_SANDBOX=1" in cmd
+
+
+def test_claude_rate_limit_markers_do_not_match_generic_dependency_logs():
+    markers = ClaudeCodeAdapter().rate_limit_markers()
+    assert "rate limit" not in markers
+    hf_log = "Please set a HF_TOKEN to enable higher rate limits and faster downloads."
+    assert not any(marker in hf_log for marker in markers)
+    claude_log = "Approaching usage limit. Try again at 5pm."
+    assert any(marker in claude_log for marker in markers)
 
 
 def test_claude_code_spawn_reads_project_local_ccswitch_settings():

@@ -35,6 +35,7 @@ API surface:
 from __future__ import annotations
 
 import json
+import re
 from typing import Iterable
 
 from claudeteam.runtime import paths
@@ -42,6 +43,12 @@ from claudeteam.util import flock, now_ms, read_jsonl
 
 
 _MAX_PER_AGENT = 200  # cap retained entries; oldest get dropped on overflow
+
+_SENSITIVE_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
+    re.compile(r"sk-[A-Za-z0-9._-]{12,}"),
+    re.compile(r"(?i)(api[_-]?key|token|secret|password)(['\"]?\s*[:=]\s*['\"]?)[^\\s'\"&]{8,}"),
+)
 
 # Convention vocabulary for memory entry `kind`. Not enforced — `append`
 # accepts any string so future kinds can land without a code change —
@@ -147,7 +154,24 @@ def append(agent: str, kind: str, content: str, *, ref: str = "") -> dict:
             "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
             encoding="utf-8",
         )
+    _maybe_mirror_to_cross_team_pool(agent, kind, content, ref=ref)
     return entry
+
+
+def _maybe_mirror_to_cross_team_pool(agent: str, kind: str, content: str,
+                                     *, ref: str = "") -> None:
+    """Mirror 'learning' entries to the cross-team shared pool.
+
+    This is a best-effort side effect — failures are silent so memory
+    append never fails because of cross-team pool issues.
+    """
+    if kind != "learning":
+        return
+    try:
+        from claudeteam.store import cross_learnings
+        cross_learnings.mirror_learning(agent, kind, content, ref=ref)
+    except Exception:
+        pass
 
 
 def list_recent(agent: str, *, limit: int = 20) -> list[dict]:
@@ -176,6 +200,32 @@ def list_recent_filtered(agent: str, *,
         all_rows = list_recent(agent, limit=_MAX_PER_AGENT)
         return [r for r in all_rows if r.get("kind") == kind][-limit:]
     return list_recent(agent, limit=limit)
+
+
+def _redact_sensitive_text(text: str) -> str:
+    """Best-effort prompt redaction for memory snippets."""
+    redacted = str(text or "")
+
+    def repl(match: re.Match) -> str:
+        raw = match.group(0)
+        if raw.lower().startswith("bearer "):
+            return "Bearer [REDACTED]"
+        if raw.startswith("sk-"):
+            return "sk-[REDACTED]"
+        if len(match.groups()) >= 2:
+            return f"{match.group(1)}{match.group(2)}[REDACTED]"
+        return "[REDACTED]"
+
+    for pattern in _SENSITIVE_PATTERNS:
+        redacted = pattern.sub(repl, redacted)
+    return redacted
+
+
+def _compact_prompt_text(text: str, max_chars: int | None) -> str:
+    compact = " ".join(str(text or "").split())
+    if max_chars is None or max_chars <= 0 or len(compact) <= max_chars:
+        return compact
+    return compact[:max_chars].rstrip() + "..."
 
 
 def clear(agent: str) -> int:
@@ -226,13 +276,17 @@ def clear_kind(agent: str, kind: str) -> int:
         return dropped
 
 
-def render_for_prompt(agent: str, *, limit: int = 20) -> str:
+def render_for_prompt(agent: str, *, limit: int = 20,
+                      max_chars_per_entry: int | None = None,
+                      redact_sensitive: bool = False) -> str:
     """Format `agent`'s recent memory as a markdown block suitable for
     injecting into the identity init prompt.
 
     Empty memory → empty string (callers should branch on `if memory:`).
     Each entry renders as one bullet line: `- [<kind>] <content> (ref=<ref>)`
-    with the ref suffix omitted when empty.
+    with the ref suffix omitted when empty. Callers that run a cost-sensitive
+    wake path can pass `max_chars_per_entry` and `redact_sensitive` to avoid
+    dragging long curl/log blobs or secrets back into every model turn.
     """
     rows = list_recent(agent, limit=limit)
     if not rows:
@@ -240,7 +294,11 @@ def render_for_prompt(agent: str, *, limit: int = 20) -> str:
     lines = ["## 既往记忆（按时间）"]
     for r in rows:
         suffix = f" (ref={r['ref']})" if r.get("ref") else ""
-        lines.append(f"- [{r.get('kind', '?')}] {r.get('content', '')}{suffix}")
+        content = str(r.get("content", ""))
+        if redact_sensitive:
+            content = _redact_sensitive_text(content)
+        content = _compact_prompt_text(content, max_chars_per_entry)
+        lines.append(f"- [{r.get('kind', '?')}] {content}{suffix}")
     return "\n".join(lines)
 
 

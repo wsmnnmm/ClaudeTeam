@@ -157,6 +157,25 @@ def test_render_for_prompt_renders_bullets_with_ref():
         assert "(ref=)" not in rendered
 
 
+def test_render_for_prompt_can_truncate_and_redact_for_slim_wake():
+    with isolated_env():
+        memory.append(
+            "manager",
+            "note",
+            "curl -H 'ZRT-SMART-TOKEN: Bearer abcdefghijklmnopqrstuvwxyz123456' "
+            + "x" * 300,
+            ref="om_secret",
+        )
+        memory.append("manager", "note", "sk-1234567890abcdefghijklmnop")
+        rendered = memory.render_for_prompt(
+            "manager", limit=2, max_chars_per_entry=80, redact_sensitive=True)
+        assert "ZRT-SMART-TOKEN: [REDACTED]" in rendered
+        assert "sk-[REDACTED]" in rendered
+        assert "abcdefghijklmnopqrstuvwxyz123456" not in rendered
+        assert "sk-1234567890" not in rendered
+        assert "xxx" in rendered and "x" * 120 not in rendered
+
+
 def test_clear_removes_file_and_returns_count():
     with isolated_env():
         memory.append("worker", "note", "a")

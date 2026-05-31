@@ -56,7 +56,7 @@ def test_help_returns_card_listing_all_commands():
     assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
     assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
     body = reply["body"]["elements"][0]["content"]
-    for c in ("/help", "/team", "/health", "/usage", "/tmux",
+    for c in ("/help", "/team", "/health", "/usage", "/topic", "/tmux",
               "/send", "/compact", "/stop", "/clear"):
         assert c in body
     # Dropped commands stay dropped
@@ -609,6 +609,55 @@ def test_usage_card_renders_kimi_section_with_quota_metrics():
     assert "剩余 80%" in blob
     # 80% remaining → green
     assert "color='green'" in blob
+
+
+# ── /topic ───────────────────────────────────────────────────────
+
+
+def test_topic_card_shows_current_topic_and_capsule():
+    from claudeteam.store import topics
+
+    with isolated_env():
+        topics.set_capsule("工作Bug", "T-164 暂停；恢复时先查三维定位接口。")
+        topics.switch("工作Bug")
+        reply = slash.dispatch("/topic", _ctx())
+
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "blue"
+    blob = _all_markdown(reply)
+    assert "#工作Bug" in blob
+    assert "三维定位接口" in blob
+    assert "胶囊更新时间" in blob
+    assert "updated:" not in blob
+    assert "sources:" not in blob
+
+
+def test_topic_switch_and_note_update_store_from_slash():
+    from claudeteam.store import topics
+
+    with isolated_env():
+        reply1 = slash.dispatch("/topic switch TeamOps", _ctx())
+        assert isinstance(reply1, dict)
+        assert topics.current_name() == "TeamOps"
+
+        reply2 = slash.dispatch("/topic note #TeamOps 禁止刷收到，必须给证据", _ctx())
+        assert isinstance(reply2, dict)
+        assert "禁止刷收到" in topics.current()["capsule"]
+
+
+def test_topic_show_uses_clear_fuzzy_match_for_topic_terms():
+    from claudeteam.store import topics
+
+    with isolated_env():
+        topics.set_capsule("工作Bug", "T-164 暂停；恢复时先查三维定位接口。")
+        reply = slash.dispatch("/topic show T-164", _ctx())
+
+    assert isinstance(reply, dict)
+    blob = _all_markdown(reply)
+    assert "#工作Bug" in blob
+    assert "匹配词" in blob
+    assert "T-164" in blob
+    assert "三维定位接口" in blob
 
 
 def test_usage_card_marks_header_red_when_codex_or_kimi_failed():

@@ -5,8 +5,10 @@ Purposefully tiny and dependency-free: load `KEY=VALUE` pairs into
 
 Resolution order:
   1. Explicit `path=` arg
-  2. Current working directory's `.env`
-  3. ClaudeTeam repo root `.env` (fallback for "manage another project
+  2. `$CLAUDETEAM_CONFIG_FILE`'s sibling `.env` when managing another
+     team from a shared checkout
+  3. Current working directory's `.env`
+  4. ClaudeTeam repo root `.env` (fallback for "manage another project
      from a shared ClaudeTeam checkout" deployments)
 
 That last fallback matters when operators run `claudeteam` from a
@@ -22,6 +24,15 @@ import os
 from pathlib import Path
 
 
+_FEISHU_CREDENTIAL_KEYS = {
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
+    "LARKSUITE_CLI_TENANT_ACCESS_TOKEN",
+}
+
+
 def _strip_quotes(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
@@ -29,14 +40,57 @@ def _strip_quotes(value: str) -> str:
     return value
 
 
+def _config_dir_from_env() -> Path | None:
+    raw = os.environ.get("CLAUDETEAM_CONFIG_FILE", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve().parent
+
+
+def _dedupe(paths: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    return out
+
+
 def _candidate_paths(path: Path | None = None) -> list[Path]:
     if path is not None:
         return [path]
     cwd_env = Path.cwd() / ".env"
     repo_env = Path(__file__).resolve().parents[3] / ".env"
-    if repo_env == cwd_env:
-        return [cwd_env]
-    return [cwd_env, repo_env]
+    paths = []
+    if cfg_dir := _config_dir_from_env():
+        paths.append(cfg_dir / ".env")
+    paths.extend([cwd_env, repo_env])
+    return _dedupe(paths)
+
+
+def _owner_dir(env_path: Path) -> Path:
+    if env_path.parent.name == ".env.local.d":
+        return env_path.parent.parent.resolve()
+    return env_path.parent.resolve()
+
+
+def _should_skip_key(env_path: Path, key: str) -> bool:
+    """Prevent Feishu app credentials from leaking across team roots.
+
+    When a command is launched from the shared ClaudeTeam checkout with
+    `CLAUDETEAM_CONFIG_FILE=/other/team/claudeteam.toml`, the checkout's
+    `.env` may hold a different Feishu app. Loading those credentials
+    while using another `lark_profile` makes lark-cli authenticate as
+    the wrong bot and produces "Bot/User can NOT be out of the chat".
+    Non-credential defaults may still fall back from cwd/repo `.env`.
+    """
+    cfg_dir = _config_dir_from_env()
+    if cfg_dir is None or key not in _FEISHU_CREDENTIAL_KEYS:
+        return False
+    return _owner_dir(env_path) != cfg_dir
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -53,6 +107,8 @@ def load_dotenv(path: Path | None = None) -> None:
             key = key.strip()
             if not key or key in os.environ:
                 continue
+            if _should_skip_key(env_path, key):
+                continue
             os.environ[key] = _strip_quotes(value)
     _load_env_dir()
 
@@ -65,22 +121,28 @@ def _load_env_dir() -> None:
     Files are applied in lexicographic order and, like `.env`, never
     overwrite already-set variables.
     """
-    env_dir = Path.cwd() / ".env.local.d"
-    try:
-        files = sorted(env_dir.glob("*.env"))
-    except OSError:
-        return
-    for env_path in files:
+    dirs = []
+    if cfg_dir := _config_dir_from_env():
+        dirs.append(cfg_dir / ".env.local.d")
+    dirs.append(Path.cwd() / ".env.local.d")
+    for env_dir in _dedupe(dirs):
         try:
-            text = env_path.read_text(encoding="utf-8")
+            files = sorted(env_dir.glob("*.env"))
         except OSError:
             continue
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
+        for env_path in files:
+            try:
+                text = env_path.read_text(encoding="utf-8")
+            except OSError:
                 continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            if not key or key in os.environ:
-                continue
-            os.environ[key] = _strip_quotes(value)
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                if _should_skip_key(env_path, key):
+                    continue
+                os.environ[key] = _strip_quotes(value)

@@ -41,6 +41,8 @@ class Decision:
     sender: str = ""                                    # parsed agent sender, if recognised
     text: str = ""                                      # cleaned message text
     msg_id: str = ""
+    reply_to: str = ""                                  # Feishu parent message id when this is a reply
+    reply_context: str = ""                             # short parent-message summary for the agent prompt
     reason: str = ""                                    # drop reason or "" on route
     create_time: str = ""                               # epoch ms (for catchup cursor)
 
@@ -166,7 +168,12 @@ def classify_event(event: dict, *,
     """
     agents = set(team_agents)
     msg_id = event.get("message_id", "")
-    common = {"msg_id": msg_id, "create_time": str(event.get("create_time", ""))}
+    common = {
+        "msg_id": msg_id,
+        "reply_to": str(event.get("reply_to") or event.get("parent_id") or ""),
+        "reply_context": str(event.get("reply_context") or ""),
+        "create_time": str(event.get("create_time", "")),
+    }
     if not msg_id:
         return Decision(Action.DROP, reason="no_msg_id", **common)
     if seen_msg_ids is not None and msg_id in seen_msg_ids:
@@ -194,7 +201,8 @@ def classify_event(event: dict, *,
         if card_agent and card_agent != default_target:
             return Decision(Action.ROUTE, targets=[default_target],
                             sender=card_agent, text=raw_text, **common)
-        return Decision(Action.DROP, reason="bot_self", **common)
+        return Decision(Action.DROP, sender=card_agent, text=raw_text,
+                        reason="bot_self", **common)
 
     if not raw_text:
         return Decision(Action.DROP, reason="empty", **common)
