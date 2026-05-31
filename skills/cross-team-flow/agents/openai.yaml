@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-Team Flow"
+  short_description: "Stable multi-team handoffs"
+  default_prompt: "Use the cross-team flow protocol to coordinate multiple teams, package context, assign owners, verify evidence, and close the loop."

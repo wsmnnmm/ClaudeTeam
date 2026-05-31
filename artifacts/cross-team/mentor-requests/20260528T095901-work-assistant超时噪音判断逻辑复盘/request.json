@@ -1,0 +1,12 @@
+{
+  "sourceTeam": "work-assistant",
+  "sourceDir": "/Users/wsm/Project/work-assistant-team",
+  "sourceManager": "manager",
+  "topic": "work-assistant超时噪音判断逻辑复盘",
+  "kind": "ops",
+  "owner": "work-assistant/manager",
+  "mentors": "liu",
+  "target": "cloud",
+  "brief": "/Users/wsm/Project/ClaudeTeam/artifacts/cross-team/mentor-requests/20260528T095901-work-assistant超时噪音判断逻辑复盘/brief.md",
+  "images": []
+}

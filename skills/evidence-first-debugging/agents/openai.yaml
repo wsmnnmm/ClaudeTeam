@@ -1,0 +1,4 @@
+interface:
+  display_name: "证据优先排障"
+  short_description: "先证据、假设、日志定位，再改代码"
+  default_prompt: "Use $evidence-first-debugging to investigate the failure with evidence, hypotheses, and log-based verification before changing code."

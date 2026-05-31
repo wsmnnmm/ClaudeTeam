@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mentor Score Loop"
+  short_description: "Iterate mentor review to ready"
+  default_prompt: "Use $mentor-score-loop to refine this task with AI mentor scoring, implement only after the stop condition, and close with verified TODO002 handoff."

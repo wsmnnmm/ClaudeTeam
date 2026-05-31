@@ -1,0 +1,12 @@
+{
+  "sourceTeam": "ClaudeTeam",
+  "sourceDir": "/Users/wsm/Project/ClaudeTeam",
+  "sourceManager": "manager",
+  "topic": "闭环审计十大漏洞修复+话题漂移检测评审",
+  "kind": "review",
+  "owner": "ClaudeTeam/manager",
+  "mentors": "liu",
+  "target": "cloud",
+  "brief": "/Users/wsm/Project/ClaudeTeam/artifacts/cross-team/mentor-requests/20260531T235209-闭环审计十大漏洞修复-话题漂移检测评审/brief.md",
+  "images": []
+}

@@ -1,0 +1,4 @@
+source=/Users/wsm/Project/website-chuhai-team/state/artifacts/feishu/om_x100b6ffc62e5a8a8b345efec7df8377/image-img_v3_0211r_b67b5774-60ae-4fb7-9280-e627db1d056g.jpg
+format=JPEG
+size=(1080, 1920)
+mode=RGB

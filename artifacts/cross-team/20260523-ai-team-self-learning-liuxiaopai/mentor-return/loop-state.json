@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强",
+  "project": "ClaudeTeam",
+  "topic": "AI团队自学习进化能力强不强",
+  "kind": "product",
+  "owner": "ClaudeTeam/manager",
+  "status": "manager_translation",
+  "createdAt": "2026-05-23T13:28:55.039Z",
+  "updatedAt": "2026-05-23T13:28:55.039Z",
+  "inputFingerprint": "b59daad1f4f661ed40a5498ff668eebb3d318e580eecc3b5fb10f3a0eb4d9c69",
+  "briefFile": "/srv/ai/projects/todo002-study-coach/knowledge-base/cross-team/claudeteam-demo-inbox/20260523T212705-ai团队自学习进化能力强不强/brief.md",
+  "evidenceFile": "",
+  "mentors": [
+    "liu"
+  ],
+  "conversation": {
+    "mode": "new",
+    "decidedBy": "manager",
+    "rule": "new topic, clean context, or unclear prior thread"
+  },
+  "images": [],
+  "questions": [
+    "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/questions/liu.md"
+  ],
+  "questionGate": {
+    "passed": true,
+    "validations": [
+      {
+        "mentor": "AI 刘小排",
+        "passed": true,
+        "errors": []
+      }
+    ],
+    "requires": [
+      "one mentor per question file",
+      "mentor-visible prompt must not mention the other mentor",
+      "no shared AI 刘小排 / AI 亦仁 answer request"
+    ]
+  },
+  "mentorResults": [
+    {
+      "mentor": "AI 刘小排",
+      "ok": true,
+      "markdown": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/mentor-cards/2026-05-23T212854-claudeteam-ai团队自学习进化能力强不强-ai-liuxiaopai-review.md",
+      "json": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/mentor-cards/2026-05-23T212854-claudeteam-ai团队自学习进化能力强不强-ai-liuxiaopai-review.json",
+      "error": ""
+    }
+  ],
+  "gates": {
+    "managerTranslation": {
+      "passed": false,
+      "requires": [
+        "owner",
+        "completion evidence",
+        "acceptance metric",
+        "non-goal"
+      ]
+    },
+    "execution": {
+      "passed": false,
+      "requires": [
+        "worker artifact",
+        "manager verification"
+      ]
+    },
+    "reask": {
+      "allowed": false,
+      "requires": [
+        "new evidence after last mentor answer"
+      ]
+    },
+    "close": {
+      "allowed": false,
+      "requires": [
+        "executed or disproved or escalated with <=3 boss options"
+      ]
+    }
+  },
+  "files": {
+    "input": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/input.md",
+    "iteration": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/iteration.md",
+    "state": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/loop-state.json",
+    "managerHandoff": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/manager-handoff.md",
+    "reaskTemplate": "/srv/ai/projects/todo002-study-coach/knowledge-base/mentor-loops/2026-05-23T212726-claudeteam-ai团队自学习进化能力强不强/reask-template.md"
+  },
+  "events": []
+}
