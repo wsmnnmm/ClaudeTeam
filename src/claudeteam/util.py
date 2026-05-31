@@ -242,6 +242,19 @@ def fmt_time_ms(ms: int, *, fmt: str = "%m-%d %H:%M") -> str:
     return time.strftime(fmt, time.localtime(ms / 1000))
 
 
+def current_time_line(*, now: float | None = None) -> str:
+    """Short wall-clock line for agent prompts.
+
+    Agents do not inherently know real-world time after long sessions,
+    clears, or compaction. Keep this as one bounded line instead of
+    growing prompt history.
+    """
+    current = time.time() if now is None else now
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z %z",
+                          time.localtime(current)).strip()
+    return f"当前真实时间（本机本地时区）: {stamp}"
+
+
 def fmt_bytes(b: int) -> str:
     """Bytes → human-readable `2.34 GB / 56 MB / 7 KB / 42 B`.
 

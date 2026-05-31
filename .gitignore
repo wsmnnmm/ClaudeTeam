@@ -34,6 +34,7 @@ runtime_config.json
 
 # unrelated tool caches that drift into the repo root
 /.playwright-mcp/
+/.tmp/
 # claudeteam unified config — per-deploy file, like runtime_config.json
 /claudeteam.toml
 /claudeteam.toml.bak
@@ -45,3 +46,13 @@ AGENTS.md
 /Makefile
 /bin/
 /generated/
+
+# Local/generated runtime dashboards and unfinished local skills.
+/runtime-health/
+
+# Generated one-off visual artifacts must live under artifacts/, not repo root.
+/contact-sheet.png
+/demo-ad-watch.png
+/post-reddit.png
+/post-wechat.png
+/post-xiaohongshu.png

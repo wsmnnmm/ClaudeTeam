@@ -6,10 +6,11 @@ to its configured default.
 """
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 
-from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
+from .base import CliAdapter, SPINNER_CHARS
 
 
 def ensure_workdir_trusted(workdir: Path,
@@ -20,7 +21,14 @@ def ensure_workdir_trusted(workdir: Path,
 
     `config_path` is injectable for tests.
     """
-    cfg = config_path or (Path.home() / ".codex" / "config.toml")
+    if config_path is not None:
+        cfg = config_path
+    else:
+        codex_home = os.environ.get("CODEX_HOME", "").strip()
+        if codex_home:
+            cfg = Path(codex_home) / "config.toml"
+        else:
+            cfg = Path.home() / ".codex" / "config.toml"
     entry = f'[projects."{workdir}"]\ntrust_level = "trusted"\n'
     if cfg.exists():
         existing = cfg.read_text(encoding="utf-8")
@@ -44,18 +52,38 @@ class CodexCliAdapter(CliAdapter):
         return f"CODEX_AGENT={shlex.quote(agent)} codex {quoted}"
 
     def ready_markers(self) -> list[str]:
-        # Banner lines after CLI 0.124+ becomes interactive.  Avoids matching
-        # the spawn-command echo that includes "gpt-5".
-        return ["OpenAI Codex", "permissions: YOLO"]
+        # Banner/status lines after CLI 0.124+ becomes interactive.  The
+        # reasoning-effort markers catch compact captures where only the
+        # bottom status line remains, e.g. "gpt-5.5 xhigh · /work".
+        return [
+            " default · ",
+            " low · ",
+            " medium · ",
+            " high · ",
+            " xhigh · ",
+            " max · ",
+        ]
 
     def busy_markers(self) -> list[str]:
-        return ["esc to interrupt", "Booting MCP server", *SPINNER_CHARS]
+        return [
+            "esc to interrupt",
+            "Booting MCP server",
+            "Starting MCP servers",
+            *SPINNER_CHARS,
+        ]
 
     def process_name(self) -> str:
         return "codex"
 
     def submit_keys(self) -> list[str]:
-        return list(MULTILINE_SUBMIT_KEYS)
+        # Codex 0.130 submits injected buffers with plain Enter. Sending
+        # M-Enter first can leave boss messages sitting in the input area on
+        # some panes, producing a fast-ack-without-follow-up failure.
+        return ["Enter", "M-Enter", "C-m", "C-j"]
 
     def rate_limit_markers(self) -> list[str]:
-        return ["rate limit", "429", "RateLimitError", "you exceeded your"]
+        # Codex TUI keeps recent scrollback in-pane; marker-based preflight
+        # can mistake old errors or numeric fragments for a current limit and
+        # silently leave boss messages in inbox. Let Codex receive the prompt
+        # and surface any real rate-limit error itself.
+        return []

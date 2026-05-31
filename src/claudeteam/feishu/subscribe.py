@@ -10,12 +10,27 @@ Returns a tally of (handled, dropped) so callers can log heartbeat.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from claudeteam.feishu.deliver import apply
 from claudeteam.feishu.router import classify_event
+from claudeteam.runtime import manager_action_guard
+
+
+_PLAIN_POST_IMAGE_RE = re.compile(r"\[Image:\s*([^\]\s]+)\]")
+_REPLY_PARENT_FIELDS = (
+    "reply_to",
+    "parent_id",
+    "parent_message_id",
+    "reply_to_id",
+    "reply_message_id",
+    "quote_message_id",
+    "quoted_message_id",
+)
+_REPLY_THREAD_FIELDS = ("root_id", "thread_id")
 
 
 @dataclass
@@ -26,7 +41,8 @@ class LoopStats:
     seen_msg_ids: set[str] = field(default_factory=set)
 
 
-def _normalise(raw: dict) -> dict:
+def _normalise(raw: dict, *,
+               resource_downloader: Callable | None = None) -> dict:
     """Normalize a lark-cli event payload to the flat shape classify_event wants.
 
     Two shapes seen in the wild:
@@ -62,7 +78,16 @@ def _normalise(raw: dict) -> dict:
     # {"image_key": "..."} for image, {"file_key": ..., "file_name": ...}
     # for file) or plain text.
     content = msg.get("content") if msg else ev.get("content")
-    text = _extract_text(content, msg_type) or ev.get("text", "")
+    message_id = msg.get("message_id") or ev.get("message_id", "")
+    text = (
+        _extract_text(
+            content,
+            msg_type,
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
+        or ev.get("text", "")
+    )
 
     # sender_type identifies bot vs human. Modern lark-cli payload has
     # `sender_type: "user" | "app"` flat at top; webhook-shape and
@@ -73,8 +98,15 @@ def _normalise(raw: dict) -> dict:
     sender_type = (sender.get("sender_type")
                    or sender.get("id_type")
                    or ev.get("sender_type", ""))
+    reply_to = _first_field(msg, ev, names=_REPLY_PARENT_FIELDS)
+    root_id = _first_field(msg, ev, names=("root_id",))
+    thread_id = _first_field(msg, ev, names=("thread_id",))
+    reply_lookup_ids = _dedupe_ids([
+        reply_to,
+        *(_first_field(msg, ev, names=(name,)) for name in _REPLY_THREAD_FIELDS),
+    ])
     return {
-        "message_id": msg.get("message_id") or ev.get("message_id", ""),
+        "message_id": message_id,
         "chat_id": msg.get("chat_id") or ev.get("chat_id", ""),
         "sender_id": (sender.get("sender_id", {}).get("open_id")
                       or sender.get("id")
@@ -82,11 +114,40 @@ def _normalise(raw: dict) -> dict:
         "sender_type": sender_type,
         "text": text,
         "msg_type": msg_type,
+        "reply_to": reply_to,
+        "reply_lookup_ids": reply_lookup_ids,
+        "root_id": root_id,
+        "thread_id": thread_id,
         "create_time": msg.get("create_time") or ev.get("create_time", ""),
     }
 
 
-def _extract_text(content, msg_type: str) -> str:
+def _first_field(*sources: dict, names: tuple[str, ...]) -> str:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for name in names:
+            value = str(source.get(name) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _dedupe_ids(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _extract_text(content, msg_type: str, *,
+                  message_id: str = "",
+                  resource_downloader: Callable | None = None) -> str:
     """Reduce a Feishu message content payload to a plain-text representation
     classify_event can route on.
 
@@ -106,19 +167,36 @@ def _extract_text(content, msg_type: str) -> str:
     try:
         data = json.loads(content) or {}
     except json.JSONDecodeError:
-        # Plain string content (legacy variant)
-        return content
+        # Plain string content (legacy / chat-messages-list variants).
+        # lark-cli may render rich post images as `[Image: img_v3_...]`
+        # even when the event's message_type is missing or reported as
+        # text, so normalize image markers regardless of msg_type.
+        return _post_plain_to_text(
+            content,
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
     if msg_type == "image":
         key = data.get("image_key", "")
-        return f"[image: image_key={key}]" if key else "[image]"
+        return _media_placeholder(
+            "image", key, "image_key",
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
     if msg_type == "file":
         name = data.get("file_name") or ""
         key = data.get("file_key", "")
+        path = _download_resource_path(
+            message_id, key, "file", resource_downloader=resource_downloader)
         if name and key:
-            return f"[file: {name} (file_key={key})]"
+            suffix = f", local_path={path}" if path else ""
+            return f"[file: {name} (file_key={key}{suffix})]"
         if name:
             return f"[file: {name}]"
-        return f"[file: file_key={key}]" if key else "[file]"
+        if key:
+            suffix = f" local_path={path}" if path else ""
+            return f"[file: file_key={key}{suffix}]"
+        return "[file]"
     if msg_type == "audio":
         key = data.get("file_key", "")
         return f"[audio: file_key={key}]" if key else "[audio]"
@@ -131,13 +209,56 @@ def _extract_text(content, msg_type: str) -> str:
         # 每个 element 是 {"tag": "text"|"img"|"a"|"at"|"file"|..., ...}
         # 把所有段落拼成多行文本, 图片 / 文件等非文字 element 用 placeholder
         # 表达, 这样 LLM 能看到"老板发了一张图 + 这段文字"的全貌.
-        return _post_to_text(data)
+        return _post_to_text(
+            data,
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
     # Default: text or unknown — try common .text field, then .content,
     # then leave empty so callers can fall back to ev.get("text").
     return data.get("text") or data.get("content") or ""
 
 
-def _post_to_text(data: dict) -> str:
+def _download_resource_path(message_id: str, resource_key: str, resource_type: str,
+                            *, resource_downloader: Callable | None = None) -> str:
+    if not resource_downloader or not message_id or not resource_key:
+        return ""
+    try:
+        return str(resource_downloader(message_id, resource_key, resource_type) or "")
+    except Exception as exc:
+        print(f"  ⚠️ media downloader failed for {message_id}: {exc}")
+        return ""
+
+
+def _media_placeholder(kind: str, key: str, key_label: str, *,
+                       message_id: str = "",
+                       resource_downloader: Callable | None = None) -> str:
+    if not key:
+        return f"[{kind}]"
+    path = _download_resource_path(
+        message_id, key, "image" if kind == "image" else "file",
+        resource_downloader=resource_downloader,
+    )
+    suffix = f" local_path={path}" if path else ""
+    return f"[{kind}: {key_label}={key}{suffix}]"
+
+
+def _post_plain_to_text(text: str, *,
+                        message_id: str = "",
+                        resource_downloader: Callable | None = None) -> str:
+    """Normalize lark-cli's rendered post text, e.g. `[Image: img_v3_...]`."""
+    def replace_image(match: re.Match) -> str:
+        return _media_placeholder(
+            "image", match.group(1), "image_key",
+            message_id=message_id,
+            resource_downloader=resource_downloader,
+        )
+    return _PLAIN_POST_IMAGE_RE.sub(replace_image, text)
+
+
+def _post_to_text(data: dict, *,
+                  message_id: str = "",
+                  resource_downloader: Callable | None = None) -> str:
     """Flatten a Feishu `post` (rich text) message body into plain text.
 
     Mixed image/file + text messages come through as `msg_type=post`;
@@ -166,19 +287,37 @@ def _post_to_text(data: dict) -> str:
                 bits.append(str(el.get("text", "")))
             elif tag == "img":
                 key = el.get("image_key", "")
-                bits.append(f"[image: image_key={key}]" if key else "[image]")
+                bits.append(_media_placeholder(
+                    "image", key, "image_key",
+                    message_id=message_id,
+                    resource_downloader=resource_downloader,
+                ))
             elif tag == "media":
                 key = el.get("file_key") or el.get("image_key", "")
-                bits.append(f"[media: {key}]" if key else "[media]")
+                if key:
+                    path = _download_resource_path(
+                        message_id, key, "file",
+                        resource_downloader=resource_downloader,
+                    )
+                    suffix = f" local_path={path}" if path else ""
+                    bits.append(f"[media: {key}{suffix}]")
+                else:
+                    bits.append("[media]")
             elif tag == "file":
                 name = el.get("file_name") or ""
                 key = el.get("file_key", "")
+                path = _download_resource_path(
+                    message_id, key, "file",
+                    resource_downloader=resource_downloader,
+                )
                 if name and key:
-                    bits.append(f"[file: {name} (file_key={key})]")
+                    suffix = f", local_path={path}" if path else ""
+                    bits.append(f"[file: {name} (file_key={key}{suffix})]")
                 elif name:
                     bits.append(f"[file: {name}]")
                 else:
-                    bits.append(f"[file: file_key={key}]" if key else "[file]")
+                    suffix = f" local_path={path}" if path else ""
+                    bits.append(f"[file: file_key={key}{suffix}]" if key else "[file]")
             elif tag == "a":
                 t = el.get("text") or el.get("href", "")
                 href = el.get("href", "")
@@ -210,9 +349,13 @@ def process_lines(lines: Iterable[str], *,
                   bot_id: str = "",
                   default_target: str = "manager",
                   apply_fn: Callable = apply,
+                  base_event_fn: Callable | None = None,
                   on_progress: Callable | None = None,
                   on_line_received: Callable | None = None,
-                  seen_msg_ids: set[str] | None = None) -> LoopStats:
+                  seen_msg_ids: set[str] | None = None,
+                  resource_downloader: Callable | None = None,
+                  reply_context_resolver: Callable | None = None,
+                  event_lock: object | None = None) -> LoopStats:
     """Run the subscribe loop over `lines` (one Feishu event JSON each).
 
     Designed to be exited by exhausting the iterator.  The production
@@ -228,10 +371,7 @@ def process_lines(lines: Iterable[str], *,
     stats = LoopStats()
     if seen_msg_ids is not None:
         stats.seen_msg_ids = seen_msg_ids
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            continue
+    def _process_one(line: str) -> None:
         # Subscribe-aliveness ping: fire on every non-empty stdout line,
         # before classification. Even DROPs (bot_self / dedup / bad_json)
         # prove the lark-cli WebSocket is still emitting; only by counting
@@ -248,8 +388,40 @@ def process_lines(lines: Iterable[str], *,
             payload = json.loads(line)
         except json.JSONDecodeError:
             _record_drop(stats, "bad_json")
-            continue
-        event = _normalise(payload)
+            return
+        if base_event_fn is not None:
+            header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+            event_id = (
+                str(payload.get("event_id") or "")
+                or str(header.get("event_id") or "")
+            )
+            if event_id and event_id in stats.seen_msg_ids:
+                _record_drop(stats, "dedup")
+                return
+            try:
+                handled = int(base_event_fn(payload) or 0)
+            except Exception as e:
+                print(f"  ⚠️ base_event_fn raised: {e}")
+                _record_drop(stats, "base_event_error")
+                return
+            if handled:
+                if event_id:
+                    stats.seen_msg_ids.add(event_id)
+                stats.handled += handled
+                return
+        event = _normalise(payload, resource_downloader=resource_downloader)
+        if (event.get("reply_to") or event.get("reply_lookup_ids")) and reply_context_resolver is not None:
+            try:
+                event["reply_context"] = str(reply_context_resolver(event) or "")
+            except Exception as e:
+                parent_id = (
+                    event.get("reply_to")
+                    or next(iter(event.get("reply_lookup_ids") or []), "")
+                )
+                event["reply_context"] = (
+                    f"[飞书回复上下文] 这是一条回复消息，父消息 id={parent_id}；"
+                    f"自动获取父消息失败：{e}。不要按孤立文本回答，先说明需按被回复消息核对。"
+                )
         decision = classify_event(
             event,
             team_agents=team_agents,
@@ -259,8 +431,26 @@ def process_lines(lines: Iterable[str], *,
             default_target=default_target,
         )
         if decision.is_drop():
+            if (decision.reason == "bot_self"
+                    and decision.sender == default_target
+                    and decision.text):
+                try:
+                    manager_action_guard.observe_public_manager_reply(
+                        decision.text, ref=decision.msg_id)
+                except Exception as e:
+                    print(f"  ⚠️ manager public-reply observe failed on {decision.msg_id}: {e}")
             _record_drop(stats, decision.reason or "drop")
-            continue
+            # Permanent drops (bot_self, cross_team, empty, etc.) should
+            # not replay forever on every catchup restart. Apply errors
+            # remain retryable below because they are not permanent drops.
+            if decision.msg_id:
+                stats.seen_msg_ids.add(decision.msg_id)
+            if on_progress is not None:
+                try:
+                    on_progress(decision, stats)
+                except Exception as e:
+                    print(f"  ⚠️ on_progress callback failed on dropped {decision.msg_id}: {e}")
+            return
         try:
             apply_fn(decision)
         except Exception as e:
@@ -274,8 +464,8 @@ def process_lines(lines: Iterable[str], *,
             # (catchup or stream re-receive) can re-attempt later.
             print(f"  ⚠️ apply_fn raised on {decision.msg_id}: {e}")
             _record_drop(stats, "apply_error")
-            continue
-        # Mark seen ONLY after successful apply. Round-63: previous order
+            return
+        # Mark routed events seen ONLY after successful apply. Round-63: previous order
         # added to seen BEFORE apply, which meant a transient apply
         # failure permanently dedup'd the message (no retry possible
         # within the process_lines run). With the new order, retries
@@ -294,4 +484,14 @@ def process_lines(lines: Iterable[str], *,
                 # NOT kill the daemon. Cursor staleness is recoverable
                 # on the next event; daemon death is not.
                 print(f"  ⚠️ on_progress callback failed on {decision.msg_id}: {e}")
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if event_lock is None:
+            _process_one(line)
+        else:
+            with event_lock:
+                _process_one(line)
     return stats

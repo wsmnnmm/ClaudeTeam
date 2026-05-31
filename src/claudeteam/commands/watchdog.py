@@ -36,6 +36,19 @@ All alert paths are best-effort: chat send / card send failures are
 swallowed at the alert_fn level (and runtime/watchdog's supervise
 also try/excepts alert_fn). A broken alert path mustn't kill the
 supervisor.
+
+Boss cockpit fact flow:
+- Optional `[cockpit_sync] enabled = true` makes the watchdog periodically
+  run `claudeteam cockpit-sync --write`, projecting local team facts into
+  the boss cockpit Base. It is off by default because writes target a real
+  external Feishu table.
+- Sync failures are logged but never kill the watchdog; stale cockpit rows
+  are bad, but losing the router supervisor would be worse.
+
+Topic digest flow:
+- Optional `[topic_digest] enabled = true` makes the watchdog periodically
+  write a local topic digest file. This keeps daily topic/task state
+  recoverable without pushing routine noise into the Feishu group.
 """
 from __future__ import annotations
 
@@ -46,9 +59,13 @@ import sys
 import time
 from pathlib import Path
 
+from claudeteam.commands import cockpit_sync, topic as topic_cmd
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.cards import simple_card
-from claudeteam.runtime import config, paths, pidlock, tunables, watchdog
+from claudeteam.runtime import (
+    config, manager_watch, paths, pidlock, provider_failover, tunables,
+    watchdog,
+)
 from claudeteam.util import maybe_print_help
 
 
@@ -104,6 +121,213 @@ def _make_alert_fn():
     return alert
 
 
+def _make_manager_watch_alert_fn():
+    """Build optional Feishu alerting for overdue manager dispatches.
+
+    The monitor always writes manager inbox + injects manager's pane. This
+    chat card is the boss-visible fallback so a silent manager/worker pair
+    does not stay invisible for another 15 minutes.
+    """
+    if not bool(tunables.tunable("manager_watch.chat_alert", True)):
+        return None
+    chat_id = config.chat_id()
+    if not chat_id:
+        return None
+    profile = config.lark_profile()
+
+    def alert(notice: manager_watch.OverdueNotice) -> None:
+        if not (notice.public_title or notice.public_body):
+            return
+        color = str(tunables.tunable("manager_watch.card_color", "orange"))
+        title = notice.public_title or "需要主管确认：任务长时间未收口"
+        body = notice.public_body or (
+            "系统发现一项主管派工需要核验。\n"
+            f"任务编号：{notice.task_id}\n"
+            "负责人：执行同学\n"
+            "当前判断：需要主管核验执行现场后给出人话结论。\n\n"
+            "主管下一步：请先确认已完成、卡住原因、改派方案和下次回报时间。"
+        )
+        card = simple_card(title, body, color=color)
+        try:
+            _chat.send_card(chat_id, card, profile=profile, as_user=False)
+        except Exception as e:
+            print(
+                f"  ⚠️ manager_watch: card alert send failed ({e}); "
+                "falling back to text")
+            _chat.send_text(chat_id, body, profile=profile, as_user=False)
+
+    return alert
+
+
+def _run_manager_watch(alert_fn) -> None:
+    if not bool(tunables.tunable("manager_watch.enabled", True)):
+        return
+    try:
+        manager_watch.sweep(alert_fn=alert_fn)
+    except Exception as e:
+        print(f"  ⚠️ manager_watch sweep failed: {e}")
+    try:
+        manager_watch.sweep_first_output(alert_fn=alert_fn)
+    except Exception as e:
+        print(f"  ⚠️ manager_watch first output sweep failed: {e}")
+    try:
+        manager_watch.sweep_boss_inbox(alert_fn=alert_fn)
+    except Exception as e:
+        print(f"  ⚠️ manager_watch boss inbox sweep failed: {e}")
+    try:
+        manager_watch.sweep_manager_actions(alert_fn=alert_fn)
+    except Exception as e:
+        print(f"  ⚠️ manager_watch manager action sweep failed: {e}")
+
+
+def _run_cockpit_sync(sync_main=cockpit_sync.main) -> int | None:
+    """Run the optional boss cockpit projection once.
+
+    Returns None when disabled, otherwise the command rc. Kept as a tiny
+    wrapper instead of shelling out so tests can inject `sync_main` and the
+    watchdog can keep supervising even when Feishu writes fail.
+    """
+    if not bool(tunables.tunable("cockpit_sync.enabled", False)):
+        return None
+
+    args = ["--write"]
+    root = str(tunables.tunable("cockpit_sync.root", "") or "").strip()
+    if root:
+        args.extend(["--root", root])
+    base_token = str(tunables.tunable("cockpit_sync.base_token", "") or "").strip()
+    if base_token:
+        args.extend(["--base-token", base_token])
+    table_id = str(tunables.tunable("cockpit_sync.table_id", "") or "").strip()
+    if table_id:
+        args.extend(["--table-id", table_id])
+    agent_table_id = str(tunables.tunable("cockpit_sync.agent_table_id", "") or "").strip()
+    if agent_table_id:
+        args.extend(["--agent-table-id", agent_table_id])
+    task_table_id = str(tunables.tunable("cockpit_sync.task_table_id", "") or "").strip()
+    if task_table_id:
+        args.extend(["--task-table-id", task_table_id])
+    remote_state_dir = str(tunables.tunable("cockpit_sync.remote_state_dir", "") or "").strip()
+    if remote_state_dir:
+        args.extend(["--remote-state-dir", remote_state_dir])
+    profile = str(tunables.tunable("cockpit_sync.profile", "")
+                  or config.lark_profile() or "").strip()
+    if profile:
+        args.extend(["--profile", profile])
+
+    try:
+        rc = int(sync_main(args) or 0)
+    except Exception as e:
+        print(f"  ⚠️ cockpit-sync sweep failed: {e}")
+        return 1
+    if rc != 0:
+        print(f"  ⚠️ cockpit-sync exited rc={rc}")
+    return rc
+
+
+def _run_topic_digest(digest_writer=topic_cmd.write_digest) -> Path | None:
+    """Write the optional local topic digest once.
+
+    This is intentionally file-only: routine daily summaries are useful
+    evidence, but they should not become more chat noise.
+    """
+    if not bool(tunables.tunable("topic_digest.enabled", False)):
+        return None
+
+    raw_out = str(
+        tunables.tunable("topic_digest.out_dir", "reports/topic-digests")
+        or "reports/topic-digests"
+    ).strip()
+    target = Path(raw_out).expanduser()
+    if not target.is_absolute():
+        target = paths.config_file().parent / target
+    include_closed = bool(tunables.tunable("topic_digest.include_closed", False))
+    try:
+        path = digest_writer(target, include_closed=include_closed)
+    except Exception as e:
+        print(f"  ⚠️ topic digest write failed: {e}")
+        return None
+    print(f"  🧠 topic digest written: {path}")
+    return path
+
+
+def _run_network_probe(alert_fn=None) -> watchdog.NetworkStatus:
+    """Probe API endpoint connectivity once.
+
+    When the network is down, all agent processes appear alive but can't
+    reach the model backend. This probe catches VPN drops and proxy failures
+    before they compound into hours of silent downtime.
+
+    Alerting: after `network_probe.min_ok_checks` consecutive failures
+    (default 3, i.e. ~90s at default 30s check interval), posts a red
+    Feishu card. Recovers silently after `network_probe.min_ok_checks`
+    consecutive successes.
+    """
+    if not bool(tunables.tunable("network_probe.enabled", True)):
+        return watchdog.NetworkStatus(ok=True, checked=[])
+
+    min_ok = max(1, int(tunables.tunable("network_probe.min_ok_checks", 3)))
+    state_file = paths.state_file("network-probe.json")
+    try:
+        prev = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        prev = {}
+    if not isinstance(prev, dict):
+        prev = {}
+
+    status = watchdog.check_network()
+    fail_streak = int(prev.get("fail_streak") or 0)
+    ok_streak = int(prev.get("ok_streak") or 0)
+    last_alert_at = float(prev.get("last_alert_at") or 0)
+
+    if status.ok:
+        fail_streak = 0
+        ok_streak += 1
+        if ok_streak >= min_ok and prev.get("fail_streak", 0) >= min_ok:
+            print(f"  🌐 network recovered after {int(prev.get('fail_streak', 0))} failed checks")
+    else:
+        ok_streak = 0
+        fail_streak += 1
+        print(f"  ⚠️ network probe failed ({fail_streak}/{min_ok}): {'; '.join(status.failures)}")
+        if fail_streak >= min_ok and alert_fn is not None:
+            repeat_s = int(tunables.tunable("network_probe.alert_repeat_s", 600))
+            now = time.time()
+            if now - last_alert_at >= repeat_s:
+                try:
+                    alert_fn("network", fail_streak, 0)
+                except Exception as e:
+                    print(f"  ⚠️ network alert failed: {e}")
+                last_alert_at = now
+
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({
+            "fail_streak": fail_streak,
+            "ok_streak": ok_streak,
+            "last_alert_at": last_alert_at,
+            "last_check": time.time(),
+            "last_failures": status.failures,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return status
+
+
+def _run_provider_failover(sweep=provider_failover.sweep) -> dict | None:
+    """Run provider failover once when enabled.
+
+    This is event-driven from real pane failures; no proactive API probes
+    are made, so backup presets and rescue agents stay dormant during
+    healthy periods and do not burn extra quota.
+    """
+    if not bool(tunables.tunable("provider_failover.enabled", False)):
+        return None
+    try:
+        return sweep()
+    except Exception as e:
+        print(f"  ⚠️ provider_failover sweep failed: {e}")
+        return {"action": "error", "error": str(e)}
+
+
 def main(argv: list[str]) -> int:
     if maybe_print_help(argv, "usage: claudeteam watchdog"):
         return 0
@@ -115,19 +339,42 @@ def main(argv: list[str]) -> int:
     specs = watchdog.default_specs()
     states: dict = {}
     alert_fn = _make_alert_fn()
+    manager_watch_alert_fn = _make_manager_watch_alert_fn()
     alert_msg = "with chat alerts" if alert_fn else "no chat alerts (chat_id unset)"
     check_interval_s = int(tunables.tunable("watchdog.check_interval_s", 30))
     cred_check_interval_s = int(tunables.tunable("watchdog.cred_check_interval_s", 300))
+    manager_watch_interval_s = int(tunables.tunable("manager_watch.check_interval_s", 30))
+    cockpit_sync_interval_s = int(tunables.tunable("cockpit_sync.interval_s", 120))
+    topic_digest_interval_s = int(tunables.tunable("topic_digest.interval_s", 86400))
+    network_probe_interval_s = int(tunables.tunable("network_probe.interval_s", 30))
     print(f"🐕 watchdog supervising {[s.name for s in specs]} every {check_interval_s}s ({alert_msg})")
 
     last_cred_check = 0.0
+    last_manager_watch = 0.0
+    last_cockpit_sync = 0.0
+    last_topic_digest = 0.0
+    last_network_probe = 0.0
     try:
         while True:
             watchdog.supervise(specs, states, alert_fn=alert_fn)
             now = time.time()
+            if now - last_network_probe >= network_probe_interval_s:
+                _run_network_probe(alert_fn=alert_fn)
+                last_network_probe = now
+            if now - last_manager_watch >= manager_watch_interval_s:
+                _run_manager_watch(manager_watch_alert_fn)
+                last_manager_watch = now
+            if now - last_cockpit_sync >= cockpit_sync_interval_s:
+                _run_cockpit_sync()
+                last_cockpit_sync = now
+            if (topic_digest_interval_s > 0
+                    and now - last_topic_digest >= topic_digest_interval_s):
+                _run_topic_digest()
+                last_topic_digest = now
             if now - last_cred_check >= cred_check_interval_s:
                 _maybe_refresh_claude_oauth(now)
                 last_cred_check = now
+            _run_provider_failover()
             time.sleep(check_interval_s)
     except KeyboardInterrupt:
         print("watchdog stopped")

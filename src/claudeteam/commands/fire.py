@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
-from claudeteam.util import error_exit, usage_error
+from claudeteam.util import error_exit, maybe_print_help, usage_error
 
 
 USAGE = "usage: claudeteam fire <agent>"
 
 
 def main(argv: list[str]) -> int:
+    if maybe_print_help(argv, USAGE):
+        return 0
     if len(argv) < 1:
         return usage_error(USAGE)
     agent = argv[0]
@@ -21,6 +23,10 @@ def main(argv: list[str]) -> int:
     if agent == "manager":
         return error_exit(
             "❌ refusing to fire manager (kill the tmux session yourself if you mean it)")
+    try:
+        config.agent_config(agent)
+    except KeyError:
+        return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
 
     session = config.session_name()
     target = tmux.Target(session, agent)

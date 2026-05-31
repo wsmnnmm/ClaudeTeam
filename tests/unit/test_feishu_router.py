@@ -105,6 +105,17 @@ def test_user_sender_type_does_not_trigger_bot_self():
     assert d.targets == ["manager"]
 
 
+def test_route_carries_feishu_reply_metadata():
+    d = classify_event(
+        _ev(text="@bot 这个是什么意思", reply_to="om_parent",
+            reply_context="[飞书回复上下文]\n父消息摘要"),
+        team_agents=_AGENTS,
+    )
+    assert d.action is Action.ROUTE
+    assert d.reply_to == "om_parent"
+    assert "父消息摘要" in d.reply_context
+
+
 def test_drop_when_text_empty():
     d = classify_event(_ev(text=""), team_agents=_AGENTS)
     assert d.is_drop() and d.reason == "empty"
@@ -113,6 +124,28 @@ def test_drop_when_text_empty():
 def test_drop_when_text_only_whitespace():
     d = classify_event(_ev(text="   \n  "), team_agents=_AGENTS)
     assert d.is_drop() and d.reason == "empty"
+
+
+def test_drop_when_reply_ping_only_mentions_feishu_cli():
+    d = classify_event(_ev(text="@飞书 CLI"), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_drop_when_only_mentions_known_agent():
+    d = classify_event(_ev(text=" @worker_codex ！ "), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_drop_when_only_mentions_lark_open_id():
+    d = classify_event(_ev(text="@ou_xyz123"), team_agents=_AGENTS)
+    assert d.is_drop() and d.reason == "mention_only"
+
+
+def test_mention_with_real_text_still_routes_to_manager():
+    d = classify_event(_ev(text="@飞书 CLI 帮我查一下路由"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.text == "@飞书 CLI 帮我查一下路由"
 
 
 def test_drop_when_known_agent_broadcasts_with_no_target():

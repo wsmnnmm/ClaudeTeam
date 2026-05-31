@@ -23,7 +23,12 @@ def _fake_tmux(session_alive=False):
         state["session_killed"] = True
         return True
 
-    with tmux_patch(has_session=has_session, kill_session=kill_session):
+    def has_window(t):
+        state["calls"].append(("has_window", str(t)))
+        return False
+
+    with tmux_patch(has_session=has_session, kill_session=kill_session,
+                    has_window=has_window):
         yield state
 
 
@@ -62,10 +67,11 @@ def _fake_popen():
     def fake_popen(argv, *args, **kwargs):
         calls.append(list(argv))
         # Simulate the daemon writing its pid file
-        if argv[:2] == ["claudeteam", "router"]:
+        name = argv[-1] if argv else ""
+        if name == "router":
             paths.ensure_state_dir()
             paths.router_pid_file().write_text("12345", encoding="utf-8")
-        elif argv[:2] == ["claudeteam", "watchdog"]:
+        elif name == "watchdog":
             paths.ensure_state_dir()
             paths.watchdog_pid_file().write_text("12346", encoding="utf-8")
         return _FakePopenProc(argv)
@@ -107,8 +113,8 @@ def test_up_starts_session_and_spawns_two_daemons():
         rc, out, _ = run_cli(["up"])
         assert rc == 0
         assert "team up" in out
-        assert ["claudeteam", "router"] in popen_calls
-        assert ["claudeteam", "watchdog"] in popen_calls
+        assert any(call[-1] == "router" for call in popen_calls)
+        assert any(call[-1] == "watchdog" for call in popen_calls)
 
 
 def test_up_skips_session_when_already_running():
@@ -118,7 +124,7 @@ def test_up_skips_session_when_already_running():
         rc, out, _ = run_cli(["up"])
         assert rc == 0
         assert "already running, skipping start" in out
-        assert ["claudeteam", "router"] in popen_calls
+        assert any(call[-1] == "router" for call in popen_calls)
 
 
 def test_up_skips_alive_daemons():

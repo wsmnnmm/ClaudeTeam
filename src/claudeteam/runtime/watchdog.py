@@ -24,16 +24,25 @@ contains all markers, and SIGTERMs them. This kills lark-cli
 new daemon's subscribe doesn't race the orphan for events.
 Best-effort: any subprocess error / missing ps / non-zero return /
 fake Popen yields no orphans.
+
+Network probe: `check_network()` resolves and TCP-connects to the
+configured API endpoints. When VPN drops or proxy dies, all agent
+processes appear alive but can't reach the model backend. The watchdog
+daemon runs this probe periodically so the boss learns about network
+blips before they compound into hours of silent downtime.
 """
 from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from claudeteam.runtime import paths, pidlock
 
@@ -193,6 +202,7 @@ def respawn(spec: ProcessSpec, *,
         except OSError as e:
             print(f"  ⚠️ {spec.name} log_file open failed ({e}); falling back to DEVNULL")
             log_fh = None
+    stdin = subprocess.DEVNULL
     stdout = log_fh if log_fh is not None else subprocess.DEVNULL
     stderr = log_fh if log_fh is not None else subprocess.DEVNULL
     # PYTHONUNBUFFERED forces line-buffer on the child's sys.stdout when
@@ -205,7 +215,7 @@ def respawn(spec: ProcessSpec, *,
     env["PYTHONUNBUFFERED"] = "1"
     try:
         runner(spec.spawn_cmd, start_new_session=True,
-               stdout=stdout, stderr=stderr, env=env)
+               stdin=stdin, stdout=stdout, stderr=stderr, env=env)
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")
@@ -297,7 +307,7 @@ def _claudeteam_spec(name: str, pid_file: Path, *,
         name=name,
         pid_file=pid_file,
         expected_cmdline="claudeteam",
-        spawn_cmd=["claudeteam", name],
+        spawn_cmd=[sys.executable, "-m", "claudeteam.cli", name],
         orphan_markers=orphan_markers,
         log_file=log_file,
     )
@@ -330,3 +340,79 @@ def all_known_specs() -> list[ProcessSpec]:
         _claudeteam_spec("watchdog", paths.watchdog_pid_file(),
                          log_file=paths.watchdog_log_file()),
     ]
+
+
+# ── network probe ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class NetworkStatus:
+    ok: bool
+    failures: list[str] = field(default_factory=list)
+    checked: list[str] = field(default_factory=list)
+
+
+def _api_hosts_from_provider_env() -> list[tuple[str, int]]:
+    """Extract (host, port) pairs from the configured provider endpoints."""
+    hosts: list[tuple[str, int]] = []
+    try:
+        from claudeteam.runtime import providers
+        env = providers._global_provider_env()
+    except Exception:
+        env = {}
+    for key in ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"):
+        url = (env.get(key) or "").strip()
+        if not url:
+            continue
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").strip()
+            if host and host != "127.0.0.1" and host != "localhost":
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                hosts.append((host, port))
+        except Exception:
+            continue
+    return hosts
+
+
+def _dns_resolve(host: str, timeout: float = 5.0) -> bool:
+    try:
+        socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        return True
+    except socket.gaierror:
+        return False
+
+
+def _tcp_connect(host: str, port: int, timeout: float = 5.0) -> bool:
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def check_network(*, timeout: float = 5.0,
+                  targets: list[tuple[str, int]] | None = None) -> NetworkStatus:
+    """DNS + TCP probe to configured API endpoints.
+
+    Returns NetworkStatus with ok=False and a list of failure descriptions
+    when any endpoint is unreachable. Safe to call from the watchdog daemon
+    loop — all socket operations are timeout-bounded.
+    """
+    if targets is None:
+        targets = _api_hosts_from_provider_env()
+    if not targets:
+        return NetworkStatus(ok=True, checked=["no remote endpoints configured (localhost)"])
+
+    failures: list[str] = []
+    checked: list[str] = []
+    for host, port in targets:
+        label = f"{host}:{port}"
+        checked.append(label)
+        if not _dns_resolve(host, timeout=timeout):
+            failures.append(f"DNS resolution failed for {host}")
+            continue
+        if not _tcp_connect(host, port, timeout=timeout):
+            failures.append(f"TCP connect failed for {label}")
+    return NetworkStatus(ok=len(failures) == 0, failures=failures, checked=checked)

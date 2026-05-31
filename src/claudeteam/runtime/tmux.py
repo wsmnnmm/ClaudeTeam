@@ -15,6 +15,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 
+# tmux parses any bare arg after `send-keys -l -t ...` as a flag unless
+# `--` is present. Keep chunks modest so long prompts fit, and always
+# terminate the option list so a chunk that starts with `-` is still
+# treated as literal text.
+_SEND_TEXT_CHUNK_SIZE = 800
+
+
 @dataclass(frozen=True)
 class Target:
     session: str
@@ -102,8 +109,17 @@ def send_text(target: Target, text: str, *, run: Callable = _default_run) -> boo
     """Send literal text (no key interpretation) to a pane.
 
     Uses `send-keys -l` so $/`/# don't get expanded by tmux.
+    Long identity prompts can exceed tmux / argv limits when sent as one
+    argument, so split them into bounded literal chunks.
     """
-    return _ok(["tmux", "send-keys", "-l", "-t", str(target), text], run)
+    chunks = [
+        text[i:i + _SEND_TEXT_CHUNK_SIZE]
+        for i in range(0, len(text), _SEND_TEXT_CHUNK_SIZE)
+    ] or [""]
+    for chunk in chunks:
+        if not _ok(["tmux", "send-keys", "-l", "-t", str(target), "--", chunk], run):
+            return False
+    return True
 
 
 def send_keys(target: Target, *keys: str, run: Callable = _default_run) -> bool:

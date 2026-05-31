@@ -63,3 +63,42 @@ def test_state_dir_re_reads_env_each_call():
             assert paths.state_dir() == Path(tmp1)
         with _state_env(tmp2):
             assert paths.state_dir() == Path(tmp2)
+
+
+def test_config_file_infers_team_root_from_state_dir_when_cwd_drifted():
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+        team = Path(tmp) / "team-a"
+        state = team / "state"
+        state.mkdir(parents=True)
+        cfg = team / "claudeteam.toml"
+        cfg.write_text("chat_id = \"oc_x\"\n", encoding="utf-8")
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(other)
+            with env_patch(CLAUDETEAM_STATE_DIR=str(state),
+                           CLAUDETEAM_CONFIG_FILE=None):
+                assert paths.config_file() == cfg
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_config_file_prefers_state_pointer_over_cwd_config():
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+        state = Path(tmp) / "state"
+        state.mkdir(parents=True)
+        cloud_cfg = Path(tmp) / "cloud" / "claudeteam.cloud.toml"
+        cloud_cfg.parent.mkdir()
+        cloud_cfg.write_text("chat_id = \"oc_cloud\"\n", encoding="utf-8")
+        (state / "config-file.path").write_text(str(cloud_cfg) + "\n", encoding="utf-8")
+        local_cfg = Path(cwd) / "claudeteam.toml"
+        local_cfg.write_text("chat_id = \"oc_local\"\n", encoding="utf-8")
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(cwd)
+            with env_patch(CLAUDETEAM_STATE_DIR=str(state),
+                           CLAUDETEAM_CONFIG_FILE=None):
+                assert paths.config_file() == cloud_cfg
+        finally:
+            os.chdir(old_cwd)

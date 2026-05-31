@@ -48,6 +48,9 @@ def test_init_default_team_has_three_agents():
         assert set(agents) == {"manager", "worker_cc", "worker_codex"}
         assert agents["manager"]["cli"] == "claude-code"
         assert agents["worker_codex"]["cli"] == "codex-cli"
+        assert agents["manager"]["identity_profile"] == "slim"
+        assert agents["worker_cc"]["identity_profile"] == "slim"
+        assert agents["worker_codex"]["identity_profile"] == "slim"
 
 
 def test_init_default_chat_id_and_profile_empty():
@@ -70,6 +73,39 @@ def test_init_emits_chat_publish_section():
         assert cfg["chat"]["publish"]["manager_to_worker"] is True
         assert cfg["chat"]["publish"]["worker_to_manager"] is True
         assert cfg["chat"]["publish"]["worker_to_worker"] is True
+
+
+def test_init_enables_fast_ack_by_default():
+    with _tmp_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["router"]["fast_ack"]["enabled"] is True
+        assert "主管前台" in cfg["router"]["fast_ack"]["text"]
+
+
+def test_init_first_response_runner_is_configured_but_disabled_by_default():
+    with _tmp_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        first = cfg["router"]["first_response"]
+        assert first["enabled"] is False
+        assert first["provider"] == "anthropic"
+        assert first["endpoint"] == "responses"
+        assert first["model"] == "haiku"
+        assert first["timeout_s"] == 8.0
+        assert first["max_tokens"] == 180
+        assert first["temperature"] == 0.2
+
+
+def test_init_enables_topic_digest_by_default():
+    with _tmp_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        cfg = _read_toml(tmp / "claudeteam.toml")
+        assert cfg["topic_digest"]["enabled"] is True
+        assert cfg["topic_digest"]["out_dir"] == "reports/topic-digests"
 
 
 def test_init_session_flag_overrides_default():
@@ -133,6 +169,8 @@ def test_upgrade_merges_legacy_team_json():
         assert cfg["team"]["session"] == "OldTeam"
         assert set(cfg["team"]["agents"]) == {"boss", "alice"}
         assert cfg["team"]["agents"]["alice"]["cli"] == "codex-cli"
+        assert cfg["team"]["agents"]["boss"]["identity_profile"] == "slim"
+        assert cfg["team"]["agents"]["alice"]["identity_profile"] == "slim"
 
 
 def test_upgrade_errors_when_no_legacy_files():

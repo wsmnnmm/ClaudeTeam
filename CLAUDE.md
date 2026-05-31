@@ -79,6 +79,42 @@ python3 tests/run.py
 Stdlib-only runner.  Should report `tests: N passed, 0 failed`.
 Failing tests block commits.
 
+## Network environment gate
+
+When git operations, skill installs, MCP setup, package installs, API calls,
+or browser/page checks become unusually slow, treat that as a local network
+environment issue before switching to degraded, offline, or workaround paths.
+This includes `git pull` / `clone` / `fetch`, installing agent skills, setting
+up MCP servers, and package managers such as npm, pnpm, pip, uv, and brew.
+
+Team operating rule:
+
+- First check whether VPN, proxy, DNS, and subscription status appear healthy.
+- Do not hard-code subscription URLs in repo docs; those may change and should
+  be refreshed from the latest user-provided source when needed.
+- If a network/VPN/proxy check happens inside a task, mention the result in
+  the status or final report so slow network does not stay hidden inside an
+  unrelated task.
+- If the team cannot resolve it quickly, report a blocker with the failing
+  command, symptom, checks already performed, and the next retry/action.
+
+## Founder OS gate
+
+For startup/product work, ClaudeTeam should run as a Founder OS, not a
+generic task machine. Before proposing or dispatching substantial work,
+classify the stage as `Idea`, `MVP`, `Launch`, or `Scale`.
+
+- `Idea`: collect evidence before building; use AI as a devil's advocate.
+- `MVP`: build the smallest core interaction and measure PMF evidence.
+- `Launch`: systematize growth/support/bug triage so the founder is not
+  the bottleneck.
+- `Scale`: compound domain knowledge, user data, integrations, and workflow
+  lock-in.
+
+Use `claudeteam founder-os` for the stage gates and boss cockpit fields.
+Boss-visible updates should name the current stage, exit evidence, today's
+smallest evidence action, and what the team is deliberately not doing.
+
 ## How modules cooperate (the message flow)
 
 ```

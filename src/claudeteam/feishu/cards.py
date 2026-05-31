@@ -19,6 +19,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
+from claudeteam.feishu.text import normalize_visible_escapes, sanitize_card_payload
+
 
 # Lark template colors that Feishu's web/mobile app actually renders. These
 # are the only ones tested; others (orange, turquoise, etc.) work but
@@ -44,12 +46,14 @@ def simple_card(title: str, body: str, *, color: str = "blue") -> dict:
     """
     return {
         "schema": "2.0",
+        "config": {"wide_screen_mode": True, "width_mode": "fill"},
         "header": {
-            "title": {"content": title, "tag": "plain_text"},
+            "title": {"content": normalize_visible_escapes(title), "tag": "plain_text"},
             "template": _normalised_color(color),
         },
         "body": {
-            "elements": [{"tag": "markdown", "content": body or " "}],
+            "elements": [{"tag": "markdown",
+                          "content": normalize_visible_escapes(body) or " "}],
         },
     }
 
@@ -65,7 +69,7 @@ def fenced_block(text: str) -> str:
     """Wrap `text` in a triple-backtick fence so monospace / box-drawing
     / ANSI artefacts survive Feishu's markdown collapsing (which would
     otherwise eat indentation and merge consecutive spaces)."""
-    return f"```\n{text}\n```"
+    return f"```\n{normalize_visible_escapes(text)}\n```"
 
 
 # ── rich card primitives (column_set + colored fonts) ──────
@@ -78,7 +82,8 @@ def col_cell(content: str, weight: int = 1) -> dict:
     rebuild code path no longer uses this directly — see column_set_2
     / column_set_3 below for the inlined-markdown-row replacement."""
     return {"tag": "column", "width": "weighted", "weight": weight,
-            "elements": [{"tag": "markdown", "content": content}]}
+            "elements": [{"tag": "markdown",
+                          "content": normalize_visible_escapes(content)}]}
 
 
 def column_set_3(cells: list[str]) -> dict:
@@ -89,7 +94,7 @@ def column_set_3(cells: list[str]) -> dict:
     cells dropped so the body doesn't end with a dangling blank."""
     parts = [c for c in cells if c.strip()]
     return {"tag": "markdown",
-            "content": "\n\n".join(parts) if parts else " "}
+            "content": normalize_visible_escapes("\n\n".join(parts)) if parts else " "}
 
 
 def column_set_2(left: str, right: str, **_legacy_kwargs) -> dict:
@@ -100,7 +105,8 @@ def column_set_2(left: str, right: str, **_legacy_kwargs) -> dict:
     line. `**Bold**` left labels stay bold naturally; the right cell
     can carry `<font color='…'>` spans + monospace ` markers.
     """
-    return {"tag": "markdown", "content": f"{left}：{right}"}
+    return {"tag": "markdown",
+            "content": normalize_visible_escapes(f"{left}：{right}")}
 
 
 def load_color(pct: int) -> str:
@@ -131,10 +137,12 @@ def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
     that v1's `lark_md` silently degrades."""
     return {
         "schema": "2.0",
+        "config": {"wide_screen_mode": True, "width_mode": "fill"},
         "header": {
-            "title": {"tag": "plain_text", "content": title},
+            "title": {"tag": "plain_text",
+                      "content": normalize_visible_escapes(title)},
             "template": _normalised_color(color),
         },
-        "body": {"elements": elements or [
+        "body": {"elements": sanitize_card_payload(elements) or [
             {"tag": "markdown", "content": "(无内容)"}]},
     }

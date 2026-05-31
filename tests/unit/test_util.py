@@ -12,8 +12,9 @@ from helpers import env_patch, tmux_patch
 from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
-    fmt_bytes, fmt_time_ms, help_requested, maybe_print_help, now_ms,
-    pop_bool_flag, pop_flag, print_json, read_json, read_jsonl,
+    current_time_line, fmt_bytes, fmt_time_ms, help_requested,
+    maybe_print_help, now_ms, pop_bool_flag, pop_flag, print_json, read_json,
+    read_jsonl,
     reject_extra_args, usage_error, warn,
 )
 
@@ -83,6 +84,15 @@ def test_fmt_time_ms_custom_format_includes_seconds():
     epoch = int(time.mktime((2026, 1, 15, 14, 30, 45, 0, 0, -1))) * 1000
     out = fmt_time_ms(epoch, fmt="%m-%d %H:%M:%S")
     assert "14:30:45" in out
+
+
+def test_current_time_line_includes_full_local_wall_clock():
+    epoch = time.mktime((2026, 5, 21, 14, 30, 45, 0, 0, -1))
+    out = current_time_line(now=epoch)
+    assert out.startswith("当前真实时间（本机本地时区）: 2026-05-21 14:30:45")
+    tz_suffix = time.strftime("%Z %z", time.localtime(epoch)).strip()
+    if tz_suffix:
+        assert out.endswith(tz_suffix)
 
 
 # ── fmt_bytes ───────────────────────────────────────────────────

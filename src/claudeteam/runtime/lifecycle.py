@@ -20,19 +20,24 @@ Returns one of five outcome strings (callers render differently):
                   than aborting the whole `claudeteam start`.
 
 Also home for `pane_env_prefix()` — the shell env-var prefix prepended
-to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR` and
-the Feishu env into their `claudeteam say` shell-outs.
+to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR`,
+project-level `CODEX_HOME`, and the Feishu env into their
+`claudeteam say` shell-outs.
 """
 from __future__ import annotations
 
+import json
+import shutil
 import shlex
+import sys
 from pathlib import Path
 
 from claudeteam.agents import get_adapter, identity
+from claudeteam.agents.claude_code import managed_mcp_config
 from claudeteam.agents.codex_cli import ensure_workdir_trusted
-from claudeteam.runtime import config, paths, tmux, wake
+from claudeteam.runtime import config, paths, providers, team_command, tmux, wake
 from claudeteam.store import local_facts
-from claudeteam.util import env_str
+from claudeteam.util import atomic_write_text, env_path, env_str
 
 
 # env vars to propagate from the operator's shell into every spawned pane
@@ -47,17 +52,89 @@ from claudeteam.util import env_str
 # NOT be out of the chat" on every `claudeteam say`. Embedding the creds
 # in the spawn-cmd prefix sidesteps the tmux-server-env quirk entirely.
 _PROPAGATED_ENV = (
+    "PYTHONPATH",
     "LARK_CLI_PROFILE",
     "LARK_CLI_NO_PROXY",
     "CLAUDETEAM_LARK_SEND_AS",
     "CLAUDETEAM_TEAM_FILE",
     "CLAUDETEAM_RUNTIME_CONFIG",
     "CLAUDETEAM_DEFAULT_MODEL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    # Tool/API runtime env for agents. Feishu subprocesses strip proxy vars
+    # when [feishu] no_proxy=true, but model/API tools inside panes still need
+    # the proxy explicitly; macOS system proxy settings do not automatically
+    # enter tmux-spawned shells.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "OPENAI_IMAGE_MODEL",
+    "OPENAI_IMAGE_BASE_URL",
+    "OPENAI_IMAGE_API_KEY",
+    "REPLICATE_API_TOKEN",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
     "LARKSUITE_CLI_APP_ID",
     "LARKSUITE_CLI_APP_SECRET",
 )
+_FEISHU_APP_ENV = {
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
+}
+
+
+def _feishu_env_matches_profile(configured_lark_profile: str) -> bool:
+    if not configured_lark_profile:
+        return True
+    app_id = env_str("FEISHU_APP_ID") or env_str("LARKSUITE_CLI_APP_ID")
+    if not app_id:
+        return True
+    try:
+        from claudeteam.feishu import lark
+        expected = lark._profile_app_id(configured_lark_profile)
+    except Exception:
+        expected = ""
+    return not expected or app_id == expected
+
+
+def _venv_path_prefix() -> str:
+    """Short PATH prefix injected into panes.
+
+    Prefer the Python interpreter's bin dir (the same environment the
+    running `claudeteam` command came from). This matters when the team
+    is launched FROM a target project directory: `Path.cwd()` then points
+    at the target repo, not the ClaudeTeam repo that actually contains the
+    `claudeteam` executable. Fall back to `<cwd>/.venv/bin` for older
+    setups.
+
+    Keep literal `$PATH` instead of expanding the caller's full PATH,
+    which can exceed tmux send-keys practical length on macOS and truncate
+    the spawn command.
+    """
+    candidates = [
+        Path(sys.executable).parent,
+        Path(sys.prefix) / "bin",
+        Path.cwd() / ".venv" / "bin",
+    ]
+    seen: set[Path] = set()
+    for venv_bin in candidates:
+        if venv_bin in seen:
+            continue
+        seen.add(venv_bin)
+        if (venv_bin / "claudeteam").exists():
+            return f"{venv_bin}:$PATH"
+    return ""
 
 
 def _path_readable(p: Path) -> bool:
@@ -71,6 +148,69 @@ def _path_readable(p: Path) -> bool:
         return p.exists()
     except OSError:
         return False
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _merge_runtime_env_into_claude_settings(settings_path: Path,
+                                            provider_env: dict[str, str]) -> None:
+    """Make project/runtime model env override host-global Claude settings.
+
+    Host `~/.claude/settings.json` often pins a third-party Anthropic-
+    compatible backend globally. That is useful for ad-hoc personal use,
+    but in ClaudeTeam we need per-project routing to win. Otherwise a
+    project may export `ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-...` while
+    the copied host settings inside each agent home still force `sonnet`
+    back to some other provider/model (caught 2026-05-10 on product-lab:
+    spawn env said MiniMax, Claude UI still showed `glm-5.1`).
+    """
+    data = _read_json_file(settings_path)
+    if not isinstance(data, dict):
+        data = {}
+    env = data.setdefault("env", {})
+    if not isinstance(env, dict):
+        env = {}
+        data["env"] = env
+    changed = False
+    for key in providers.PROVIDER_ENV_KEYS:
+        value = provider_env.get(key, "")
+        if not value:
+            continue
+        if env.get(key) != value:
+            env[key] = value
+            changed = True
+    if changed:
+        try:
+            settings_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+
+def _managed_mcp_payload() -> dict:
+    """Return the MCP config panes should use for unattended startup.
+
+    Prefer the operator's explicit global `~/.mcp.json` because that's
+    where browser/context7/ocr/mastergo are currently configured on this
+    machine. Fall back to `~/.claude/.mcp.json`, then to an empty config.
+    """
+    candidates = (
+        Path.home() / ".mcp.json",
+        Path.home() / ".claude" / ".mcp.json",
+    )
+    for path in candidates:
+        if _path_readable(path):
+            data = _read_json_file(path)
+            if isinstance(data.get("mcpServers"), dict):
+                return data
+    return {"mcpServers": {}}
 
 
 def _ensure_claude_agent_home(agent: str) -> None:
@@ -158,6 +298,87 @@ def _ensure_claude_agent_home(agent: str) -> None:
             '  }\n'
             '}\n'
         )
+    # Host deploys often keep the effective Claude auth/provider setup
+    # spread across ~/.claude/config.json + settings*.json,
+    # while the per-agent HOME only gets ~/.claude.json copied above.
+    # 2026-05-10 product-lab smoke caught this: per-agent panes showed
+    # "Not logged in · Please run /login" even though the operator's
+    # default HOME could run `claude -p "OK"` successfully. Copy the
+    # small local config files into each agent HOME so provider /
+    # auth-adjacent local state follows the pane.
+    #
+    # Deliberately DO NOT copy ~/.claude/.mcp.json here. Doing so
+    # triggers Claude's interactive "new MCP servers found" approval
+    # dialog inside fresh panes, which deadlocks unattended team bringup.
+    # Project-scoped MCP servers should be enabled explicitly by the
+    # operator or via future trusted-project wiring, not inherited
+    # blindly from the operator's personal HOME.
+    for rel in ("config.json", "settings.local.json"):
+        src = Path.home() / ".claude" / rel
+        dst = claude_dir / rel
+        if _path_readable(src) and not dst.exists():
+            try:
+                dst.write_bytes(src.read_bytes())
+            except OSError:
+                pass
+    # Prefer the operator's real settings.json over the tiny default
+    # stub above when it exists. This carries through provider env,
+    # enabled MCP servers, and other local toggles needed for the same
+    # auth/provider behavior the operator gets in their normal HOME.
+    user_settings = Path.home() / ".claude" / "settings.json"
+    if _path_readable(user_settings):
+        try:
+            settings.write_bytes(user_settings.read_bytes())
+        except OSError:
+            pass
+    _merge_runtime_env_into_claude_settings(settings, providers.provider_env_for_agent(agent))
+    managed_mcp = Path(managed_mcp_config(agent))
+    try:
+        managed_mcp.write_text(
+            json.dumps(_managed_mcp_payload(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    # Mirror the operator's "this project path is trusted" flag into the
+    # per-agent HOME. Without this, Claude walks upward, sees a parent
+    # `~/.mcp.json`, and on first interactive pane boot stops at
+    # "new MCP servers found" waiting for manual confirmation. 2026-05-10
+    # product-lab smoke caught exactly that. We don't blindly inherit the
+    # global ~/.mcp.json file; we only stamp the current cwd's trust state
+    # into the copied ~/.claude.json so fresh panes can boot unattended.
+    if _path_readable(claude_json):
+        try:
+            data = json.loads(claude_json.read_text(encoding="utf-8"))
+            projects = data.setdefault("projects", {})
+            project_cfg = projects.setdefault(str(Path.cwd()), {})
+            project_cfg["hasTrustDialogAccepted"] = True
+            # If the operator already approved per-project mcpjson servers in
+            # their own HOME, preserve that exact choice. Otherwise use an
+            # empty approved-list sentinel which suppresses the first-run
+            # chooser while leaving explicit per-project MCP wiring available.
+            src_data = {}
+            if _path_readable(user_claude_json):
+                try:
+                    src_data = json.loads(user_claude_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    src_data = {}
+            src_proj = (src_data.get("projects", {}) or {}).get(str(Path.cwd()), {})
+            project_cfg["enabledMcpjsonServers"] = list(src_proj.get("enabledMcpjsonServers") or [])
+            project_cfg["disabledMcpjsonServers"] = list(src_proj.get("disabledMcpjsonServers") or [])
+            project_cfg.setdefault("mcpContextUris", [])
+            project_cfg.setdefault("mcpServers", {})
+            project_cfg.setdefault("allowedTools", [])
+            project_cfg.setdefault("permissions", {})
+            project_cfg["permissions"]["allowBypass"] = True
+            project_cfg.setdefault("workspaceConfig", {})
+            project_cfg["workspaceConfig"]["permissionMode"] = "bypassPermissions"
+            claude_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
     cred_link = claude_dir / ".credentials.json"
     cred_target = Path("/root/.claude/.credentials.json")
     if _path_readable(cred_target) and not cred_link.exists():
@@ -187,18 +408,396 @@ def _ensure_claude_agent_home(agent: str) -> None:
             pass
 
 
-def pane_env_prefix() -> str:
-    """Build a shell env prefix that, prepended to a spawn_cmd, makes the
-    spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
-    worker agents calling `claudeteam say` write to the project state
-    dir, not `~/.claudeteam`.
+def _boolish(value: str, default: bool) -> bool:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _render_codex_config(provider_env: dict[str, str]) -> str:
+    model_provider = provider_env.get("OPENAI_MODEL_PROVIDER", "custom").strip() or "custom"
+    model = provider_env.get("OPENAI_MODEL", "").strip()
+    base_url = provider_env.get("OPENAI_BASE_URL", "").strip()
+    wire_api = provider_env.get("OPENAI_WIRE_API", "responses").strip() or "responses"
+    requires_openai_auth = _boolish(
+        provider_env.get("OPENAI_REQUIRES_OPENAI_AUTH", "true"),
+        True,
+    )
+    disable_response_storage = _boolish(
+        provider_env.get("OPENAI_DISABLE_RESPONSE_STORAGE", "true"),
+        True,
+    )
+    effort = provider_env.get("OPENAI_REASONING_EFFORT", "").strip()
+    lines = [
+        f'model_provider = {json.dumps(model_provider, ensure_ascii=False)}',
+    ]
+    if model:
+        lines.append(f'model = {json.dumps(model, ensure_ascii=False)}')
+    if effort:
+        lines.append(f'model_reasoning_effort = {json.dumps(effort, ensure_ascii=False)}')
+    lines.append('model_verbosity = "medium"')
+    lines.append(f"disable_response_storage = {'true' if disable_response_storage else 'false'}")
+    # Codex TUI may show an update prompt before the chat input. In an
+    # automated tmux worker, our injected Enter can select "Update now",
+    # causing the worker to update and exit instead of processing inbox.
+    lines.append("check_for_update_on_startup = false")
+    lines.append("")
+    lines.append(f"[model_providers.{model_provider}]")
+    lines.append(f'name = {json.dumps(model_provider, ensure_ascii=False)}')
+    lines.append(f'wire_api = {json.dumps(wire_api, ensure_ascii=False)}')
+    lines.append(f"requires_openai_auth = {'true' if requires_openai_auth else 'false'}")
+    if base_url:
+        lines.append(f'base_url = {json.dumps(base_url, ensure_ascii=False)}')
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _read_codex_provider_defaults(path: Path) -> dict[str, str]:
+    """Read OpenAI-compatible provider defaults from a Codex config.toml.
+
+    ClaudeTeam writes per-agent CODEX_HOME directories. When the operator's
+    global Codex config uses a custom OpenAI-compatible endpoint, copying only
+    auth.json makes the isolated agent send that custom key to api.openai.com.
+    This lightweight reader copies the selected provider's routing fields
+    without pulling in unrelated project trust or MCP config.
     """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    top: dict[str, object] = {}
+    providers_by_name: dict[str, dict[str, object]] = {}
+    current_provider: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            prefix = "model_providers."
+            current_provider = section[len(prefix):] if section.startswith(prefix) else None
+            if current_provider is not None:
+                providers_by_name.setdefault(current_provider, {})
+            continue
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value.startswith('"') and raw_value.endswith('"'):
+            try:
+                value: object = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value.strip('"')
+        elif raw_value.lower() in {"true", "false"}:
+            value = raw_value.lower() == "true"
+        else:
+            value = raw_value
+        if current_provider is None:
+            top[key] = value
+        else:
+            providers_by_name.setdefault(current_provider, {})[key] = value
+
+    provider_name = str(top.get("model_provider") or "").strip()
+    if not provider_name:
+        return {}
+    provider = providers_by_name.get(provider_name, {})
+    out: dict[str, str] = {"OPENAI_MODEL_PROVIDER": provider_name}
+    if model := top.get("model"):
+        out["OPENAI_MODEL"] = str(model)
+    if effort := top.get("model_reasoning_effort"):
+        out["OPENAI_REASONING_EFFORT"] = str(effort)
+    if "disable_response_storage" in top:
+        out["OPENAI_DISABLE_RESPONSE_STORAGE"] = "true" if top["disable_response_storage"] else "false"
+    if base_url := provider.get("base_url"):
+        out["OPENAI_BASE_URL"] = str(base_url)
+    if wire_api := provider.get("wire_api"):
+        out["OPENAI_WIRE_API"] = str(wire_api)
+    if "requires_openai_auth" in provider:
+        out["OPENAI_REQUIRES_OPENAI_AUTH"] = "true" if provider["requires_openai_auth"] else "false"
+    return out
+
+
+def _host_codex_provider_defaults(agent: str) -> dict[str, str]:
+    """Return provider defaults from shared/operator Codex configs."""
+    seen: set[Path] = set()
+    candidates = [
+        paths.codex_config_file(),
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
+        Path.home() / ".codex" / "config.toml",
+    ]
+    for path in candidates:
+        if path == paths.codex_config_file(agent) or path in seen:
+            continue
+        seen.add(path)
+        defaults = _read_codex_provider_defaults(path)
+        if defaults:
+            return defaults
+    return {}
+
+
+def _extract_codex_mcp_sections(text: str) -> str:
+    """Return verbatim [mcp_servers.*] TOML sections from a Codex config."""
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if current:
+                blocks.append(current)
+            current = [line] if stripped.startswith("[mcp_servers.") else None
+            continue
+        if current is not None:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    rendered = "\n\n".join("\n".join(block).rstrip() for block in blocks)
+    return rendered.strip()
+
+
+def _codex_mcp_sections(agent: str) -> str:
+    """Find MCP server sections to preserve for an isolated Codex home.
+
+    Older deployments installed MCP servers into the shared project Codex
+    home. Per-agent Codex homes isolate auth/provider config, so we copy
+    those MCP sections forward unless the agent already has its own.
+    """
+    seen: set[Path] = set()
+    candidates = [
+        paths.codex_config_file(agent),
+        paths.codex_config_file(),
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
+        Path.home() / ".codex" / "config.toml",
+    ]
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            sections = _extract_codex_mcp_sections(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if sections:
+            return sections
+    return ""
+
+
+def _sync_bundled_codex_skills(codex_home: Path) -> None:
+    """Copy repo-bundled Codex skills into an agent's isolated CODEX_HOME."""
+    source_root = Path(__file__).resolve().parents[3] / "skills"
+    if not source_root.is_dir():
+        return
+    dest_root = codex_home / "skills"
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for source in sorted(source_root.iterdir()):
+        if source.name.startswith(".") or not (source / "SKILL.md").is_file():
+            continue
+        try:
+            shutil.copytree(
+                source,
+                dest_root / source.name,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+            )
+        except OSError:
+            continue
+
+
+def _migrate_codex_wire_api(provider_env: dict[str, str], agent: str) -> None:
+    """Auto-migrate deprecated codex wire_api values before config render.
+
+    codex >= 0.135.0 dropped wire_api="chat" support. If the provider
+    chain (ccswitch.json → agent overrides → host defaults) still resolves
+    to the old value, agents fail to start with a TOML parse error. Detect
+    and migrate so a stale ccswitch.json doesn't silently kill the team.
+    """
+    wire_api = (provider_env.get("OPENAI_WIRE_API") or "").strip().lower()
+    if wire_api == "chat":
+        import sys
+        print(
+            f"  ⚠️ {agent}: OPENAI_WIRE_API='chat' is no longer supported "
+            f"by codex >= 0.135.0; auto-migrating to 'responses'. "
+            f"Update ccswitch.json or agent provider_env to silence this warning.",
+            file=sys.stderr,
+        )
+        provider_env["OPENAI_WIRE_API"] = "responses"
+
+
+def _ensure_codex_home(agent: str, model: str) -> None:
+    """Materialise the project-scoped Codex home.
+
+    The codex pane runs with `CODEX_HOME=<state_dir>/codex-home` so its
+    trust config, auth, and future state stay inside the project instead
+    of mutating the operator's global `~/.codex`. To keep first-run
+    setup smooth, we either:
+      1. materialise project-local custom-provider config/auth from the
+         agent's OpenAI-compatible routing, or
+      2. fall back to bootstrapping `auth.json` once from the operator's
+         current Codex home when that file exists.
+    """
+    codex_home = paths.codex_home_dir(agent)
+    try:
+        codex_home.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    provider_env = providers.codex_provider_env_for_agent(agent)
+    # Config compatibility guard: codex >= 0.135.0 dropped wire_api="chat".
+    # If the provider chain still resolves to the old value (stale
+    # ccswitch.json, agent override, or host defaults), auto-migrate so
+    # the agent doesn't fail to start with "wire_api = \"chat\" is no
+    # longer supported". "responses" was supported before the removal too.
+    _migrate_codex_wire_api(provider_env, agent)
+    for key, value in _host_codex_provider_defaults(agent).items():
+        provider_env.setdefault(key, value)
+    if model and not provider_env.get("OPENAI_MODEL"):
+        provider_env["OPENAI_MODEL"] = model
+    cfg_text = _render_codex_config(provider_env)
+    mcp_sections = _codex_mcp_sections(agent)
+    if mcp_sections:
+        cfg_text = cfg_text.rstrip() + "\n\n" + mcp_sections + "\n"
+    try:
+        atomic_write_text(paths.codex_config_file(agent), cfg_text)
+    except OSError:
+        pass
+    _sync_bundled_codex_skills(codex_home)
+    dst_auth = paths.codex_auth_file(agent)
+    api_key = provider_env.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        try:
+            atomic_write_text(
+                dst_auth,
+                json.dumps({"OPENAI_API_KEY": api_key}, ensure_ascii=False, indent=2) + "\n",
+            )
+            return
+        except OSError:
+            return
+    if _path_readable(dst_auth):
+        return
+    seen: set[Path] = set()
+    candidates = [
+        (env_path("CODEX_HOME") or Path.home() / ".codex") / "auth.json",
+        Path.home() / ".codex" / "auth.json",
+    ]
+    for src in candidates:
+        if src in seen:
+            continue
+        seen.add(src)
+        if not _path_readable(src):
+            continue
+        try:
+            dst_auth.write_bytes(src.read_bytes())
+            return
+        except OSError:
+            return
+
+
+def pane_env_prefix(agent: str | None = None) -> str:
+    """Build a shell env prefix that, prepended to a spawn_cmd, makes the
+    spawned process inherit CLAUDETEAM_STATE_DIR, project-level
+    CODEX_HOME, and the Feishu env so worker agents calling
+    `claudeteam say` write to the project state dir, and codex-cli
+    workers resolve config from the project-scoped codex home rather
+    than falling back to `~/.codex`.
+    """
+    team_command.ensure_config_pointer()
     parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
+    parts.append(f"CLAUDETEAM_CONFIG_FILE={shlex.quote(str(paths.config_file()))}")
+    codex_home = paths.codex_home_dir(agent) if agent else paths.codex_home_dir()
+    parts.append(f"CODEX_HOME={shlex.quote(str(codex_home))}")
+    pane_path = _venv_path_prefix()
+    if pane_path:
+        parts.append(f"PATH={pane_path}")
+    cli = ""
+    if agent:
+        try:
+            cli = config.agent_cli(agent)
+        except KeyError:
+            cli = ""
+    configured_lark_profile = ""
+    try:
+        from claudeteam.runtime import tunables
+        raw_profile = tunables.load().get("lark_profile")
+        configured_lark_profile = str(raw_profile).strip() if raw_profile else ""
+    except Exception:
+        configured_lark_profile = ""
+    if configured_lark_profile:
+        parts.append(f"LARK_CLI_PROFILE={shlex.quote(configured_lark_profile)}")
+    feishu_env_ok = _feishu_env_matches_profile(configured_lark_profile)
+
     for var in _PROPAGATED_ENV:
+        if var == "LARK_CLI_PROFILE" and configured_lark_profile:
+            continue
+        if var in _FEISHU_APP_ENV and not feishu_env_ok:
+            continue
+        if agent and var in providers.PROVIDER_ENV_KEYS:
+            continue
         val = env_str(var)
         if val:
             parts.append(f"{var}={shlex.quote(val)}")
+    if agent and cli not in {"codex-cli", "claude-code"}:
+        for key, value in providers.provider_env_for_agent(agent).items():
+            parts.append(f"{key}={shlex.quote(value)}")
     return " ".join(parts)
+
+
+def _team_root_dir() -> Path:
+    """Directory an agent CLI should run in.
+
+    Agents may call `claudeteam send` from any pane cwd, but their
+    project identity, config, and local docs live beside claudeteam.toml.
+    Spawn commands therefore cd to the config directory before launching
+    the CLI, instead of trusting whatever cwd the placeholder shell had.
+    """
+    return paths.config_file().parent
+
+
+def _write_spawn_script(agent: str, command: str) -> Path:
+    path = paths.state_dir() / "runtime" / f"spawn-{agent}.sh"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, "#!/usr/bin/env bash\nset -e\n" + command + "\n")
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _agent_spawn_cmd(agent: str, adapter, model: str) -> str:
+    root = shlex.quote(str(_team_root_dir()))
+    command = f"cd {root} && {pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    return f"bash {shlex.quote(str(_write_spawn_script(agent, command)))}"
+
+
+def lazy_spawn_cmd(agent: str) -> str:
+    """Build the exact spawn command used when waking a lazy pane.
+
+    Keep lazy first-message wake behaviour identical to start/hire
+    provisioning so codex-cli workers get their project-local CODEX_HOME
+    pre-created before the CLI boots.
+    """
+    cli = config.agent_cli(agent)
+    requested = config.agent_model(agent)
+    model = providers.effective_model_for_agent(agent, requested)
+    root = _team_root_dir()
+    if cli == "codex-cli":
+        _ensure_codex_home(agent, model)
+        ensure_workdir_trusted(root, config_path=paths.codex_config_file(agent))
+    adapter = get_adapter(cli)
+    return _agent_spawn_cmd(agent, adapter, model)
+
+
+def _has_unread_inbox(agent: str) -> bool:
+    try:
+        return bool(local_facts.list_messages(agent, unread_only=True))
+    except Exception:
+        return False
 
 
 # Outcome strings returned by provision_pane. Callers print/log differently
@@ -219,7 +818,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
 
     Steps:
       1. Render + persist agent's identity.md (`agents/<name>/identity.md`).
-      2. If agent is `lazy` in team.json: set status 待命, return LAZY.
+      2. If agent is `lazy` in team.json and has no unread inbox: set status 待命, return LAZY.
       3. For codex CLI: ensure cwd is trusted in ~/.codex/config.toml.
       4. Spawn the adapter's CLI in the pane (with pane_env_prefix).
       5. Wait up to 20s for the adapter's ready marker to appear.
@@ -250,19 +849,22 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     # Inline agent_model resolution: per-agent override → env var →
     # team default → "opus". Mirrors `config.agent_model` but uses the
     # already-loaded `team` dict for the default_model fallback.
-    model = (cfg.get("model")
-             or env_str("CLAUDETEAM_DEFAULT_MODEL")
-             or team.get("default_model", "opus"))
+    requested_model = (cfg.get("model")
+                       or env_str("CLAUDETEAM_DEFAULT_MODEL")
+                       or team.get("default_model", "opus"))
+    model = providers.effective_model_for_agent(agent, requested_model)
     # Pass resolved fields to identity.write so its internal render()
     # skips a redundant config.agent_config() fallback. `role`
     # defaulting to `agent` matches render's own fallback so the
     # rendered file is byte-identical.
     identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
-    if cfg.get("lazy"):
+    if cfg.get("lazy") and not _has_unread_inbox(agent):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
+        local_facts.touch_heartbeat(agent)
         return LAZY
     if cli == "codex-cli":
-        ensure_workdir_trusted(Path.cwd())
+        _ensure_codex_home(agent, model)
+        ensure_workdir_trusted(_team_root_dir(), config_path=paths.codex_config_file(agent))
     if cli == "claude-code":
         _ensure_claude_agent_home(agent)
     try:
@@ -274,7 +876,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
+    cmd = _agent_spawn_cmd(agent, adapter, model)
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
     # 60s ready timeout (was 20s): fresh container claude panes go
@@ -285,10 +887,13 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     from claudeteam.runtime import tunables
     ready_timeout = float(tunables.tunable("wake.ready_marker_timeout_s", 60.0))
     if wake.wait_until_ready(target, adapter, timeout_s=ready_timeout):
-        tmux.inject(target, identity.init_prompt(agent),
-                    submit_keys=adapter.submit_keys())
-        outcome = READY
+        if tmux.inject(target, identity.init_prompt(agent),
+                       submit_keys=adapter.submit_keys()):
+            outcome = READY
+        else:
+            outcome = READY_NO_INIT
     else:
         outcome = READY_NO_INIT
     local_facts.upsert_status(agent, "进行中", "initializing")
+    local_facts.touch_heartbeat(agent)
     return outcome

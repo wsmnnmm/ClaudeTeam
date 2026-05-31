@@ -15,15 +15,18 @@ not fail the check.
 """
 from __future__ import annotations
 
+import subprocess
 import shutil
 from dataclasses import dataclass, field
 
 from claudeteam.agents import get_adapter
 from claudeteam.feishu import catchup
+from claudeteam.feishu import pane_state
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
 from claudeteam.util import (
-    ago_ms, env_str, maybe_print_help, pop_bool_flag, print_json, reject_extra_args,
+    ago_ms, env_str, maybe_print_help, now_ms, pop_bool_flag, print_json,
+    reject_extra_args,
 )
 
 
@@ -31,6 +34,7 @@ _OK = "✅"
 _BAD = "❌"
 _WARN = "⚠️ "
 _INFO = "ℹ️ "
+_STALE_HEARTBEAT_MS = 30 * 60 * 1000
 
 
 @dataclass
@@ -42,6 +46,7 @@ class HealthReport:
     lines: list[str] = field(default_factory=list)
     bad: int = 0
     warn: int = 0
+    warn_categories: dict[str, int] = field(default_factory=dict)
 
     def ok(self, msg: str) -> None:
         self.lines.append(f"  {_OK} {msg}")
@@ -50,9 +55,10 @@ class HealthReport:
         self.lines.append(f"  {_BAD} {msg}")
         self.bad += 1
 
-    def yellow(self, msg: str) -> None:
+    def yellow(self, msg: str, *, category: str = "general") -> None:
         self.lines.append(f"  {_WARN}{msg}")
         self.warn += 1
+        self.warn_categories[category] = self.warn_categories.get(category, 0) + 1
 
     def info(self, msg: str) -> None:
         self.lines.append(f"  {_INFO}{msg}")
@@ -68,11 +74,44 @@ class HealthReport:
     def blank(self) -> None:
         self.lines.append("")
 
+    def warning_footer(self) -> str:
+        if not self.warn:
+            return ""
+        if set(self.warn_categories) == {"stale_heartbeat"}:
+            return (
+                f"no errors, {self.warn} warning(s): agent heartbeat stale only; "
+                "not a Feishu CLI/App Secret warning"
+            )
+        labels = {
+            "agent_runtime": "agent runtime",
+            "daemon": "daemon",
+            "feishu_config": "Feishu config",
+            "feishu_process": "Feishu process",
+            "network": "network",
+            "stale_heartbeat": "stale heartbeat",
+            "general": "general",
+        }
+        parts = [
+            f"{labels.get(k, k)}={v}"
+            for k, v in sorted(self.warn_categories.items())
+        ]
+        return f"no errors, {self.warn} warning(s) — categories: {', '.join(parts)}"
+
 
 def _check_state_dir(rep: HealthReport) -> None:
     src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
-    rep.note(f"state_dir: {paths.state_dir()}  ({src})")
-
+    state = paths.state_dir()
+    rep.note(f"state_dir: {state}  ({src})")
+    expected_toml = state.parent / "claudeteam.toml"
+    if env_str("CLAUDETEAM_STATE_DIR") and expected_toml.exists():
+        active_toml = paths.config_file()
+        if active_toml.resolve() != expected_toml.resolve():
+            rep.fail(
+                "config/state mismatch: "
+                f"state_dir belongs to {expected_toml.parent}, "
+                f"but active config is {active_toml}. "
+                f"Set CLAUDETEAM_CONFIG_FILE={expected_toml}"
+            )
 
 
 def _check_team(rep: HealthReport) -> None:
@@ -114,7 +153,8 @@ def _check_runtime_config(rep: HealthReport) -> None:
     if profile := config.lark_profile():
         rep.ok(f"lark_profile: {profile}")
     else:
-        rep.yellow("lark_profile blank — bot identity required for sends")
+        rep.yellow("lark_profile blank — bot identity required for sends",
+                   category="feishu_config")
 
 
 def _check_session(rep: HealthReport, session: str) -> bool:
@@ -139,7 +179,8 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
         hb = heartbeats.get(agent)
         hb_suffix = f"  ♥ {ago_ms(hb)}" if hb else "  ♥ never"
         if not session_alive:
-            rep.yellow(f"  {agent}: session down, skip{hb_suffix}")
+            rep.yellow(f"  {agent}: session down, skip{hb_suffix}",
+                       category="agent_runtime")
             continue
         if not tmux.has_window(target):
             rep.fail(f"  {agent}: no tmux window{hb_suffix}")
@@ -152,19 +193,32 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
             # config inside the loop.
             adapter = get_adapter(cli)
             text = tmux.capture_pane(target, lines=80)
-            if any(m in text for m in adapter.ready_markers()):
+            ready = any(m in text for m in adapter.ready_markers())
+            emoji, brief = pane_state.parse(text)
+            stale_hb = bool(hb and now_ms() - hb > _STALE_HEARTBEAT_MS)
+            if ready and emoji in ("⚠️", "⛔", "🛑"):
+                rep.yellow(
+                    f"  {agent}: pane reachable but {brief} ({cli}){hb_suffix}",
+                    category="agent_runtime")
+            elif ready and stale_hb:
+                rep.yellow(
+                    f"  {agent}: pane ready ({cli}) but heartbeat is stale{hb_suffix}",
+                    category="stale_heartbeat")
+            elif ready:
                 rep.ok(f"  {agent}: pane ready ({cli}){hb_suffix}")
             elif cfg.get("lazy"):
                 rep.ok(f"  {agent}: lazy pane (CLI starts on first message){hb_suffix}")
             else:
-                rep.yellow(f"  {agent}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}")
+                rep.yellow(
+                    f"  {agent}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}",
+                    category="agent_runtime")
         except Exception as e:
-            rep.yellow(f"  {agent}: probe failed — {e}")
+            rep.yellow(f"  {agent}: probe failed — {e}", category="agent_runtime")
 
 
 def _check_daemon(rep: HealthReport, spec: watchdog.ProcessSpec) -> None:
     if not spec.pid_file.exists():
-        rep.yellow(f"{spec.name}: no pid file (not running?)")
+        rep.yellow(f"{spec.name}: no pid file (not running?)", category="daemon")
         return
     if watchdog.is_alive(spec):
         rep.ok(f"{spec.name}: alive ({spec.pid_file.read_text().strip()})")
@@ -199,18 +253,107 @@ def _check_binaries(rep: HealthReport, agents: list[str]) -> None:
 
 
 def _check_proxy_env(rep: HealthReport) -> None:
-    """If HTTPS_PROXY/HTTP_PROXY is set without LARK_CLI_NO_PROXY=1, lark-cli
-    requests transit through the proxy — usually fatal on host networks.
-    Warning only (not fatal): user may genuinely want the proxy."""
-    proxy = env_str("HTTPS_PROXY") or env_str("HTTP_PROXY")
+    """Report whether lark-cli will effectively bypass shell proxies.
+
+    The wrapper accepts both the legacy env flag (`LARK_CLI_NO_PROXY=1`)
+    and the newer config knob (`[feishu] no_proxy = true`).  Health used
+    to inspect only the env var, so teams with the TOML knob correctly
+    stripping proxies still looked risky.
+    """
+    proxy = env_str("HTTPS_PROXY") or env_str("HTTP_PROXY") or env_str("ALL_PROXY")
     if not proxy:
         return
-    if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
-        rep.info(f"HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
+    legacy = env_str("LARK_CLI_NO_PROXY").lower()
+    if legacy in {"1", "true", "yes", "on"}:
+        no_proxy = True
+        source = "LARK_CLI_NO_PROXY"
+    elif legacy in {"0", "false", "no", "off"}:
+        no_proxy = False
+        source = "LARK_CLI_NO_PROXY"
+    else:
+        from claudeteam.runtime import tunables
+        no_proxy = bool(tunables.tunable("feishu.no_proxy", False))
+        source = "feishu.no_proxy"
+    if no_proxy:
+        rep.info(f"proxy env set ({proxy}) but {source}=true — wrapper will strip")
     else:
         rep.yellow(
-            f"HTTPS_PROXY={proxy} set without LARK_CLI_NO_PROXY=1; "
-            "lark-cli requests may fail. `export LARK_CLI_NO_PROXY=1` to strip.")
+            f"proxy env={proxy} set without LARK_CLI_NO_PROXY=1; "
+            "lark-cli requests may fail. Set `LARK_CLI_NO_PROXY=1` "
+            "or `[feishu] no_proxy = true` to strip.",
+            category="network")
+
+
+def _lark_process_rows(run=subprocess.run) -> list[dict[str, str]]:
+    """Return ps rows for lark-cli processes.
+
+    Best-effort only: process-state visibility differs across macOS and
+    Linux, and unit tests patch `run=`.  A failure to inspect processes
+    should not make health unusable; it just means this extra audit is
+    unavailable on that host.
+    """
+    try:
+        result = run(
+            ["ps", "-eo", "pid=,ppid=,stat=,command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    rows: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        if "lark-cli" not in line:
+            continue
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, stat, command = parts
+        rows.append({"pid": pid, "ppid": ppid, "stat": stat, "command": command})
+    return rows
+
+
+def _process_matches_profile(command: str, profile: str) -> bool:
+    return f"--profile {profile}" in command or f"--profile={profile}" in command
+
+
+def _check_lark_processes(rep: HealthReport) -> None:
+    """Detect stuck lark-cli subprocesses for this team's profile.
+
+    macOS `ps` reports `U` for uninterruptible wait; Linux commonly uses
+    `D` for the same class of uninterruptible sleep.  Either means the
+    child may ignore SIGTERM/SIGKILL and keep the message transport in a
+    deceptive half-alive state, so health must not stay green.
+    """
+    profile = config.lark_profile()
+    if not profile:
+        return
+    rows = [
+        row for row in _lark_process_rows()
+        if _process_matches_profile(row["command"], profile)
+    ]
+    if not rows:
+        return
+    stuck = [row for row in rows if row["stat"][:1] in {"U", "D"}]
+    orphaned = [
+        row for row in rows
+        if row["ppid"] == "1"
+        and ("event +subscribe" in row["command"]
+             or "im +chat-messages-list" in row["command"])
+    ]
+    if stuck:
+        sample = ", ".join(row["pid"] for row in stuck[:5])
+        rep.fail(
+            f"lark-cli stuck process(es): {len(stuck)} for profile {profile} "
+            f"(pid {sample}; uninterruptible wait, reboot/logout may be required)")
+    elif orphaned:
+        sample = ", ".join(row["pid"] for row in orphaned[:5])
+        rep.yellow(
+            f"lark-cli orphan process(es): {len(orphaned)} for profile {profile} "
+            f"(pid {sample}); watchdog should reap or respawn cleanly",
+            category="feishu_process")
 
 
 def _check_cursor(rep: HealthReport) -> None:
@@ -275,6 +418,10 @@ def _build_report() -> HealthReport:
     _check_proxy_env(rep)
     rep.blank()
 
+    rep.section("process audit:")
+    _check_lark_processes(rep)
+    rep.blank()
+
     rep.section("tmux:")
     session_alive = _check_session(rep, session)
     if agents:
@@ -302,7 +449,7 @@ def _emit_text(rep: HealthReport) -> None:
     if rep.bad:
         print(f"\n{_BAD} {rep.bad} red check(s) — see above")
     elif rep.warn:
-        print(f"\n{_WARN}no errors, {rep.warn} warning(s) — see above")
+        print(f"\n{_WARN}{rep.warning_footer()}")
     else:
         print(f"\n{_OK} all green")
 
@@ -316,6 +463,7 @@ def _emit_json(rep: HealthReport) -> None:
         "ok": rep.bad == 0,
         "bad": rep.bad,
         "warn": rep.warn,
+        "warn_categories": dict(rep.warn_categories),
         "lines": list(rep.lines),
     })
 

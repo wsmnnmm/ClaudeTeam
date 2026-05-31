@@ -377,16 +377,20 @@ def _collect_alarms(host_mem: dict | None, host_disk: dict | None,
 
 def collect_server_load(agent_set: frozenset,
                         session: str,
-                        run: Callable = _run) -> dict:
+                        run: Callable = _run,
+                        *,
+                        read_proc: Callable[[str], str | None] = _read_proc,
+                        cpu_count: Callable[[], int | None] = os.cpu_count) -> dict:
     """Live server-load snapshot for the `/health` slash card.
 
     `agent_set` is the team's agent name set (used to filter tmux
     panes); `session` is the tmux session name (used as agent location
-    label). `run` is injectable for tests so the data flow can be
-    exercised without spawning real subprocesses.
+    label). `run` and host probes are injectable for tests so the data
+    flow can be exercised without depending on whether the host is macOS
+    or Linux with `/proc` mounted.
     """
-    cpu = _host_cpu(run=run)
-    mem = _host_mem(run=run)
+    cpu = _host_cpu(run=run, read_proc=read_proc, cpu_count=cpu_count)
+    mem = _host_mem(run=run, read_proc=read_proc)
     disk = _host_disk(run=run)
     containers = _docker_stats(run=run)
     agents = _agent_usage(agent_set, session, run=run)

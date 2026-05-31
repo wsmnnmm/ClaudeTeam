@@ -68,7 +68,33 @@ def test_capture_pane_returns_empty_string_on_failure():
 def test_send_text_uses_literal_flag():
     rec = _Recorder([_FakeResult()])
     send_text(Target("S", "m"), "echo $HOME", run=rec)
-    assert rec.calls == [["tmux", "send-keys", "-l", "-t", "S:m", "echo $HOME"]]
+    assert rec.calls == [["tmux", "send-keys", "-l", "-t", "S:m", "--", "echo $HOME"]]
+
+
+def test_send_text_chunks_long_payloads():
+    text = "x" * 9001
+    rec = _Recorder()
+    assert send_text(Target("S", "m"), text, run=rec) is True
+    assert len(rec.calls) == 12
+    assert "".join(call[-1] for call in rec.calls) == text
+    assert all(len(call[-1]) <= 800 for call in rec.calls)
+    assert all(call[-2] == "--" for call in rec.calls)
+
+
+def test_send_text_stops_tmux_option_parsing_for_dash_chunks():
+    text = ("x" * 800) + "-3 must stay literal"
+    rec = _Recorder()
+    assert send_text(Target("S", "m"), text, run=rec) is True
+    assert rec.calls[1] == [
+        "tmux", "send-keys", "-l", "-t", "S:m", "--", "-3 must stay literal",
+    ]
+
+
+def test_send_text_returns_false_if_any_chunk_fails():
+    text = "x" * 9001
+    rec = _Recorder([_FakeResult(), _FakeResult(returncode=1)])
+    assert send_text(Target("S", "m"), text, run=rec) is False
+    assert len(rec.calls) == 2
 
 
 def test_send_keys_sends_named_keys_without_literal():
@@ -96,7 +122,7 @@ def test_inject_sends_text_then_default_submit_keys_in_order():
     assert ok is True
     # 1 send_text + 3 default submit keys = 4 calls
     assert len(rec.calls) == 4
-    assert rec.calls[0] == ["tmux", "send-keys", "-l", "-t", "S:m", "hello"]
+    assert rec.calls[0] == ["tmux", "send-keys", "-l", "-t", "S:m", "--", "hello"]
     assert rec.calls[1] == ["tmux", "send-keys", "-t", "S:m", "Enter"]
     assert rec.calls[2] == ["tmux", "send-keys", "-t", "S:m", "C-m"]
     assert rec.calls[3] == ["tmux", "send-keys", "-t", "S:m", "C-j"]
@@ -130,7 +156,7 @@ def test_spawn_agent_sends_command_then_enter():
     rec = _Recorder()
     spawn_agent(Target("S", "w"), "claude --model sonnet", run=rec)
     assert rec.calls == [
-        ["tmux", "send-keys", "-l", "-t", "S:w", "claude --model sonnet"],
+        ["tmux", "send-keys", "-l", "-t", "S:w", "--", "claude --model sonnet"],
         ["tmux", "send-keys", "-t", "S:w", "Enter"],
     ]
 

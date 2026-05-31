@@ -1,12 +1,16 @@
 """Tests for runtime/config.py — team.json + runtime_config.json loading."""
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 from helpers import env_patch, isolated_env
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.agents.codex_cli import CodexCliAdapter
 from claudeteam.agents.kimi_code import KimiCodeAdapter
-from claudeteam.runtime import config
+from claudeteam.runtime import config, providers
 
 
 def _team_env(team_data, runtime_data=None):
@@ -81,6 +85,129 @@ def test_agent_cli_respects_explicit_value():
         assert config.agent_cli("a") == "codex-cli"
 
 
+def test_codex_provider_env_derives_openai_fields_from_agent_preset():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "flux-codex-dev",
+            }
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "flux-codex-dev": {
+      "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+      "ANTHROPIC_AUTH_TOKEN": "sk-flux-123",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        env = providers.codex_provider_env_for_agent("worker_codex")
+    assert env["OPENAI_BASE_URL"] == "https://api.fluxincode.com/v1"
+    assert env["OPENAI_API_KEY"] == "sk-flux-123"
+    assert env["OPENAI_MODEL"] == "gpt-5.5"
+    assert env["OPENAI_MODEL_PROVIDER"] == "custom"
+
+
+def test_codex_provider_env_maps_agent_thinking_to_reasoning_effort():
+    team = {
+        "agents": {
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "thinking": "xhigh",
+            }
+        }
+    }
+    with _team_env(team):
+        env = providers.codex_provider_env_for_agent("worker_codex")
+    assert env["OPENAI_REASONING_EFFORT"] == "xhigh"
+
+
+def test_service_override_defaults_to_codex_agents_not_claude_code():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "claude-code",
+                "model": "opus",
+                "provider_preset": "local-claude",
+            },
+            "worker_codex": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            },
+        }
+    }
+    with _team_env(team):
+        providers.save_service_state({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-backup",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+            },
+        })
+        codex_env = providers.provider_env_for_agent("worker_codex")
+        claude_env = providers.provider_env_for_agent("manager")
+    assert codex_env["ANTHROPIC_BASE_URL"] == "https://zyapi.tuluo.top:8888/v1"
+    assert "ANTHROPIC_BASE_URL" not in claude_env
+
+
+def test_effective_model_prefers_openai_model_for_codex_agent_preset():
+    """A Codex preset with OPENAI_MODEL must drive the CLI --model value.
+
+    Otherwise a team default such as gpt-5.2 can override a backup provider
+    preset and send the pane to an unsupported model.
+    """
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.2",
+                "provider_preset": "backup-openai",
+            },
+            "worker_cc": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "backup-openai",
+            },
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "backup-openai": {
+      "OPENAI_BASE_URL": "https://backup.example/v1",
+      "OPENAI_API_KEY": "sk-backup",
+      "OPENAI_MODEL": "gpt-5.4",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        codex_model = providers.effective_model_for_agent("manager", "gpt-5.2")
+        claude_model = providers.effective_model_for_agent("worker_cc", "sonnet")
+
+    assert codex_model == "gpt-5.4"
+    assert claude_model == "claude-sonnet-4"
+
+
 # ── model resolution chain ──────────────────────────────────────
 
 
@@ -114,6 +241,30 @@ def test_agent_model_falls_back_to_opus_constant():
 def test_load_runtime_config_returns_empty_dict_when_missing():
     with _team_env({"agents": {}}):  # no runtime_data → file doesn't exist
         assert config.load_runtime_config() == {}
+
+
+def test_legacy_json_paths_infer_team_root_from_state_dir_when_cwd_drifted():
+    """Agent panes may keep only CLAUDETEAM_STATE_DIR after cwd drift.
+    Legacy team/runtime JSON should still resolve from the team root."""
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+        team_root = Path(tmp) / "team-a"
+        state = team_root / "state"
+        state.mkdir(parents=True)
+        team_json = team_root / "team.json"
+        runtime_json = team_root / "runtime_config.json"
+        team_json.write_text('{"agents": {"manager": {}}}', encoding="utf-8")
+        runtime_json.write_text('{"chat_id": "oc_x"}', encoding="utf-8")
+
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(other)
+            with env_patch(CLAUDETEAM_STATE_DIR=str(state),
+                           CLAUDETEAM_TEAM_FILE=None,
+                           CLAUDETEAM_RUNTIME_CONFIG=None):
+                assert config.team_file() == team_json
+                assert config.runtime_config_file() == runtime_json
+        finally:
+            os.chdir(old_cwd)
 
 
 def test_chat_id_reads_runtime_config():
@@ -192,16 +343,19 @@ def test_chat_id_falls_back_to_legacy_runtime_config():
             assert config.chat_id() == "oc_legacy"
 
 
-def test_lark_profile_priority_env_then_toml_then_legacy():
-    """Three-way priority. env beats both; toml beats legacy json."""
+def test_lark_profile_priority_toml_then_env_then_legacy():
+    """Three-way priority. Team toml beats stale env; env beats legacy json."""
     with _team_env({"agents": {}}, runtime_data={"lark_profile": "legacy"}) as tmp:
         _write_toml(tmp, 'lark_profile = "from-toml"\n')
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
                        LARK_CLI_PROFILE="from-env"):
-            assert config.lark_profile() == "from-env"
+            assert config.lark_profile() == "from-toml"
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml"),
                        LARK_CLI_PROFILE=None):
             assert config.lark_profile() == "from-toml"
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml"),
+                       LARK_CLI_PROFILE="from-env"):
+            assert config.lark_profile() == "from-env"
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "missing.toml"),
                        LARK_CLI_PROFILE=None):
             assert config.lark_profile() == "legacy"
@@ -270,6 +424,28 @@ def test_load_runtime_config_returns_default_on_corrupt_json():
         assert loaded == {}
         assert "runtime_config.json" in err.getvalue()
         assert "not valid JSON" in err.getvalue()
+
+
+# ── Claude Code project-local settings ───────────────────────────
+
+
+def test_claude_code_settings_file_defaults_under_state_dir():
+    with isolated_env(team={"agents": {}}):
+        path = config.claude_code_settings_file()
+        assert str(path).endswith("/state/ccswitch.json")
+
+
+def test_load_claude_code_settings_reads_project_local_json():
+    with isolated_env(team={"agents": {}}) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_BASE_URL":"https://proxy.example"},"effortLevel":"max"}',
+            encoding="utf-8",
+        )
+        loaded = config.load_claude_code_settings()
+        assert loaded["env"]["ANTHROPIC_BASE_URL"] == "https://proxy.example"
+        assert loaded["effortLevel"] == "max"
 
 
 def test_session_name_falls_back_to_default_when_team_corrupt():

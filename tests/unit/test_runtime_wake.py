@@ -1,6 +1,7 @@
 """Tests for runtime/wake.py — lazy wake of dormant CLI panes."""
 from __future__ import annotations
 
+from helpers import attr_patch
 from claudeteam.runtime import wake, tmux
 
 
@@ -8,6 +9,24 @@ class _ClaudeFake:
     """Minimal CliAdapter stand-in for tests."""
     def ready_markers(self):
         return ["bypass permissions on", "? for shortcuts"]
+
+    def busy_markers(self):
+        return []
+
+    def process_name(self):
+        return "claude"
+
+
+class _CodexFake:
+    """Minimal Codex adapter stand-in for tests."""
+    def ready_markers(self):
+        return [" high · "]
+
+    def busy_markers(self):
+        return ["Starting MCP servers"]
+
+    def process_name(self):
+        return "codex"
 
 
 def _capturer(text_per_call: list[str]):
@@ -35,6 +54,12 @@ def test_is_ready_false_when_pane_blank():
     target = tmux.Target("S", "manager")
     capture = _capturer(["$ "])
     assert wake.is_ready(target, _ClaudeFake(), capture=capture) is False
+
+
+def test_is_ready_false_when_ready_marker_is_still_busy():
+    target = tmux.Target("S", "worker_codex")
+    capture = _capturer(["Starting MCP servers (0/2)\n\n  gpt-5.2 high · /work"])
+    assert wake.is_ready(target, _CodexFake(), capture=capture) is False
 
 
 # ── wake_if_dormant ──────────────────────────────────────────────
@@ -152,6 +177,22 @@ def test_wait_until_ready_polls_with_sleep_then_returns_true():
     assert len(sleeps) == 1
 
 
+def test_wait_until_ready_ignores_codex_status_line_while_mcp_boots():
+    target = tmux.Target("S", "worker_codex")
+    capture = _capturer([
+        "Starting MCP servers (0/2)\n\n  gpt-5.2 high · /work",
+        "  gpt-5.2 high · /work",
+    ])
+    sleeps = []
+    ok = wake.wait_until_ready(
+        target, _CodexFake(), capture=capture,
+        sleep=lambda s: sleeps.append(s),
+        timeout_s=5.0, poll_interval_s=0.1,
+    )
+    assert ok is True
+    assert len(sleeps) == 1
+
+
 def test_wait_until_ready_returns_false_on_timeout():
     """Marker never appears — function returns False after the deadline.
     Uses a fake clock so the test doesn't actually sleep through 20s."""
@@ -191,3 +232,102 @@ def test_wake_returns_false_on_timeout():
         timeout_s=1.0, poll_interval_s=0.1,
     )
     assert ok is False
+
+
+def test_wait_until_ready_accepts_bypass_warning_with_literal_two():
+    target = tmux.Target("S", "manager")
+    capture = _capturer([
+        "WARNING...\n1. No, exit\n2. Yes, I accept\nEnter to confirm · Esc to cancel",
+        "bypass permissions on\n>",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _ClaudeFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == [("S:manager", "2")]
+    assert sent_keys == []
+
+
+def test_wait_until_ready_accepts_focus_cycled_bypass_warning():
+    target = tmux.Target("S", "manager")
+    capture = _capturer([
+        "Bypass Permissions mode\nYes, I accept\nEnter to confirm\n"
+        "shift+tab to cycle",
+        "bypass permissions on\n>",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _ClaudeFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == []
+    assert sent_keys == [("S:manager", ("BTab", "Enter"))]
+
+
+def test_wait_until_ready_keeps_existing_codex_model_on_upgrade_prompt():
+    target = tmux.Target("S", "worker_frontend")
+    capture = _capturer([
+        "Introducing GPT-5.4\n"
+        "› 1. Try new model\n"
+        "  2. Use existing model\n",
+        "gpt-5.3-codex high · ~/Project/work-assistant-team",
+    ])
+    sent_text = []
+    sent_keys = []
+    with __import__("contextlib").ExitStack() as stack:
+        from helpers import attr_patch
+        stack.enter_context(attr_patch(
+            tmux,
+            send_text=lambda t, text, run=None: sent_text.append((str(t), text)) or True,
+            send_keys=lambda t, *keys, run=None: sent_keys.append((str(t), keys)) or True,
+        ))
+        ok = wake.wait_until_ready(
+            target, _CodexFake(), capture=capture,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert sent_text == []
+    assert sent_keys == [("S:worker_frontend", ("Down", "Enter"))]
+
+
+def test_wake_bootstraps_claude_home_before_first_lazy_spawn():
+    target = tmux.Target("S", "worker_research")
+    capture = _capturer(["$ ", "bypass permissions on\n>"])
+    spawn_calls = []
+    bootstrapped = []
+    with attr_patch(
+        __import__("claudeteam.runtime.lifecycle", fromlist=["_ensure_claude_agent_home"]),
+        _ensure_claude_agent_home=lambda agent: bootstrapped.append(agent),
+    ):
+        ok = wake.wake_if_dormant(
+            target, _ClaudeFake(), spawn_cmd="claude",
+            capture=capture,
+            spawn=lambda t, c: spawn_calls.append(c) or True,
+            sleep=lambda s: None,
+            timeout_s=5.0, poll_interval_s=0.1,
+        )
+    assert ok is True
+    assert bootstrapped == ["worker_research"]
+    assert spawn_calls == ["claude"]

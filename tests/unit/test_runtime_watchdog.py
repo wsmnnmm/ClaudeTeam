@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import signal
+import sys
 from pathlib import Path
 
 from helpers import isolated_env
 from claudeteam.runtime.watchdog import (
+    NetworkStatus,
     ProcessSpec,
     ProcessState,
+    check_network,
     default_specs,
     is_alive,
     list_orphan_pids,
@@ -464,7 +467,7 @@ def test_default_specs_includes_router_pointing_at_state_dir():
         assert any(s.name == "router" for s in specs)
         router = next(s for s in specs if s.name == "router")
         assert str(router.pid_file).startswith(str(tmp))
-        assert router.spawn_cmd == ["claudeteam", "router"]
+        assert router.spawn_cmd == [sys.executable, "-m", "claudeteam.cli", "router"]
         # Round-65: router spec ships with orphan-reap markers so the
         # watchdog reaps stale lark-cli +subscribe processes left by a
         # SIGKILL'd predecessor before respawning.
@@ -507,10 +510,52 @@ def test_all_known_specs_includes_both_router_and_watchdog():
         # Both pid files live under the isolated state_dir
         for s in specs:
             assert str(s.pid_file).startswith(str(tmp))
-        # spawn_cmd shape is ["claudeteam", <name>]
+        # spawn_cmd shape is [sys.executable, "-m", "claudeteam.cli", <name>]
         for s in specs:
-            assert s.spawn_cmd == ["claudeteam", s.name]
+            assert s.spawn_cmd == [sys.executable, "-m", "claudeteam.cli", s.name]
         # Both expect the "claudeteam" cmdline marker (defends against
         # PID reuse — see ProcessSpec.expected_cmdline)
         for s in specs:
             assert s.expected_cmdline == "claudeteam"
+
+
+# ── network probe ──────────────────────────────────────────────────
+
+
+def test_check_network_localhost_dns_ok():
+    """DNS for localhost always resolves; TCP to an unlikely port fails."""
+    status = check_network(targets=[("localhost", 19999)], timeout=1.0)
+    # DNS ok but TCP fails → not ok
+    assert not status.ok
+    assert any("TCP" in f for f in status.failures)
+
+
+def test_check_network_dns_failure():
+    status = check_network(targets=[("this-host-definitely-does-not-exist.invalid", 443)])
+    assert not status.ok
+    assert any("DNS" in f for f in status.failures)
+
+
+def test_check_network_empty_targets_returns_ok():
+    status = check_network(targets=[])
+    assert status.ok
+
+
+def test_check_network_multiple_targets_reports_all_failures():
+    status = check_network(targets=[
+        ("this-host-definitely-does-not-exist.invalid", 443),
+        ("another-bogus-host.invalid", 443),
+    ])
+    assert not status.ok
+    assert len(status.failures) == 2
+
+
+def test_check_network_mixed_results():
+    """DNS failure on first, success on second — overall not ok."""
+    # Two bogus hosts — both should fail DNS, giving 2 failures
+    status = check_network(targets=[
+        ("this-host-definitely-does-not-exist.invalid", 443),
+        ("another-bogus-host.invalid", 443),
+    ])
+    assert not status.ok
+    assert len(status.failures) == 2

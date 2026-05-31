@@ -54,9 +54,36 @@ def router_seen_file() -> Path:
 def config_file() -> Path:
     """Path to the unified TOML config file (replaces team.json +
     runtime_config.json). Override via CLAUDETEAM_CONFIG_FILE env, else
-    looks for `./claudeteam.toml` relative to cwd."""
+    uses the state-scoped config pointer / inferred team root before
+    falling back to `./claudeteam.toml` relative to cwd.
+
+    If an agent pane inherited only CLAUDETEAM_STATE_DIR, prefer the
+    config path recorded in that state dir, then infer the team root from
+    the common `/team/state` layout. This keeps shell-outs such as
+    `claudeteam say` pointed at the right Feishu chat even when the pane's
+    cwd drifted to another repo that also has a `claudeteam.toml`.
+    """
     from claudeteam.util import env_path
-    return env_path("CLAUDETEAM_CONFIG_FILE") or Path.cwd() / "claudeteam.toml"
+    explicit = env_path("CLAUDETEAM_CONFIG_FILE")
+    if explicit:
+        return explicit
+    state = env_path("CLAUDETEAM_STATE_DIR")
+    if state:
+        pointer = state / "config-file.path"
+        try:
+            recorded = pointer.read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded = ""
+        if recorded:
+            return Path(recorded).expanduser()
+    if state and state.name == "state":
+        inferred = state.parent / "claudeteam.toml"
+        if inferred.exists():
+            return inferred
+    cwd_config = Path.cwd() / "claudeteam.toml"
+    if cwd_config.exists():
+        return cwd_config
+    return cwd_config
 
 
 def watchdog_pid_file() -> Path:
@@ -65,6 +92,28 @@ def watchdog_pid_file() -> Path:
 
 def watchdog_log_file() -> Path:
     return state_file("watchdog.log")
+
+
+def codex_home_dir(agent: str | None = None) -> Path:
+    """Project-scoped Codex home used by codex-cli workers.
+
+    When multiple codex agents run in the same team, each gets its own
+    isolated Codex home so provider config, auth and reasoning effort do
+    not overwrite each other.
+    """
+    if agent:
+        return state_dir() / "codex-home" / agent
+    return state_dir() / "codex-home"
+
+
+def codex_config_file(agent: str | None = None) -> Path:
+    """Project-scoped Codex config file."""
+    return codex_home_dir(agent) / "config.toml"
+
+
+def codex_auth_file(agent: str | None = None) -> Path:
+    """Project-scoped Codex auth file."""
+    return codex_home_dir(agent) / "auth.json"
 
 
 def ensure_state_dir() -> Path:

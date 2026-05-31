@@ -35,11 +35,52 @@ from claudeteam.util import env_path, env_str, read_json, write_json
 
 
 def team_file() -> Path:
-    return env_path("CLAUDETEAM_TEAM_FILE") or Path.cwd() / "team.json"
+    explicit = env_path("CLAUDETEAM_TEAM_FILE")
+    if explicit:
+        return explicit
+    cwd_file = Path.cwd() / "team.json"
+    if cwd_file.exists():
+        return cwd_file
+    state = env_path("CLAUDETEAM_STATE_DIR")
+    if state and state.name == "state":
+        inferred = state.parent / "team.json"
+        if inferred.exists():
+            return inferred
+    return cwd_file
 
 
 def runtime_config_file() -> Path:
-    return env_path("CLAUDETEAM_RUNTIME_CONFIG") or Path.cwd() / "runtime_config.json"
+    explicit = env_path("CLAUDETEAM_RUNTIME_CONFIG")
+    if explicit:
+        return explicit
+    cwd_file = Path.cwd() / "runtime_config.json"
+    if cwd_file.exists():
+        return cwd_file
+    state = env_path("CLAUDETEAM_STATE_DIR")
+    if state and state.name == "state":
+        inferred = state.parent / "runtime_config.json"
+        if inferred.exists():
+            return inferred
+    return cwd_file
+
+
+def claude_code_settings_file() -> Path:
+    """Project-scoped Claude Code settings file.
+
+    Mirrors the user's ccSwitch-style JSON:
+
+        {
+          "env": {"ANTHROPIC_AUTH_TOKEN": "...", ...},
+          "effortLevel": "max"
+        }
+
+    Keep it under state/ by default so operators can persist proxy keys
+    locally without touching global config or checking secrets into git.
+    """
+    if path := env_path("CLAUDETEAM_CLAUDE_CODE_SETTINGS_FILE"):
+        return path
+    from claudeteam.runtime import paths
+    return paths.state_dir() / "ccswitch.json"
 
 
 # ── team.json ────────────────────────────────────────────────────
@@ -118,6 +159,22 @@ def agent_model(agent: str) -> str:
             or load_team().get("default_model", "opus"))
 
 
+def agent_provider_preset(agent: str) -> str:
+    """Optional named provider preset for this agent.
+
+    When set in `claudeteam.toml` as:
+
+        [team.agents.worker_x]
+        provider_preset = "cheap-translate"
+
+    runtime/provider routing can give this agent a different
+    base_url/key/model family than the rest of the team.
+    """
+    cfg = agent_config(agent)
+    raw = cfg.get("provider_preset")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 # ── runtime_config.json ──────────────────────────────────────────
 
 
@@ -127,6 +184,11 @@ def load_runtime_config() -> dict:
 
 def save_runtime_config(cfg: dict) -> None:
     write_json(runtime_config_file(), cfg)
+
+
+def load_claude_code_settings() -> dict:
+    return _read_json_lenient(
+        claude_code_settings_file(), {}, "claude code settings")
 
 
 def chat_id() -> str:
@@ -140,11 +202,16 @@ def chat_id() -> str:
 
 
 def lark_profile() -> str:
-    """Resolve the lark-cli profile name. Priority: env > toml > legacy json."""
-    if env := env_str("LARK_CLI_PROFILE"):
-        return env
+    """Resolve the lark-cli profile name. Priority: toml > env > legacy json.
+
+    Team-local toml is the authority when present. A stale or ad-hoc
+    `LARK_CLI_PROFILE` in a pane can otherwise make one team's manager post
+    through another team's bot.
+    """
     from claudeteam.runtime import tunables
     toml_val = tunables.load().get("lark_profile")
     if toml_val is not None:
         return str(toml_val)
+    if env := env_str("LARK_CLI_PROFILE"):
+        return env
     return load_runtime_config().get("lark_profile", "")

@@ -21,10 +21,10 @@ def test_install_hooks_creates_md_per_command():
         # Round-94 added remember/recall, round-104 added peek to keep
         # slash dispatch consistent with the manager identity v2's 巡视
         # cadence (was hard-coded raw tmux capture-pane).
-        for name in ("inbox", "team", "status", "say", "task", "health",
+        for name in ("inbox", "team", "status", "say", "task", "topic", "health",
                      "remember", "recall", "peek"):
             assert (cmds_dir / f"{name}.md").exists(), f"missing {name}.md"
-        assert "wrote 9 slash command" in out
+        assert "wrote 10 slash command" in out
 
 
 def test_install_hooks_peek_md_documents_5min_cadence():
@@ -41,6 +41,15 @@ def test_install_hooks_peek_md_documents_5min_cadence():
         # Default N + max documented (matches command's clamp)
         assert "30" in body
         assert "2000" in body
+
+
+def test_install_hooks_topic_md_documents_capsule_lookup():
+    with tempfile.TemporaryDirectory() as tmp:
+        run_cli(["install-hooks", tmp])
+        body = (Path(tmp) / ".claude" / "commands" / "topic.md").read_text(
+            encoding="utf-8")
+        assert "claudeteam topic" in body
+        assert "topic capsule" in body
 
 
 def test_install_hooks_remember_md_documents_kind_vocabulary():
@@ -69,7 +78,8 @@ def test_install_hooks_say_md_documents_card_only_after_R169():
         assert "v2 card" in body
         assert "--no-card" not in body  # R169: escape hatch gone
         # Invocation form documented
-        assert "claudeteam say <your-name>" in body
+        assert "claudeteam say <your-name> - --to user" in body
+        assert "cat <<'EOF'" in body
         # Threading caveat surfaced
         assert "thread" in body.lower() or "ignored" in body.lower()
 

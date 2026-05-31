@@ -59,7 +59,8 @@ def _locked():
 
 
 def append_message(to: str, frm: str, content: str, *,
-                   priority: str = "中", task_id: str = "") -> str:
+                   priority: str = "中", task_id: str = "",
+                   artifact: str = "") -> str:
     """Append a message to the inbox; return its local id."""
     with _locked():
         path = _inbox_file()
@@ -72,6 +73,7 @@ def append_message(to: str, frm: str, content: str, *,
             "content": str(content or ""),
             "priority": priority,
             "task_id": task_id,
+            "artifact": str(artifact or ""),
             "created_at": now_ms(),
             "read": False,
             "read_at": None,
@@ -85,7 +87,11 @@ def list_messages(agent: str, *, unread_only: bool = False) -> list[dict]:
     rows = [m for m in data.get("messages", []) if m.get("to") == agent]
     if unread_only:
         rows = [m for m in rows if not m.get("read")]
-    return sorted(rows, key=lambda m: m.get("created_at", 0))
+    return sorted(
+        rows,
+        key=lambda m: (_priority_rank(m.get("priority")),
+                       m.get("created_at", 0)),
+    )
 
 
 def mark_read(local_id: str) -> bool:
@@ -99,6 +105,109 @@ def mark_read(local_id: str) -> bool:
                 write_json(path, data)
                 return True
     return False
+
+
+def mark_first_response(local_id: str, *, response_message_id: str = "",
+                        elapsed_ms: int | None = None,
+                        response_contract: dict | None = None) -> bool:
+    """Mark that a boss-visible first response landed without closing inbox.
+
+    `read` still means the manager/agent completed the normal handling path.
+    First response is a separate SLA state: useful for watchdogs and audits,
+    but it must not make an unread boss message disappear from manager's queue.
+    """
+    with _locked():
+        path = _inbox_file()
+        data = read_json(path, {"messages": []})
+        for msg in data.get("messages", []):
+            if msg.get("local_id") == local_id:
+                msg["first_response_at"] = now_ms()
+                msg["first_response_message_id"] = str(response_message_id or "")
+                if elapsed_ms is not None:
+                    msg["first_response_elapsed_ms"] = int(elapsed_ms)
+                contract = _clean_response_contract(response_contract)
+                if contract:
+                    msg["first_response_contract"] = contract
+                write_json(path, data)
+                return True
+    return False
+
+
+def latest_unfulfilled_response_contract(agent: str = "manager", *,
+                                         max_age_ms: int | None = None) -> dict | None:
+    """Return the newest boss inbox row whose first-response contract is open."""
+    data = read_json(_inbox_file(), {"messages": []})
+    now = now_ms()
+    rows = []
+    for msg in data.get("messages", []):
+        if msg.get("to") != agent or msg.get("from") != "user":
+            continue
+        contract = _clean_response_contract(msg.get("first_response_contract"))
+        if not contract:
+            continue
+        if msg.get("first_response_contract_fulfilled_at"):
+            continue
+        if max_age_ms is not None:
+            try:
+                created_at = int(msg.get("created_at") or 0)
+            except (TypeError, ValueError):
+                created_at = 0
+            if created_at and now - created_at > max_age_ms:
+                continue
+        row = dict(msg)
+        row["first_response_contract"] = contract
+        rows.append(row)
+    if not rows:
+        return None
+    return sorted(rows, key=lambda m: m.get("created_at", 0))[-1]
+
+
+def mark_response_contract_fulfilled(local_id: str, *, ok: bool = True,
+                                     note: str = "",
+                                     response_message_id: str = "") -> bool:
+    """Mark a first-response contract as addressed by a later public reply."""
+    with _locked():
+        path = _inbox_file()
+        data = read_json(path, {"messages": []})
+        for msg in data.get("messages", []):
+            if msg.get("local_id") == local_id:
+                msg["first_response_contract_fulfilled_at"] = now_ms()
+                msg["first_response_contract_fulfilled_ok"] = bool(ok)
+                msg["first_response_contract_fulfilled_note"] = str(note or "")
+                msg["first_response_contract_fulfilled_message_id"] = str(response_message_id or "")
+                write_json(path, data)
+                return True
+    return False
+
+
+def _clean_response_contract(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    ctype = str(value.get("type") or "").strip()
+    next_step = " ".join(str(value.get("next_step") or "").strip().split())
+    if not ctype or not next_step:
+        return {}
+    return {"type": ctype, "next_step": next_step}
+
+
+def _priority_rank(priority: str) -> int:
+    return {"高": 0, "中": 1, "低": 2}.get(str(priority or ""), 1)
+
+
+def get_message(local_id: str) -> dict | None:
+    """Return one inbox row by local_id, else None.
+
+    Used by higher-level commands that need to remember / inspect what a
+    message contained after it was marked read. This is the missing link
+    for restart continuity: once an agent reads a task, the unread inbox
+    view goes empty, so callers need a direct lookup to persist the task
+    into durable memory before it disappears from the normal work queue.
+    """
+    data = read_json(_inbox_file(), {"messages": []})
+    for msg in data.get("messages", []):
+        if msg.get("local_id") == local_id:
+            return dict(msg)
+    return None
 
 
 # ── status ────────────────────────────────────────────────────────────

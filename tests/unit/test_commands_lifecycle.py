@@ -6,14 +6,21 @@ isolated_env(team=...) for the env / file fixture.
 from __future__ import annotations
 
 import contextlib
+import shlex
+from pathlib import Path
 
 from helpers import isolated_env, run_cli, tmux_patch
 from claudeteam.agents import identity
+from claudeteam.commands import up as up_cmd
 from claudeteam.store import local_facts
 
 
 def _isolated_team(team_data):
     return isolated_env(team=team_data)
+
+
+def _spawn_script_text(cmd: str) -> str:
+    return Path(shlex.split(cmd)[1]).read_text(encoding="utf-8")
 
 
 # All ready-marker strings across every adapter. capture_pane returns this
@@ -23,7 +30,7 @@ def _isolated_team(team_data):
 # and a 3-agent test took 180s of pure idle sleep.
 _ALL_READY_MARKERS = (
     "bypass permissions on\n? for shortcuts\n"        # claude-code
-    "OpenAI Codex\npermissions: YOLO\n"                # codex-cli
+    "gpt-5.2 medium · /work\n"                         # codex-cli
     "Welcome to Kimi Code CLI\nSend /help for help\n"  # kimi-code
     ">\nType your request\n"                            # gemini-cli / qwen-code
 )
@@ -139,6 +146,34 @@ def test_start_refuses_when_session_already_running():
         assert "already running" in out
 
 
+def test_up_refreshes_stale_live_identity_for_running_session():
+    team = {"session": "S", "agents": {"manager": {
+        "cli": "claude-code",
+        "model": "opus",
+        "role": "团队主管",
+        "identity_profile": "slim",
+    }}}
+    injected = []
+    with _isolated_team(team):
+        path = identity.identity_path("manager")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# old full identity\n主管亲跑 vs 派 worker\n",
+                        encoding="utf-8")
+        with tmux_patch(
+            has_window=lambda target: str(target) == "S:manager",
+            inject=lambda target, text, submit_keys=("Enter",):
+                injected.append((str(target), text, submit_keys)) or True,
+        ):
+            up_cmd._refresh_stale_identities("S")
+        refreshed = path.read_text(encoding="utf-8")
+
+    assert len(injected) == 1
+    assert injected[0][0] == "S:manager"
+    assert "Manager 瘦身红线" in injected[0][1]
+    assert "Superpowers 工作流内核" in refreshed
+    assert "主管亲跑 vs 派 worker" not in refreshed
+
+
 def test_start_with_no_agents_returns_one():
     team = {"session": "S", "agents": {}}
     with _isolated_team(team), _fake_tmux():
@@ -158,9 +193,12 @@ def test_start_picks_correct_spawn_cmd_per_cli():
     with _isolated_team(team), _fake_tmux() as fake:
         run_cli(["start"])
         spawn_cmds = {c[1]: c[2] for c in fake["calls"] if c[0] == "spawn_agent"}
-        assert "claude --dangerously-skip-permissions" in spawn_cmds["T:w_cc"]
-        assert "codex" in spawn_cmds["T:w_codex"]
-        assert "--model gpt-5.5" in spawn_cmds["T:w_codex"]
+        cc_script = _spawn_script_text(spawn_cmds["T:w_cc"])
+        codex_script = _spawn_script_text(spawn_cmds["T:w_codex"])
+        assert "claude" in cc_script
+        assert "--dangerously-skip-permissions" in cc_script
+        assert "codex" in codex_script
+        assert "--model gpt-5.5" in codex_script
 
 
 def test_start_propagates_state_dir_into_pane_env():
@@ -172,11 +210,12 @@ def test_start_propagates_state_dir_into_pane_env():
     with _isolated_team(team) as tmp, _fake_tmux() as fake:
         run_cli(["start"])
         cmd = next(c[2] for c in fake["calls"] if c[0] == "spawn_agent")
+        script = _spawn_script_text(cmd)
         # State dir from isolated_env points under tmp/state
-        assert "CLAUDETEAM_STATE_DIR=" in cmd
-        assert str(tmp / "state") in cmd
+        assert "CLAUDETEAM_STATE_DIR=" in script
+        assert str(tmp / "state") in script
         # IS_SANDBOX=1 still there (claude-code adapter prefix)
-        assert "IS_SANDBOX=1" in cmd
+        assert "IS_SANDBOX=1" in script
 
 
 # ── hire ──────────────────────────────────────────────────────────
@@ -266,6 +305,24 @@ def test_fire_unknown_pane_marks_status_only():
         assert rc == 0
         assert "no pane in session" in out
         assert local_facts.get_status("x")["status"] == "已停止"
+
+
+def test_fire_help_prints_usage_without_mutating_status():
+    team = {"session": "S", "agents": {"manager": {}, "x": {}}}
+    with _isolated_team(team), _fake_tmux():
+        rc, out, _ = run_cli(["fire", "--help"])
+        assert rc == 0
+        assert "usage: claudeteam fire <agent>" in out
+        assert local_facts.get_status("--help") is None
+
+
+def test_fire_unknown_agent_returns_error_without_status():
+    team = {"session": "S", "agents": {"manager": {}, "x": {}}}
+    with _isolated_team(team), _fake_tmux():
+        rc, _, err = run_cli(["fire", "missing"])
+        assert rc == 1
+        assert "unknown agent: missing" in err
+        assert local_facts.get_status("missing") is None
 
 
 def test_fire_existing_pane_sends_ctrl_c_and_kills_window():

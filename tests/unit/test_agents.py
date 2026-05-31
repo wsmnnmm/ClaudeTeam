@@ -1,6 +1,7 @@
 """Tests for the CLI adapter registry + each adapter's spawn / markers contract."""
 from __future__ import annotations
 
+from helpers import env_patch, isolated_env
 from claudeteam.agents import get_adapter, known_clis
 from claudeteam.agents.base import CliAdapter
 from claudeteam.agents.claude_code import ClaudeCodeAdapter
@@ -66,13 +67,16 @@ def test_every_adapter_implements_required_methods():
 
 
 def test_default_submit_keys_are_enter_variants():
-    # base default lists Enter / C-m / C-j; ClaudeCode keeps it, Codex/Kimi prepend M-Enter
+    # base default lists Enter / C-m / C-j; Codex now leads with Enter
+    # because current Codex TUI submits that way; Kimi still needs M-Enter.
     cc = ClaudeCodeAdapter().submit_keys()
     assert cc[0] == "Enter"
-    for adapter in (CodexCliAdapter(), KimiCodeAdapter()):
-        keys = adapter.submit_keys()
-        assert keys[0] == "M-Enter"
-        assert "Enter" in keys
+    codex = CodexCliAdapter().submit_keys()
+    assert codex[0] == "Enter"
+    assert "M-Enter" in codex
+    kimi = KimiCodeAdapter().submit_keys()
+    assert kimi[0] == "M-Enter"
+    assert "Enter" in kimi
 
 
 # ── per-adapter spawn shape ──────────────────────────────────────
@@ -80,10 +84,93 @@ def test_default_submit_keys_are_enter_variants():
 
 def test_claude_code_spawn_is_dangerously_skip_permissions_with_model():
     cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet-4-6")
-    assert "claude --dangerously-skip-permissions" in cmd
+    assert "claude --permission-mode bypassPermissions --dangerously-skip-permissions" in cmd
+    assert "--strict-mcp-config" in cmd
+    assert "--mcp-config " in cmd
     assert "--model sonnet-4-6" in cmd
     assert "--name worker_cc" in cmd
     assert "IS_SANDBOX=1" in cmd
+
+
+def test_claude_rate_limit_markers_do_not_match_generic_dependency_logs():
+    markers = ClaudeCodeAdapter().rate_limit_markers()
+    assert "rate limit" not in markers
+    hf_log = "Please set a HF_TOKEN to enable higher rate limits and faster downloads."
+    assert not any(marker in hf_log for marker in markers)
+    claude_log = "Approaching usage limit. Try again at 5pm."
+    assert any(marker in claude_log for marker in markers)
+
+
+def test_claude_code_spawn_reads_project_local_ccswitch_settings():
+    team = {
+        "default_thinking": "medium",
+        "agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}},
+    }
+    with isolated_env(team=team) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-test","ANTHROPIC_BASE_URL":"https://proxy.example"},'
+            '"effortLevel":"max"}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet")
+    assert "ANTHROPIC_AUTH_TOKEN=sk-test" in cmd
+    assert "ANTHROPIC_BASE_URL=https://proxy.example" in cmd
+    assert "--effort max" in cmd
+
+
+def test_claude_code_spawn_skips_oauth_when_third_party_token_present():
+    team = {"agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}}}
+    with isolated_env(team=team) as tmp:
+        home = tmp / "state" / "agent-home" / "worker_cc" / ".claude"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".credentials.json").write_text(
+            '{"claudeAiOauth":{"accessToken":"official-token"}}',
+            encoding="utf-8",
+        )
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet")
+    assert "ANTHROPIC_AUTH_TOKEN=sk-third-party" in cmd
+    assert "CLAUDE_CODE_OAUTH_TOKEN=" not in cmd
+
+
+def test_claude_code_spawn_prefers_agent_provider_preset_over_global_settings():
+    team = {
+        "agents": {
+            "worker_translate": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        settings = tmp / "state" / "ccswitch.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-global","ANTHROPIC_BASE_URL":"https://global.example",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"global-sonnet"},"effortLevel":"high"}',
+            encoding="utf-8",
+        )
+        presets = tmp / "state" / "provider-presets.json"
+        presets.write_text(
+            '{"presets":{"cheap-translate":{'
+            '"ANTHROPIC_BASE_URL":"https://cm.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cm",'
+            '"ANTHROPIC_MODEL":"minimax-m25",'
+            '"ANTHROPIC_DEFAULT_SONNET_MODEL":"minimax-m25"}}}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_translate", "minimax-m25")
+    assert "ANTHROPIC_BASE_URL=https://cm.example/v1" in cmd
+    assert "ANTHROPIC_AUTH_TOKEN=sk-cm" in cmd
+    assert "global.example" not in cmd
 
 
 def test_codex_spawn_passes_openai_model_through():
@@ -118,7 +205,17 @@ def test_kimi_spawn_uses_yolo_flag_and_disable_update():
 def test_codex_busy_markers_include_boot_phase():
     """R-busy fix carries over: Booting MCP server must be a busy marker so
     inject_when_idle waits past the boot race."""
-    assert "Booting MCP server" in CodexCliAdapter().busy_markers()
+    markers = CodexCliAdapter().busy_markers()
+    assert "Booting MCP server" in markers
+    assert "Starting MCP servers" in markers
+
+
+def test_codex_ready_markers_include_reasoning_status_line():
+    """Codex may only leave the bottom status line in a compact capture,
+    e.g. 'gpt-5.5 xhigh · /work'. Health/lazy-wake must still see ready."""
+    markers = CodexCliAdapter().ready_markers()
+    assert " xhigh · " in markers
+    assert " default · " in markers
 
 
 def test_kimi_busy_markers_include_using_shell():
@@ -175,3 +272,19 @@ def test_ensure_workdir_trusted_idempotent_when_entry_exists():
         ensure_workdir_trusted(Path("/already/here"), config_path=cfg)
         # File unchanged
         assert cfg.read_text(encoding="utf-8") == original
+
+
+def test_ensure_workdir_trusted_honors_codex_home_env():
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents.codex_cli import ensure_workdir_trusted
+
+    with tempfile.TemporaryDirectory() as tmp:
+        codex_home = Path(tmp) / "codex-home"
+        with env_patch(CODEX_HOME=str(codex_home)):
+            ensure_workdir_trusted(Path("/env/workdir"))
+        cfg = codex_home / "config.toml"
+        assert cfg.exists()
+        text = cfg.read_text(encoding="utf-8")
+        assert '[projects."/env/workdir"]' in text
+        assert 'trust_level = "trusted"' in text

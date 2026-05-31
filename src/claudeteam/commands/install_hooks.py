@@ -1,23 +1,22 @@
-"""`claudeteam install-hooks` — drop slash-command markdowns for Claude Code agents.
+"""`claudeteam install-hooks` — drop slash-command markdowns + PreToolUse
+API cost guard for Claude Code agents.
 
-Writes `.claude/commands/{name}.md` files at cwd so any Claude Code
-pane spawned in this directory gets the matching `/<name>` slash
-command wired to the corresponding `claudeteam` subcommand. Live set:
+Writes `.claude/commands/{name}.md` files and `.claude/settings.json`
+with the PreToolUse API cost guard hook.
 
-    /inbox     /team      /status    /say     /task
-    /health    /remember  /recall    /peek
+Slash commands: /inbox /team /status /say /task /topic /health
+/remember /recall /peek
 
-Each markdown instructs the agent to first read its own identity.md
-(written by `agents/identity.py` on hire/start) so it knows which
-agent it is, then run the appropriate command. We can't bake the
-agent name into the file because all panes share one .claude/
-directory.
+PreToolUse hook: intercepts Bash calls → check-api-cost.sh → warns on
+paid API patterns, blocks when session budget exceeded.
 
 Idempotent — overwrites existing files. Codex and Kimi panes ignore
 .claude/ so this is harmless for them.
 """
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 from claudeteam.runtime import config, tmux
@@ -64,9 +63,19 @@ _COMMANDS: dict[str, str] = {
         "`{emoji} {your-name} · {your role}` title. Group chat reads as\n"
         "structured per-role updates rather than raw text.\n"
         "\n"
-        "    claudeteam say <your-name> \"【报道】当前状态：在线 ✅，正在做 X\"\n"
-        "    claudeteam say <your-name> \"收到\"\n"
-        "    claudeteam say <your-name> \"完工：登录页 /app/login.html 已交付\"\n"
+        "Use stdin form so shell quoting cannot rewrite Markdown, URLs,\n"
+        "quotes, backticks, `$`, or backslashes before `say` receives them:\n"
+        "\n"
+        "```bash\n"
+        "cat <<'EOF' | claudeteam say <your-name> - --to user\n"
+        "【报道】当前状态：在线，正在做 X\n"
+        "EOF\n"
+        "printf '%s\\n' '收到' | claudeteam say <your-name> - --to user\n"
+        "```\n"
+        "\n"
+        "`say` does not accept internal task flags. Do not pass `--task-id`,\n"
+        "`--artifact`, or `--done`; if useful, mention task id/artifact inside\n"
+        "a human-readable body as an audit note.\n"
         "\n"
         "Cards don't thread (`--reply <id>` is silently ignored).\n"
     ),
@@ -75,6 +84,14 @@ _COMMANDS: dict[str, str] = {
         "- `claudeteam task list` to see open work\n"
         "- `claudeteam task create <assignee> <title>` to add\n"
         "- `claudeteam task done <T-id>` when finished\n"
+    ),
+    "topic": (
+        "Run `claudeteam topic` to inspect the current conversation topic. "
+        "Use `claudeteam topic show [name-or-clear-term]` before answering "
+        "historical or topic-switching questions; clear partial terms such as "
+        "`工作`, `bug`, or `T-164` can match an existing topic. Use "
+        "`claudeteam topic note <one-line fact>` to keep the topic capsule "
+        "short and recoverable.\n"
     ),
     "health": (
         "Run `claudeteam health` and summarize: any red checks? any agent with "
@@ -110,7 +127,7 @@ _COMMANDS: dict[str, str] = {
 }
 
 # Every command except `health` refers to <your-name>; `health` is name-agnostic.
-_NAME_AGNOSTIC = {"health"}
+_NAME_AGNOSTIC = {"health", "topic"}
 
 
 def _full_body(name: str) -> str:
@@ -133,20 +150,120 @@ def _write_command_files(target_dir: Path) -> tuple[int, int]:
     return created, overwritten
 
 
+def _find_hook_script() -> str | None:
+    """Find check-api-cost.sh in the repo or installed location."""
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "check-api-cost.sh",
+        Path("/srv/ai/ClaudeTeam/scripts/check-api-cost.sh"),
+        Path("/Users/wsm/Project/ClaudeTeam/scripts/check-api-cost.sh"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _write_cost_guard_hook(claude_dir: Path) -> bool:
+    """Write .claude/settings.json with the PreToolUse API cost guard hook.
+
+    If settings.json already exists, merge the hook config into it.
+    Returns True if the hook was newly added.
+    """
+    hook_script = _find_hook_script()
+    if not hook_script:
+        return False
+
+    settings_path = claude_dir / "settings.json"
+    existing = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    cost_guard_hook = {
+        "matcher": "Bash",
+        "hooks": [{
+            "type": "command",
+            "command": f"bash {hook_script}",
+        }],
+    }
+
+    hooks = existing.get("hooks", {})
+    pretool = hooks.get("PreToolUse", [])
+    # Check if cost guard is already registered
+    for entry in pretool:
+        if isinstance(entry, dict) and "check-api-cost" in str(entry.get("command", "")):
+            return False  # already installed
+
+    pretool.append(cost_guard_hook)
+    hooks["PreToolUse"] = pretool
+    existing["hooks"] = hooks
+
+    settings_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n")
+    return True
+
+
+def _remove_cost_guard_hook(claude_dir: Path) -> bool:
+    """Remove the API cost guard from .claude/settings.json. Returns True if removed."""
+    settings_path = claude_dir / "settings.json"
+    if not settings_path.exists():
+        return False
+    try:
+        existing = json.loads(settings_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    hooks = existing.get("hooks", {})
+    pretool = hooks.get("PreToolUse", [])
+    new_pretool = [
+        e for e in pretool
+        if not (isinstance(e, dict) and "check-api-cost" in str(e.get("command", "")))
+    ]
+    if len(new_pretool) == len(pretool):
+        return False
+
+    hooks["PreToolUse"] = new_pretool
+    if not new_pretool:
+        del hooks["PreToolUse"]
+    if not hooks:
+        del existing["hooks"]
+
+    settings_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n")
+    return True
+
+
 def main(argv: list[str]) -> int:
     rest = list(argv)
     if maybe_print_help(rest, USAGE):
         return 0
+    no_cost_guard = False
+    if "--no-cost-guard" in rest:
+        rest.remove("--no-cost-guard")
+        no_cost_guard = True
     if len(rest) > 1:
         return usage_error(USAGE)
 
     base = Path(rest[0]) if rest else Path.cwd()
-    target = base / ".claude" / "commands"
+    claude_dir = base / ".claude"
+    target = claude_dir / "commands"
     created, overwritten = _write_command_files(target)
     total = created + overwritten
     print(f"✅ wrote {total} slash command(s) to {target}")
     if overwritten:
         print(f"   ({overwritten} overwritten, {created} new)")
+
+    if not no_cost_guard:
+        added = _write_cost_guard_hook(claude_dir)
+        if added:
+            print(f"🛡️  API cost guard hook installed → {claude_dir / 'settings.json'}")
+        else:
+            script = _find_hook_script()
+            if script:
+                print(f"🛡️  API cost guard hook already configured")
+            else:
+                print(f"⚠️  check-api-cost.sh not found; skipping cost guard hook")
+
     print("\nClaude Code panes spawned in this directory now respond to:")
     for name in sorted(_COMMANDS):
         print(f"  /{name}")

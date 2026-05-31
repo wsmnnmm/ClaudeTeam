@@ -8,11 +8,12 @@ from claudeteam.feishu.cards import (
 
 def test_simple_card_emits_v2_schema_shape():
     """R159: card v2 schema — `schema:"2.0"`, `body.elements` list with a
-    single `tag:"markdown"` element. v1's `config.wide_screen_mode` and
-    nested `text.tag:"lark_md"` are gone; v2's markdown element renders
-    fenced code blocks + nested lists which v1 silently dropped."""
+    single `tag:"markdown"` element. Keep `config.wide_screen_mode` as a
+    compatibility hint for older Feishu clients; v2's markdown element
+    renders fenced code blocks + nested lists which v1 silently dropped."""
     card = simple_card("Hello", "**bold** body")
     assert card["schema"] == "2.0"
+    assert card["config"] == {"wide_screen_mode": True, "width_mode": "fill"}
     assert card["header"]["title"]["content"] == "Hello"
     assert card["header"]["title"]["tag"] == "plain_text"
     assert card["header"]["template"] == "blue"  # default
@@ -25,6 +26,11 @@ def test_simple_card_emits_v2_schema_shape():
 def test_simple_card_accepts_color_override():
     assert simple_card("X", "y", color="red")["header"]["template"] == "red"
     assert simple_card("X", "y", color="green")["header"]["template"] == "green"
+
+
+def test_simple_card_normalizes_visible_newline_escapes():
+    card = simple_card("X", r"line1\nline2")
+    assert card["body"]["elements"][0]["content"] == "line1\nline2"
 
 
 def test_simple_card_falls_back_to_blue_on_unknown_color():
@@ -79,6 +85,10 @@ def test_fenced_block_wraps_text_in_triple_backticks():
     # element content; an empty fence renders as a 1-line empty code
     # block, harmless)
     assert fenced_block("") == "```\n\n```"
+
+
+def test_fenced_block_normalizes_visible_newline_escapes():
+    assert fenced_block(r"alpha\nbeta") == "```\nalpha\nbeta\n```"
 
 
 # ── R166: rich card primitives (column_set + colored fonts) ─────
@@ -153,6 +163,7 @@ def test_rich_card_emits_v2_schema_with_body_elements():
     elements = [{"tag": "markdown", "content": "hi"}]
     card = rich_card("Title", elements, color="purple")
     assert card["schema"] == "2.0"
+    assert card["config"] == {"wide_screen_mode": True, "width_mode": "fill"}
     assert card["header"]["template"] == "purple"
     assert card["header"]["title"]["content"] == "Title"
     assert card["body"]["elements"] == elements

@@ -22,6 +22,23 @@ from claudeteam.agents.base import CliAdapter
 from claudeteam.runtime import tmux
 
 
+def _is_claude_adapter(adapter: CliAdapter) -> bool:
+    """Best-effort Claude adapter check used by lazy wake bootstrap.
+
+    Production adapters expose both a concrete class name
+    `ClaudeCodeAdapter` and `process_name()=="claude"`. Tests often use
+    light fake adapters that only model part of the interface, so we
+    treat either signal as sufficient instead of pinning the bootstrap
+    path to one exact class name.
+    """
+    if adapter.__class__.__name__ == "ClaudeCodeAdapter":
+        return True
+    try:
+        return bool(getattr(adapter, "process_name", lambda: "")() == "claude")
+    except Exception:
+        return False
+
+
 def _has_marker(target: tmux.Target, markers: list[str],
                 capture: Callable | None) -> bool:
     """Capture the pane (default tmux.capture_pane) and return True iff any
@@ -34,10 +51,24 @@ def _has_marker(target: tmux.Target, markers: list[str],
     return any(m in text for m in markers)
 
 
+def _busy_markers(adapter: CliAdapter) -> list[str]:
+    try:
+        return list(adapter.busy_markers())
+    except Exception:
+        return []
+
+
 def is_ready(target: tmux.Target, adapter: CliAdapter, *,
              capture: Callable | None = None) -> bool:
     """True if the pane already shows one of the adapter's ready markers."""
-    return _has_marker(target, adapter.ready_markers(), capture)
+    markers = adapter.ready_markers()
+    if not markers:
+        return False
+    capture = capture or tmux.capture_pane
+    text = capture(target, lines=80)
+    return any(m in text for m in markers) and not any(
+        m in text for m in _busy_markers(adapter)
+    )
 
 
 def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
@@ -63,6 +94,24 @@ _FIRST_LAUNCH_DIALOG_MARKERS = (
     "Choose an option:",                      # generic onboarding prompt
 )
 
+_BYPASS_WARNING_MARKERS = (
+    "1. No, exit",
+    "2. Yes, I accept",
+    "Enter to confirm · Esc to cancel",
+)
+
+_BYPASS_FOCUS_WARNING_MARKERS = (
+    "Yes, I accept",
+    "Enter to confirm",
+    "shift+tab to cycle",
+)
+
+_CODEX_MODEL_UPGRADE_MARKERS = (
+    "Introducing GPT-5.4",
+    "Try new model",
+    "Use existing model",
+)
+
 
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
@@ -76,12 +125,41 @@ def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
     gets accepted; the next dialog appears; we Enter again until the
     bypass-permissions ready marker shows."""
     ready_markers = adapter.ready_markers()
+    busy_markers = _busy_markers(adapter)
     deadline = now() + timeout_s
     last_dismiss_at = 0.0
     while now() < deadline:
         text = capture(target, lines=80)
-        if any(m in text for m in ready_markers):
+        if (any(m in text for m in ready_markers)
+                and not any(m in text for m in busy_markers)):
             return True
+        if all(m in text for m in _BYPASS_WARNING_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Claude's bypass warning defaults to "1. No, exit".
+                # Sending Enter here kills the pane before it ever reaches
+                # the real prompt. Sending literal "2" accepts and the pane
+                # proceeds straight into the normal prompt.
+                tmux.send_text(target, "2")
+                last_dismiss_at = t
+        elif all(m in text for m in _BYPASS_FOCUS_WARNING_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Some Claude 2.1.x builds render the bypass confirm as a
+                # focus-cycled button row instead of the numbered menu
+                # above. In that variant, back-tab selects the affirmative
+                # button and Enter confirms it.
+                tmux.send_keys(target, "BTab", "Enter")
+                last_dismiss_at = t
+        elif all(m in text for m in _CODEX_MODEL_UPGRADE_MARKERS):
+            t = now()
+            if t - last_dismiss_at >= 1.0:
+                # Codex can prompt to migrate gpt-5.3-codex sessions to
+                # gpt-5.4. ClaudeTeam has already chosen the model in team
+                # config, so automated workers should keep the requested
+                # model instead of accepting the highlighted upgrade.
+                tmux.send_keys(target, "Down", "Enter")
+                last_dismiss_at = t
         if any(m in text for m in _FIRST_LAUNCH_DIALOG_MARKERS):
             t = now()
             if t - last_dismiss_at >= 1.0:
@@ -140,6 +218,17 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
 
     if is_ready(target, adapter, capture=capture):
         return True  # already awake — caller already handled identity at start
+
+    # Lazy Claude panes need the same per-agent HOME/bootstrap files as the
+    # eager `start` path before the first spawn. Without this, the first
+    # on-demand wake can die on missing `managed-mcp.json`, and the wake
+    # nudge then falls through into the raw shell instead of the CLI.
+    if _is_claude_adapter(adapter):
+        try:
+            from claudeteam.runtime import lifecycle
+            lifecycle._ensure_claude_agent_home(target.window)
+        except Exception:
+            pass  # best-effort; spawn path below still reports failure cleanly
 
     if not spawn(target, spawn_cmd):
         return False

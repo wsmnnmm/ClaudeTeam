@@ -208,7 +208,8 @@ def test_collect_server_load_returns_full_data_shape():
     macOS host case where uptime/free aren't visible)."""
     run = _stub_run({})
     data = server_metrics.collect_server_load(
-        agent_set=frozenset(["manager"]), session="ContainerA", run=run)
+        agent_set=frozenset(["manager"]), session="ContainerA", run=run,
+        read_proc=_no_proc)
     assert set(data.keys()) == {"host", "containers", "agents", "alarms"}
     assert set(data["host"].keys()) == {"cpu", "mem", "disk"}
     # All None when run returns rc=1
@@ -236,7 +237,7 @@ def test_collect_server_load_sorts_agents_by_cpu_desc():
         return FakeProc(returncode=1)
     data = server_metrics.collect_server_load(
         agent_set=frozenset(["manager", "worker_cc"]),
-        session="ContainerA", run=stateful_run)
+        session="ContainerA", run=stateful_run, read_proc=_no_proc)
     cpus = [a["cpu"] for a in data["agents"]]
     assert cpus == sorted(cpus, reverse=True)
     assert data["agents"][0]["agent"] == "worker_cc"  # 25% > 5%

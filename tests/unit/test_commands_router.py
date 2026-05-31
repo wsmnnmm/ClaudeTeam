@@ -13,10 +13,14 @@ from __future__ import annotations
 
 from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.commands.router import (
+    _catchup_poll_interval_s,
     _build_subscribe_cmd,
     _load_seen_msg_ids,
+    _make_reply_context_resolver,
     _make_on_progress,
+    _run_catchup_once,
     _stale_event_threshold_s,
+    _watch_catchup_heartbeat,
     _watch_subscribe_health,
 )
 
@@ -69,6 +73,21 @@ def test_build_cmd_filters_to_im_message_receive():
     assert cmd[et_idx + 1] == "im.message.receive_v1"
 
 
+def test_build_cmd_includes_base_events_when_base_intake_enabled():
+    with isolated_env() as tmp:
+        (tmp / "claudeteam.toml").write_text(
+            "[base_intake]\n"
+            "enabled = true\n"
+            'event_types = ["drive.file.bitable_record_changed_v1"]\n',
+            encoding="utf-8",
+        )
+        cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
+
+    et_idx = cmd.index("--event-types")
+    assert cmd[et_idx + 1] == (
+        "im.message.receive_v1,drive.file.bitable_record_changed_v1")
+
+
 def test_build_cmd_uses_compact_quiet_bot_identity():
     """REGRESSION: --compact gets the JSON shape we parse; --quiet
     drops banner noise; --as bot uses the app's im:message scope
@@ -118,6 +137,203 @@ def test_main_returns_one_when_team_has_no_agents():
         rc, _, err = run_cli(["router"])
     assert rc == 1
     assert "no agents" in err
+
+
+def test_main_runs_catchup_before_subscribe_popen():
+    """Regression: running lark-cli history catchup while event +subscribe
+    is already connected can make the subscribe process exit immediately
+    on some Feishu profiles. Boot order must be catchup first, subscribe
+    second."""
+    from claudeteam.commands import router as _r
+
+    events = []
+
+    class FakeProc:
+        stdout = iter([])
+        def poll(self): return 0
+        def wait(self): return 0
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs): pass
+        def start(self): events.append("thread_start")
+
+    def fake_pending(*args, **kwargs):
+        events.append("catchup")
+        return []
+
+    def fake_popen(*args, **kwargs):
+        events.append("popen")
+        return FakeProc()
+
+    team = {"agents": {"manager": {"cli": "codex-cli"}}}
+    rc_cfg = {"chat_id": "oc_x", "lark_profile": "test-profile"}
+    with isolated_env(team=team, runtime_config=rc_cfg), \
+            attr_patch(_r, _build_subscribe_cmd=lambda profile: ["FAKE-SUBSCRIBE"]), \
+            attr_patch(_r.catchup, pending_lines=fake_pending), \
+            attr_patch(_r.subprocess, Popen=fake_popen), \
+            attr_patch(_r.threading, Thread=FakeThread), \
+            attr_patch(_r.signal, signal=lambda *a, **kw: None):
+        rc, out, err = run_cli(["router"])
+
+    assert rc == 0
+    assert err == ""
+    assert events[:2] == ["catchup", "popen"]
+    assert "router exited" in out
+
+
+# ── catchup heartbeat ─────────────────────────────────────────────
+
+
+def _flat_event_line(msg_id: str, text: str, *, chat_id: str = "oc_x") -> str:
+    import json
+    return json.dumps({
+        "chat_id": chat_id,
+        "content": json.dumps({"text": text}),
+        "message_id": msg_id,
+        "message_type": "text",
+        "sender_id": "ou_user",
+        "sender_type": "user",
+        "create_time": "1779192110784",
+    })
+
+
+def test_catchup_poll_interval_env_override():
+    with env_patch(CLAUDETEAM_ROUTER_CATCHUP_POLL_INTERVAL_S="0.5"):
+        assert _catchup_poll_interval_s() == 0.5
+
+
+def test_run_catchup_once_processes_pending_message():
+    from claudeteam.commands import router as _r
+
+    applied = []
+    line = _flat_event_line("om_catchup_1", "boss missed by subscribe")
+
+    def fake_pending(chat_id, **kwargs):
+        assert chat_id == "oc_x"
+        assert kwargs["profile"] == "prod"
+        return [line]
+
+    with isolated_env(), attr_patch(_r.catchup, pending_lines=fake_pending):
+        stats = _run_catchup_once(
+            "oc_x",
+            "prod",
+            {
+                "team_agents": ["manager"],
+                "chat_id": "oc_x",
+                "default_target": "manager",
+                "apply_fn": lambda decision: applied.append(decision),
+                "on_progress": lambda *a, **kw: None,
+                "seen_msg_ids": set(),
+            },
+            label="test catchup",
+        )
+
+    assert stats is not None
+    assert stats.handled == 1
+    assert applied[0].targets == ["manager"]
+    assert applied[0].text == "boss missed by subscribe"
+
+
+def test_reply_context_resolver_uses_local_first_response_log_when_history_misses():
+    """Replying to the manager's real-model first response should not depend
+    entirely on Feishu history list availability.
+    """
+    from claudeteam.commands import router as _r
+    from claudeteam.store import local_facts
+
+    with isolated_env(), attr_patch(_r._chat, list_recent=lambda *a, **kw: []):
+        local_facts.append_log(
+            "manager",
+            "first_response_sent",
+            "trace=msg_1; msg_id=om_child; elapsed_ms=900; "
+            "provider=anthropic; model=haiku; "
+            "response_message_id=om_parent_first; "
+            "contract={}; text=我刚才说的是先核验飞书 CLI 下载链路，再继续推进。",
+            ref="msg_1",
+        )
+        resolver = _make_reply_context_resolver("oc_x", "prod")
+        context = resolver({"reply_to": "om_parent_first"})
+
+    assert "om_parent_first" in context
+    assert "先核验飞书 CLI 下载链路" in context
+    assert "最近 50 条里未取到" not in context
+
+
+def test_reply_context_resolver_extracts_text_from_interactive_card_parent():
+    import json
+    from claudeteam.commands import router as _r
+    from claudeteam.feishu.cards import simple_card
+
+    parent_card = simple_card(
+        "manager · 团队主管",
+        "结论：飞书 CLI 下载已经恢复，可以继续推进。",
+    )
+    row = {
+        "message_id": "om_parent_card",
+        "msg_type": "interactive",
+        "content": json.dumps(parent_card, ensure_ascii=False),
+        "sender": {"id": "ou_bot", "sender_type": "app"},
+    }
+
+    with isolated_env(), attr_patch(_r._chat, list_recent=lambda *a, **kw: [row]):
+        resolver = _make_reply_context_resolver("oc_x", "prod")
+        context = resolver({"reply_to": "om_parent_card"})
+
+    assert "om_parent_card" in context
+    assert "飞书 CLI 下载已经恢复" in context
+    assert "父消息无可解析文本" not in context
+
+
+def test_reply_context_resolver_uses_root_id_candidate_when_reply_to_missing():
+    import json
+    from claudeteam.commands import router as _r
+
+    row = {
+        "message_id": "om_thread_root",
+        "msg_type": "text",
+        "content": json.dumps({"text": "父消息原文：MoneyPrinterTurbo 下载排查"}),
+        "sender": {"id": "ou_manager", "sender_type": "app"},
+    }
+    with isolated_env(), attr_patch(_r._chat, list_recent=lambda *a, **kw: [row]):
+        resolver = _make_reply_context_resolver("oc_x", "prod")
+        context = resolver({"root_id": "om_thread_root"})
+
+    assert "om_thread_root" in context
+    assert "MoneyPrinterTurbo 下载排查" in context
+
+
+def test_catchup_heartbeat_reconnects_after_handling_missed_message():
+    import threading, signal
+    from claudeteam.commands import router as _r
+
+    applied = []
+    sigterms = []
+    line = _flat_event_line("om_catchup_2", "late boss message")
+
+    with isolated_env(), \
+            env_patch(CLAUDETEAM_ROUTER_CATCHUP_POLL_INTERVAL_S="0.01",
+                      CLAUDETEAM_ROUTER_CATCHUP_MISS_RECONNECT_GRACE_S="0"), \
+            attr_patch(_r.catchup, pending_lines=lambda *a, **kw: [line]), \
+            attr_patch(_r.os, kill=lambda pid, sig: sigterms.append((pid, sig))):
+        _watch_catchup_heartbeat(
+            "oc_x",
+            "prod",
+            {
+                "team_agents": ["manager"],
+                "chat_id": "oc_x",
+                "default_target": "manager",
+                "apply_fn": lambda decision: applied.append(decision),
+                "on_progress": lambda *a, **kw: None,
+                "seen_msg_ids": set(),
+            },
+            threading.Event(),
+            [0.0],
+            [0.0],
+        )
+
+    assert len(applied) == 1
+    assert sigterms
+    assert sigterms[0][1] == signal.SIGTERM
 
 
 # ── help ────────────────────────────────────────────────────────
@@ -177,8 +393,10 @@ def test_stale_threshold_ignores_zero_or_negative():
 
 def test_make_on_progress_refreshes_timestamp_on_each_event():
     """Every successful (non-DROP) event should bump last_event_at[0]
-    so the watchdog's stale check sees fresh activity. DROP events don't
-    flow through process_lines' on_progress, so they don't refresh."""
+    so the watchdog's stale check sees fresh activity. The router's
+    catchup path may also call the same callback for dropped replayed
+    messages so it can advance the cursor without waiting for a routed
+    event."""
     from types import SimpleNamespace
     with isolated_env():
         last_event_at = [0.0]
