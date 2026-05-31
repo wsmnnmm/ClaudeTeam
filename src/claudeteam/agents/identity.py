@@ -1054,8 +1054,15 @@ def init_prompt(agent: str) -> str:
         cross_learnings_text = cross_learnings.render_for_prompt(limit=5)
     except Exception:
         pass
-    if recall or cross_learnings_text:
-        parts = [p for p in (recall, cross_learnings_text) if p]
+    incident_learnings_text = ""
+    try:
+        from claudeteam.runtime import incident_learning
+        incident_learnings_text = incident_learning.render_for_prompt(
+            limit=5, agent=agent)
+    except Exception:
+        pass
+    if recall or cross_learnings_text or incident_learnings_text:
+        parts = [p for p in (recall, cross_learnings_text, incident_learnings_text) if p]
         return f"{base}\n\n" + "\n\n".join(parts) + "\n\n继续之前未完成的工作；如已完成则确认并待命。"
     return base
 

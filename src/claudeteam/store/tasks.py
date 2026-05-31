@@ -96,6 +96,20 @@ def _save(data: dict) -> None:
     write_json(_file(), data)
 
 
+def _capture_artifact_incident(task: dict, missing: list[str]) -> None:
+    """L5 self-evolution: capture artifact-gate failure as an incident."""
+    try:
+        from claudeteam.runtime import incident_learning
+        incident = incident_learning.from_artifact_gate(
+            str(task.get("assignee") or ""),
+            str(task.get("id") or ""),
+            missing,
+        )
+        incident_learning.capture(incident)
+    except Exception:
+        pass
+
+
 def _clean_topic(topic: str) -> str:
     cleaned = str(topic or "").strip()
     while cleaned.startswith("#"):
@@ -196,12 +210,14 @@ def update(task_id: str, *, status: str | None = None,
                     incoming = str(artifact_path or "").strip()
                     resolved = incoming or existing
                     if not resolved:
+                        _capture_artifact_incident(task, ["artifact_path missing"])
                         raise ValueError(
                             f"task {task_id}: '已完成' requires artifact_path "
                             f"(evidence of completion). Set artifact_path or use "
                             f"_force=True to bypass."
                         )
                     if not _artifact_file_exists(resolved):
+                        _capture_artifact_incident(task, [resolved])
                         raise ValueError(
                             f"task {task_id}: artifact does not exist at "
                             f"{resolved}; provide a valid path or use "

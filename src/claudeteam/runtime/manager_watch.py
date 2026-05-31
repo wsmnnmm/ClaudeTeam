@@ -1017,6 +1017,17 @@ def sweep_first_output(*,
                 "count": int(prev.get("count") or 0) + 1,
             }
             notices.append(notice)
+            # L5 self-evolution: capture first_output failure as an incident
+            try:
+                from claudeteam.runtime import incident_learning
+                incident_learning.capture(
+                    incident_learning.from_first_output_gate(
+                        str(task.get("assignee") or ""), task_id,
+                        failure_reason,
+                        detail=f"manager_watch sweep_first_output: {failure_reason}",
+                    ))
+            except Exception:
+                pass
 
         for task_id in list(alerts):
             if task_id not in open_ids:

@@ -1065,6 +1065,13 @@ def main(argv: list[str]) -> int:
 
     quality_error = _boss_visible_quality_error(args.to, message, image=args.image)
     if quality_error:
+        # L5 self-evolution: capture quality guard block as an incident
+        try:
+            from claudeteam.runtime import incident_learning
+            incident_learning.capture(
+                incident_learning.from_quality_guard(args.agent, quality_error))
+        except Exception:
+            pass
         if _can_send_progress_fallback(args.agent, args.to, quality_error):
             fallback = _natural_progress_fallback(quality_error, image=args.image)
             fallback_error = _boss_visible_quality_error(

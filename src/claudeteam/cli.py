@@ -12,7 +12,7 @@ from typing import Callable
 
 from claudeteam.commands import (
     api_budget, init, send, cross_send, cross_track, cross_learnings,
-    inbox, read, status, log, team, workspace,
+    inbox, learnings, read, status, log, team, workspace,
     start, hire, fire, recycle, up, down, reset, reidentify, switch,
     say, router, watchdog, task, topic, remember, recall, forget, peek,
     health, fleet_health, cockpit_sync, cockpit_brief, founder_os,
@@ -66,6 +66,7 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
     ("supervision", [
         ("watchdog", watchdog.main),
         ("api-budget", api_budget.main),
+        ("learnings", learnings.main),
     ]),
     ("task tracking", [
         ("task", task.main),
