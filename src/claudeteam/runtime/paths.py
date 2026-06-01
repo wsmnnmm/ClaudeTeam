@@ -20,8 +20,28 @@ from claudeteam.util import env_path
 
 
 def state_dir() -> Path:
-    """Top-level directory for all runtime state."""
-    return env_path("CLAUDETEAM_STATE_DIR") or Path.home() / ".claudeteam"
+    """Top-level directory for all runtime state.
+
+    Resolution order:
+    1. $CLAUDETEAM_STATE_DIR env var
+    2. ``state_dir`` key from ``./claudeteam.toml`` (so each team repo can
+       isolate its own router, watchdog, and runtime state)
+    3. ``~/.claudeteam`` (legacy single-team fallback)
+    """
+    env = env_path("CLAUDETEAM_STATE_DIR")
+    if env:
+        return env
+    try:
+        cwd_toml = Path("claudeteam.toml")
+        if cwd_toml.exists():
+            import tomllib
+            data = tomllib.loads(cwd_toml.read_text(encoding="utf-8"))
+            configured = data.get("state_dir")
+            if configured:
+                return Path(str(configured)).expanduser()
+    except Exception:
+        pass
+    return Path.home() / ".claudeteam"
 
 
 def facts_dir() -> Path:
