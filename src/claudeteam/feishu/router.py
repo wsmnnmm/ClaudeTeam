@@ -102,13 +102,11 @@ def _is_mention_only(text: str, agents: set[str]) -> bool:
 
 
 
-# Card-title sender-extraction. Worker `claudeteam say` posts
-# interactive cards with title `{emoji} {agent} · {role}`; the
-# subscribe layer's text extractor embeds the card title at the
-# start of the extracted text. Match it here so we can attribute a
-# chat message to the originating worker even though the inbound
-# `sender_id` is the bot's open_id (one app, all agents share it).
-# Manager's own messages still get dropped to avoid self-loops.
+# Card-title sender-extraction. `claudeteam say` posts interactive
+# cards with title `{emoji} {agent} · {role}`; the subscribe layer's
+# text extractor embeds the card title at the start of the extracted
+# text. Match it here so bot-authored public cards can be identified
+# and dropped as public self-echoes instead of becoming fresh inbox work.
 _CARD_TITLE_AGENT_RE = re.compile(
     r"(?:^|<card title=\")[^\">\n]*?(?<![\w])([A-Za-z][A-Za-z0-9_\-]+)\s*·"
 )
@@ -116,9 +114,7 @@ _CARD_TITLE_AGENT_RE = re.compile(
 
 def _card_sender_agent(text: str, agents: set[str]) -> str:
     """Return the agent name parsed from a card-format `say` message,
-    or "" if not a recognizable card. Used by router to attribute
-    bot-sent messages to the originating worker so manager can see
-    them in inbox."""
+    or "" if not a recognizable card."""
     for agent in agents:
         if f"（{agent}）" in text or f"({agent})" in text:
             return agent
@@ -141,9 +137,9 @@ def classify_event(event: dict, *,
     `default_target` (manager). `@worker_cc` / `@team` no longer fan
     out at the router — manager is the sole interface to the boss
     and dispatches workers via `claudeteam send` herself. Bot-sent
-    interactive cards from non-manager workers also route to
-    manager's inbox so she can see worker chat replies and
-    summarize. Manager's own bot messages still drop (avoid loop).
+    interactive cards from workers are public self-echoes and also
+    drop. Workers that need manager action should use internal inbox
+    delivery, not a public card loopback.
 
     Args:
         event: dict with keys message_id, chat_id, sender_id, text, msg_type
@@ -162,7 +158,7 @@ def classify_event(event: dict, *,
           card sender is manager
             (or unidentifiable) → DROP "bot_self"
         sender == bot_id AND
-          card sender is worker → ROUTE to [manager] (manager sees worker say)
+          card sender is worker → DROP "bot_worker_public"
         empty text             → DROP "empty"
         mention-only wake ping → DROP "mention_only"
         text starts with `/`   → SLASH (operator command, zero-LLM dispatch)
@@ -186,11 +182,9 @@ def classify_event(event: dict, *,
 
     raw_text = (event.get("text") or "").strip()
 
-    # Bot self-talk: the app sent this. Default = drop. Exception:
-    # if the card was posted by a NON-manager worker (per card-title
-    # parse), route to manager's inbox so manager has visibility into
-    # worker chat replies. Self-loop guard: manager's own cards always
-    # drop here.
+    # Bot self-talk: the app sent this. Drop public cards from both
+    # manager and workers. Routing worker public cards back into manager
+    # inbox turns public replies into stale unread tasks.
     #
     # Bot detection: `sender_type in {"app", "app_id"}` covers both
     # live lark-cli `--compact` payloads (sender_type=app) and
@@ -202,8 +196,8 @@ def classify_event(event: dict, *,
     if is_bot:
         card_agent = _card_sender_agent(raw_text, agents) if raw_text else ""
         if card_agent and card_agent != default_target:
-            return Decision(Action.ROUTE, targets=[default_target],
-                            sender=card_agent, text=raw_text, **common)
+            return Decision(Action.DROP, sender=card_agent, text=raw_text,
+                            reason="bot_worker_public", **common)
         return Decision(Action.DROP, sender=card_agent, text=raw_text,
                         reason="bot_self", **common)
 

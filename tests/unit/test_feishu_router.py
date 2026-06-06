@@ -81,17 +81,15 @@ def test_drop_when_sender_id_type_is_app_id_from_catchup_path():
 
 
 def test_route_to_manager_when_worker_card_is_bot_sent():
-    """R174 exception still works under the new sender_type detection:
-    worker-sent cards (bot identity, but card title parses as worker_X)
-    route back to manager's inbox. Real card title shape includes ` · `
-    after the agent name, which `_card_sender_agent` keys on."""
+    """Worker-sent public cards are still parsed under sender_type=app,
+    but they drop as public self-echoes instead of becoming manager work."""
     d = classify_event(
         _ev(sender_id="cli_xxx", sender_type="app",
             text='<card title="💎 worker_cc · 内容策划">完工</card>'),
         team_agents=_AGENTS,
     )
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
+    assert d.action is Action.DROP
+    assert d.reason == "bot_worker_public"
     assert d.sender == "worker_cc"
 
 
@@ -330,32 +328,32 @@ def test_explicit_mention_with_broadcast_token_routes_to_manager():
     assert d.targets == ["manager"]
 
 
-# ── R174: bot-sent worker cards route to manager ────────────────
+# ── Bot-sent worker cards are public self-echoes ────────────────
 
 
-def test_worker_card_say_routes_to_manager_inbox():
+def test_worker_card_say_drops_public_self_echo():
     """Worker `claudeteam say` posts an interactive card with title
     `💎 worker_cc · ...`. sender_id == bot_id but the card-title
-    parser identifies the originating agent. R174: route to manager
-    so manager has visibility into worker chat replies."""
+    parser identifies the originating agent. Public worker cards should
+    not loop back into manager inbox as unread work."""
     card_text = '<card title="💎 worker_cc · 工程师">step 1 done</card>'
     d = classify_event(
         _ev(text=card_text, sender_id="bot_xxx"),
         team_agents=_AGENTS, bot_id="bot_xxx",
     )
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
+    assert d.action is Action.DROP
+    assert d.reason == "bot_worker_public"
     assert d.sender == "worker_cc"  # parsed from card title
 
 
-def test_worker_card_with_callsign_title_routes_to_manager_inbox():
+def test_worker_card_with_callsign_title_drops_public_self_echo():
     card_text = '<card title="💎 图谱 · 课程观点映射员（worker_cc）">step 1 done</card>'
     d = classify_event(
         _ev(text=card_text, sender_id="bot_xxx"),
         team_agents=_AGENTS, bot_id="bot_xxx",
     )
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
+    assert d.action is Action.DROP
+    assert d.reason == "bot_worker_public"
     assert d.sender == "worker_cc"
 
 
@@ -384,12 +382,13 @@ def test_unparseable_bot_message_drops():
 
 def test_worker_card_with_chinese_role_still_parsed():
     """The role text in the title is Chinese (`container-A 工程师`),
-    but the agent name `worker_cc` is what the parser keys on."""
+    but the agent name `worker_cc` is what the parser keys on before
+    dropping the public self-echo."""
     card_text = '<card title="💎 worker_cc · container-A 工程师">报道</card>'
     d = classify_event(
         _ev(text=card_text, sender_id="bot_xxx"),
         team_agents=_AGENTS, bot_id="bot_xxx",
     )
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
+    assert d.action is Action.DROP
+    assert d.reason == "bot_worker_public"
     assert d.sender == "worker_cc"
