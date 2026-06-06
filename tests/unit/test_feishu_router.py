@@ -348,6 +348,17 @@ def test_worker_card_say_routes_to_manager_inbox():
     assert d.sender == "worker_cc"  # parsed from card title
 
 
+def test_worker_card_with_callsign_title_routes_to_manager_inbox():
+    card_text = '<card title="💎 图谱 · 课程观点映射员（worker_cc）">step 1 done</card>'
+    d = classify_event(
+        _ev(text=card_text, sender_id="bot_xxx"),
+        team_agents=_AGENTS, bot_id="bot_xxx",
+    )
+    assert d.action is Action.ROUTE
+    assert d.targets == ["manager"]
+    assert d.sender == "worker_cc"
+
+
 def test_manager_own_card_say_still_drops_no_self_loop():
     """Manager's own card → drop (no self-route, otherwise infinite
     loop: manager say → manager inbox → manager re-acts → say again)."""

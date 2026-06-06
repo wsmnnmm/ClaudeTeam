@@ -852,6 +852,40 @@ def test_root_id_only_reply_metadata_still_triggers_context_lookup():
     assert "root 原消息摘要" in applied[0].reply_context
 
 
+def test_reply_context_resolver_runs_for_current_message_id_when_reply_field_missing():
+    """Live subscribe may omit reply_to even when history has it.
+
+    The resolver must still get the current message_id so it can look up the
+    child row through chat history and then derive the parent message.
+    """
+    line = json.dumps({
+        "event": {
+            "message": {
+                "message_id": "om_child_live_without_reply_to",
+                "chat_id": "oc_team",
+                "message_type": "text",
+                "content": json.dumps({"text": "@bot 团队内部能修吗？"}),
+            },
+            "sender": {"sender_id": {"open_id": "ou_user"}, "sender_type": "user"},
+        }
+    })
+    seen = []
+    applied = []
+    stats = process_lines(
+        [line],
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        reply_context_resolver=lambda event: (
+            seen.append(event.get("message_id")) or
+            "[飞书回复上下文]\n- 父消息摘要: 您是指修复哪一块？"
+        ),
+    )
+    assert stats.handled == 1
+    assert seen == ["om_child_live_without_reply_to"]
+    assert "修复哪一块" in applied[0].reply_context
+
+
 def test_on_line_received_fires_for_every_non_empty_line_including_drops():
     """Subscribe-aliveness ping fires per raw stdout line, BEFORE classify.
     Bot self-talk + dedup + bad-json all DROP, but subscribe is healthy

@@ -119,6 +119,9 @@ def _card_sender_agent(text: str, agents: set[str]) -> str:
     or "" if not a recognizable card. Used by router to attribute
     bot-sent messages to the originating worker so manager can see
     them in inbox."""
+    for agent in agents:
+        if f"（{agent}）" in text or f"({agent})" in text:
+            return agent
     for m in _CARD_TITLE_AGENT_RE.finditer(text):
         candidate = m.group(1)
         if candidate in agents:

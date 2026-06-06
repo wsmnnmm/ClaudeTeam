@@ -410,7 +410,7 @@ def process_lines(lines: Iterable[str], *,
                 stats.handled += handled
                 return
         event = _normalise(payload, resource_downloader=resource_downloader)
-        if (event.get("reply_to") or event.get("reply_lookup_ids")) and reply_context_resolver is not None:
+        if (event.get("reply_to") or event.get("reply_lookup_ids") or event.get("message_id")) and reply_context_resolver is not None:
             try:
                 event["reply_context"] = str(reply_context_resolver(event) or "")
             except Exception as e:

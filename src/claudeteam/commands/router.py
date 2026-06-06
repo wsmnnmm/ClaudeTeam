@@ -280,7 +280,10 @@ def _make_reply_context_resolver(chat_id: str, profile: str) -> Callable:
     def _resolver(event: dict) -> str:
         nonlocal loaded
         candidates = _reply_candidate_ids(event)
-        if not candidates:
+        child_id = str(
+            event.get("message_id") or event.get("msg_id") or ""
+        ).strip()
+        if not candidates and not child_id:
             return ""
         if not loaded:
             loaded = True
@@ -295,6 +298,10 @@ def _make_reply_context_resolver(chat_id: str, profile: str) -> Callable:
                     _load_recent_rows(not primary_as_user)
                 except Exception as e:
                     warn(f"⚠️  reply-context fallback fetch failed: {e}")
+        if not candidates and child_id and cache.get(child_id):
+            candidates = _reply_candidate_ids(cache[child_id])
+        if not candidates:
+            return ""
         row = next((cache.get(candidate) for candidate in candidates
                     if cache.get(candidate)), None)
         if row:

@@ -719,12 +719,16 @@ def _emoji_for(agent: str, cfg_emoji: str | None = None) -> str:
 
 
 def _agent_card_title(agent: str, cfg: dict) -> str:
-    """Card title format ported from `main`'s `_agent_card_title`:
-    `{emoji} {agent} · {role}` — English agent id + Chinese role at a
-    glance, no more bare `[agent]` brackets that boss flagged as too
-    bland."""
+    """Return the boss-visible sender title for a Feishu card.
+
+    Prefer the human callsign so the boss sees a named teammate first,
+    while keeping the stable agent id in parentheses for router attribution.
+    """
     emoji = _emoji_for(agent, cfg.get("emoji"))
     role = cfg.get("role") or "系统"
+    callsign = str(cfg.get("callsign") or "").strip()
+    if callsign:
+        return f"{emoji} {callsign} · {role}（{agent}）"
     return f"{emoji} {agent} · {role}"
 
 

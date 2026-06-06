@@ -302,6 +302,40 @@ def test_reply_context_resolver_uses_root_id_candidate_when_reply_to_missing():
     assert "MoneyPrinterTurbo 下载排查" in context
 
 
+def test_reply_context_resolver_derives_parent_from_child_message_id():
+    import json
+    from claudeteam.commands import router as _r
+    from claudeteam.feishu.cards import simple_card
+
+    parent_card = simple_card(
+        "manager · 学习知识图谱主管",
+        "您是指修复哪一块？确认后我立刻判断团队内部能不能闭环。",
+    )
+    rows = [
+        {
+            "message_id": "om_child_reply",
+            "msg_type": "text",
+            "content": json.dumps({"text": "@DeepSeaStudyTeam 团队内部能修吗？"}),
+            "reply_to": "om_parent_card",
+            "sender": {"id": "ou_boss", "name": "老板", "sender_type": "user"},
+        },
+        {
+            "message_id": "om_parent_card",
+            "msg_type": "interactive",
+            "content": json.dumps(parent_card, ensure_ascii=False),
+            "sender": {"id": "cli_bot", "sender_type": "app"},
+        },
+    ]
+
+    with isolated_env(), attr_patch(_r._chat, list_recent=lambda *a, **kw: rows):
+        resolver = _make_reply_context_resolver("oc_x", "prod")
+        context = resolver({"message_id": "om_child_reply"})
+
+    assert "om_parent_card" in context
+    assert "修复哪一块" in context
+    assert "团队内部能不能闭环" in context
+
+
 def test_catchup_heartbeat_reconnects_after_handling_missed_message():
     import threading, signal
     from claudeteam.commands import router as _r

@@ -7,6 +7,7 @@ import sys
 
 from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.feishu import chat as feishu_chat
+from claudeteam.commands import say as say_cmd
 from claudeteam.runtime import manager_action_guard
 from claudeteam.store import local_facts
 
@@ -56,9 +57,17 @@ def _fake_send():
         except (KeyError, IndexError, TypeError):
             pass
         # Synthesised legacy shape: `[<agent>] <body>`. Title format
-        # is `{emoji} {agent} · {role}` so we extract the agent slug.
+        # is `{emoji} {callsign} · {role}（{agent}）` so we extract
+        # the parenthesized agent slug first, then fall back to the
+        # older `{emoji} {agent} · {role}` shape.
         agent_slug = ""
+        if "（" in title and "）" in title:
+            agent_slug = title.rsplit("（", 1)[1].split("）", 1)[0]
+        elif "(" in title and ")" in title:
+            agent_slug = title.rsplit("(", 1)[1].split(")", 1)[0]
         for tok in title.split():
+            if agent_slug:
+                break
             if tok and not tok.startswith(("🎯", "💎", "🟦", "🟧", "🟩",
                                             "🟪", "⚙️")) and tok != "·":
                 agent_slug = tok
@@ -87,6 +96,16 @@ def _fake_send():
             send_text=fake_text,
             send_image=fake_image):
         yield state
+
+
+def test_card_title_prefers_callsign_and_keeps_agent_id_for_routing():
+    title = say_cmd._agent_card_title(
+        "manager",
+        {"callsign": "领航", "role": "学习知识图谱主管", "emoji": "🎯"},
+    )
+
+    assert title == "🎯 领航 · 学习知识图谱主管（manager）"
+    assert "🎯 manager ·" not in title
 
 
 
