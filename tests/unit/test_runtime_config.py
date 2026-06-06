@@ -163,6 +163,121 @@ def test_service_override_defaults_to_codex_agents_not_claude_code():
     assert "ANTHROPIC_BASE_URL" not in claude_env
 
 
+def test_service_override_derives_anthropic_aliases_from_openai_model():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "deepseek-primary",
+            },
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "deepseek-primary": {
+      "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+      "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+      "ANTHROPIC_MODEL": "deepseek-v4-pro",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-pro"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        providers.save_service_state({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-primary",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "pk-zy",
+                "OPENAI_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "OPENAI_API_KEY": "pk-zy",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_MODEL_PROVIDER": "custom",
+                "OPENAI_WIRE_API": "responses",
+            },
+        })
+        env = providers.provider_env_for_agent("manager")
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://zyapi.tuluo.top:8888/v1"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "pk-zy"
+    assert env["ANTHROPIC_MODEL"] == "gpt-5.5"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "gpt-5.5"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "gpt-5.5"
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "gpt-5.5"
+
+
+def test_agent_override_can_bypass_team_service_override():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "deepseek-primary",
+            },
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            """
+{
+  "presets": {
+    "deepseek-primary": {
+      "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+      "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+      "ANTHROPIC_MODEL": "deepseek-v4-pro"
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        (state / "agent-provider-overrides.json").write_text(
+            """
+{
+  "agents": {
+    "manager": {
+      "provider_preset": "deepseek-primary",
+      "bypass_service_override": true
+    }
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        providers.save_service_state({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-primary",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "pk-zy",
+                "OPENAI_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "OPENAI_API_KEY": "pk-zy",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_MODEL_PROVIDER": "custom",
+                "OPENAI_WIRE_API": "responses",
+            },
+        })
+        env = providers.provider_env_for_agent("manager")
+        codex_env = providers.codex_provider_env_for_agent("manager")
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-deepseek"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-pro"
+    assert codex_env["OPENAI_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert codex_env["OPENAI_API_KEY"] == "sk-deepseek"
+    assert codex_env["OPENAI_MODEL"] == "gpt-5.5"
+
+
 def test_effective_model_prefers_openai_model_for_codex_agent_preset():
     """A Codex preset with OPENAI_MODEL must drive the CLI --model value.
 
@@ -206,6 +321,87 @@ def test_effective_model_prefers_openai_model_for_codex_agent_preset():
 
     assert codex_model == "gpt-5.4"
     assert claude_model == "claude-sonnet-4"
+
+
+def test_global_openai_model_does_not_flatten_codex_requested_model_layering():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            },
+            "worker_fast": {
+                "cli": "codex-cli",
+                "model": "gpt-5.4-openai-compact",
+            },
+        }
+    }
+    with _team_env(team) as tmp:
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "ccswitch.json").write_text(
+            """
+{
+  "env": {
+    "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+    "OPENAI_API_KEY": "sk-deepseek",
+    "OPENAI_MODEL": "deepseek-v4-pro",
+    "OPENAI_MODEL_PROVIDER": "custom",
+    "OPENAI_WIRE_API": "responses"
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        manager_model = providers.effective_model_for_agent("manager")
+        worker_model = providers.effective_model_for_agent("worker_fast")
+        manager_env = providers.codex_provider_env_for_agent("manager")
+        worker_env = providers.codex_provider_env_for_agent("worker_fast")
+
+    assert manager_model == "gpt-5.5"
+    assert worker_model == "gpt-5.4-openai-compact"
+    assert manager_env["OPENAI_MODEL"] == "gpt-5.5"
+    assert worker_env["OPENAI_MODEL"] == "gpt-5.4-openai-compact"
+    assert manager_env["OPENAI_BASE_URL"] == "https://api.deepseek.com/v1"
+    assert worker_env["OPENAI_BASE_URL"] == "https://api.deepseek.com/v1"
+
+
+def test_service_override_keeps_codex_agent_requested_model_layering():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            },
+            "worker_fast": {
+                "cli": "codex-cli",
+                "model": "gpt-5.4-openai-compact",
+            },
+        }
+    }
+    with _team_env(team):
+        providers.save_service_state({
+            "active_service": "xiaoxin-primary",
+            "source_preset": "xiaoxin-primary",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://provider.example/v1",
+                "ANTHROPIC_AUTH_TOKEN": "sk-provider",
+                "OPENAI_BASE_URL": "https://provider.example/v1",
+                "OPENAI_API_KEY": "sk-provider",
+                "OPENAI_MODEL": "gpt-5.5-openai-compact",
+                "OPENAI_MODEL_PROVIDER": "custom",
+                "OPENAI_WIRE_API": "responses",
+            },
+        })
+        manager_model = providers.effective_model_for_agent("manager")
+        worker_model = providers.effective_model_for_agent("worker_fast")
+        manager_env = providers.codex_provider_env_for_agent("manager")
+        worker_env = providers.codex_provider_env_for_agent("worker_fast")
+
+    assert manager_model == "gpt-5.5"
+    assert worker_model == "gpt-5.4-openai-compact"
+    assert manager_env["OPENAI_MODEL"] == "gpt-5.5"
+    assert worker_env["OPENAI_MODEL"] == "gpt-5.4-openai-compact"
 
 
 # ── model resolution chain ──────────────────────────────────────

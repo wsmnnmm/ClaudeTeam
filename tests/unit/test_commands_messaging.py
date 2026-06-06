@@ -8,8 +8,11 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
+from unittest.mock import patch
 
 from helpers import isolated_env, run_cli
+from claudeteam.commands import send as send_cmd
+from claudeteam.commands import say as say_cmd
 from claudeteam.runtime import manager_action_guard, paths
 from claudeteam.store import local_facts, memory, tasks
 
@@ -31,6 +34,42 @@ def _write_ui_report(tmp, rel: str, *, preview: bool = True,
         (path.parent / "shot.png").write_bytes(b"fake image")
         lines.append("![screenshot](shot.png)")
     path.write_text("\n\n".join(lines), encoding="utf-8")
+
+
+def _write_worker_progress_policy(
+    tmp,
+    *,
+    must_send_contains: list[str] | None = None,
+    optional_contains: list[str] | None = None,
+    forbidden_exact: list[str] | None = None,
+    forbidden_contains: list[str] | None = None,
+) -> None:
+    from claudeteam.runtime import tunables
+
+    lines = ["[chat.publish.worker_progress]"]
+    if must_send_contains is not None:
+        lines.append(
+            "must_send_contains = "
+            + json.dumps(must_send_contains, ensure_ascii=False)
+        )
+    if optional_contains is not None:
+        lines.append(
+            "optional_contains = "
+            + json.dumps(optional_contains, ensure_ascii=False)
+        )
+    if forbidden_exact is not None:
+        lines.append(
+            "forbidden_exact = "
+            + json.dumps(forbidden_exact, ensure_ascii=False)
+        )
+    if forbidden_contains is not None:
+        lines.append(
+            "forbidden_contains = "
+            + json.dumps(forbidden_contains, ensure_ascii=False)
+        )
+    (Path(tmp) / "claudeteam.toml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8")
+    tunables.reset_cache()
 
 
 def test_send_writes_inbox_and_prints_local_id():
@@ -176,6 +215,88 @@ def test_worker_report_auto_binds_single_open_task():
         assert rows[0]["task_id"] == "T-1"
 
 
+def test_worker_low_signal_report_does_not_auto_broadcast():
+    broadcast_calls = []
+
+    def fake_say(argv):
+        broadcast_calls.append(list(argv))
+        return 0
+
+    with patch.object(say_cmd, "main", fake_say):
+        with isolated_env():
+            tasks.create("worker_cc", "existing", creator="manager")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "收到", "--task-id", "T-1",
+            ])
+            assert rc == 0, err
+            assert "task_id=T-1" in out
+            assert broadcast_calls == []
+
+
+def test_worker_progress_defaults_unmatched_text_to_optional():
+    assert send_cmd._worker_progress_broadcast_class(
+        message="排查中，仍在复现",
+        artifact="",
+        done=False,
+    ) == "optional"
+
+
+def test_worker_progress_policy_can_promote_custom_must_send():
+    with isolated_env() as tmp:
+        _write_worker_progress_policy(
+            tmp,
+            must_send_contains=["火线证据"],
+        )
+        assert send_cmd._worker_progress_broadcast_class(
+            message="火线证据已补齐，继续回归",
+            artifact="",
+            done=False,
+        ) == "must_send"
+
+
+def test_worker_progress_policy_can_demote_default_real_progress():
+    broadcast_calls = []
+
+    def fake_say(argv):
+        broadcast_calls.append(list(argv))
+        return 0
+
+    with patch.object(say_cmd, "main", fake_say):
+        with isolated_env() as tmp:
+            _write_worker_progress_policy(
+                tmp,
+                forbidden_exact=["已定位到 receipt 断点"],
+            )
+            tasks.create("worker_cc", "existing", creator="manager")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "已定位到 receipt 断点",
+                "--task-id", "T-1",
+            ])
+            assert rc == 0, err
+            assert "task_id=T-1" in out
+            assert broadcast_calls == []
+
+
+def test_worker_real_progress_report_auto_broadcasts():
+    broadcast_calls = []
+
+    def fake_say(argv):
+        broadcast_calls.append(list(argv))
+        return 0
+
+    with patch.object(say_cmd, "main", fake_say):
+        with isolated_env():
+            tasks.create("worker_cc", "existing", creator="manager")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "已定位到 receipt 断点", "--task-id", "T-1",
+        ])
+        assert rc == 0, err
+        assert "task_id=T-1" in out
+        assert len(broadcast_calls) == 1
+        assert broadcast_calls[0][0] == "worker_cc"
+        assert broadcast_calls[0][-2:] == ["--to", "user"]
+
+
 def test_worker_report_rejects_multiple_open_tasks_without_task_id():
     with isolated_env():
         tasks.create("worker_cc", "a", creator="manager")
@@ -204,6 +325,76 @@ def test_worker_done_requires_artifact_and_marks_waiting_review():
         assert tasks.get("T-1")["artifact_path"] == "artifacts/T-1/result.md"
 
 
+def test_worker_progress_auto_broadcasts_to_user():
+    broadcasts = []
+
+    def fake_broadcast(**payload):
+        broadcasts.append(dict(payload))
+
+    with patch(
+        "claudeteam.commands.send._maybe_broadcast_worker_progress",
+        fake_broadcast,
+    ):
+        with isolated_env():
+            tasks.create("worker_cc", "existing", creator="manager")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "已定位到 receipt 断点", "--task-id", "T-1",
+            ])
+            assert rc == 0, err
+            assert "task_id=T-1" in out
+            assert len(broadcasts) == 1
+            assert broadcasts[0]["frm"] == "worker_cc"
+            assert broadcasts[0]["to"] == "manager"
+            assert broadcasts[0]["task_id"] == "T-1"
+            assert broadcasts[0]["done"] is False
+
+
+def test_worker_done_auto_broadcasts_waiting_review():
+    broadcasts = []
+
+    def fake_broadcast(**payload):
+        broadcasts.append(dict(payload))
+
+    with patch(
+        "claudeteam.commands.send._maybe_broadcast_worker_progress",
+        fake_broadcast,
+    ):
+        with isolated_env() as tmp:
+            tasks.create("worker_cc", "existing", creator="manager")
+            _write_artifact(tmp, "artifacts/T-1/result.md")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "fix ready",
+                "--done", "--artifact", "artifacts/T-1/result.md",
+            ])
+            assert rc == 0, err
+            assert "status=待验收" in out
+            assert len(broadcasts) == 1
+            assert broadcasts[0]["done"] is True
+            assert broadcasts[0]["artifact"] == "artifacts/T-1/result.md"
+
+
+def test_worker_must_send_progress_falls_back_to_manager_when_worker_lane_silenced():
+    broadcast_calls = []
+
+    def fake_say(argv):
+        broadcast_calls.append(list(argv))
+        if argv[0] == "worker_cc":
+            print("silenced by chat.publish.worker_to_user")
+        return 0
+
+    with patch.object(say_cmd, "main", fake_say):
+        with isolated_env() as tmp:
+            tasks.create("worker_cc", "existing", creator="manager")
+            _write_artifact(tmp, "artifacts/T-1/result.md")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "fix ready",
+                "--done", "--artifact", "artifacts/T-1/result.md",
+            ])
+            assert rc == 0, err
+            assert "status=待验收" in out
+            assert [call[0] for call in broadcast_calls] == ["worker_cc", "manager"]
+
+
 def test_worker_can_handoff_manager_owned_delegated_task():
     with isolated_env() as tmp:
         tid = tasks.create("manager", "boss question", creator="user")
@@ -223,14 +414,14 @@ def test_worker_can_handoff_manager_owned_delegated_task():
 
         assert rc == 0, err
         assert "handoff=待主管汇总" in out
-        assert "status=待验收" not in out
+        assert "status=待验收" in out
         rows = local_facts.list_messages("manager")
         assert rows[-1]["task_id"] == tid
         assert rows[-1]["artifact"] == "artifacts/T-1/scout.md"
         assert "Status: 员工已交付，待主管汇总" in rows[-1]["content"]
         task = tasks.get(tid)
-        assert task["status"] == "进行中"
-        assert task["artifact_path"] == ""
+        assert task["status"] == "待验收"
+        assert task["artifact_path"] == "artifacts/T-1/scout.md"
 
 
 def test_worker_cannot_handoff_manager_task_without_delegation():
@@ -379,6 +570,29 @@ def test_send_calls_wake_only_for_lazy_agent():
     assert rc == 0
     assert calls["is_ready"] == 1
     assert calls["wake_if_dormant"] == 1
+
+
+def test_send_skips_inject_when_lazy_wake_fails():
+    from helpers import attr_patch
+    from claudeteam.runtime import wake, tmux
+
+    inject_calls = []
+    team = {"agents": {"worker_lazy": {
+        "cli": "claude-code", "lazy": True}}}
+
+    with isolated_env(team=team):
+        with attr_patch(wake, is_ready=lambda *a, **kw: False,
+                        wake_if_dormant=lambda *a, **kw: False):
+            with attr_patch(tmux,
+                            has_window=lambda *a, **kw: True,
+                            inject=lambda *a, **kw: inject_calls.append(a) or True):
+                rc, out, err = run_cli(
+                    ["send", "worker_lazy", "manager", "hi"])
+
+    assert rc == 0
+    assert "inbox: worker_lazy ← manager" in out
+    assert "inject skipped" in out
+    assert inject_calls == []
 
 
 def test_send_lazy_codex_bootstraps_project_codex_home_before_wake():

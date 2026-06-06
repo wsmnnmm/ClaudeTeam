@@ -202,7 +202,7 @@ def test_start_picks_correct_spawn_cmd_per_cli():
 
 
 def test_start_propagates_state_dir_into_pane_env():
-    """REGRESSION: round 4 smoke caught that worker_cc's \`claudeteam say\`
+    """REGRESSION: round 4 smoke caught that worker_cc's `claudeteam say`
     wrote to ~/.claudeteam/facts/logs.jsonl instead of the project state
     dir, because tmux send-keys spawned the CLI in a fresh shell that
     didn't inherit CLAUDETEAM_STATE_DIR. Spawn line must prepend it."""

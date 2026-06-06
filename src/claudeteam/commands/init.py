@@ -88,6 +88,27 @@ worker_to_manager = true
 worker_to_user    = true
 worker_to_worker  = true
 
+# worker → manager 自动群播报内容门禁:
+# - must_send_contains   = 一定发（自动播报）
+# - optional_contains    = 可发可不发（默认不自动刷群，必要时主管汇总）
+# - forbidden_exact/*    = 禁止发（只留在 send/inbox 审计链）
+[chat.publish.worker_progress]
+must_send_contains = ["已定位", "定位到", "根因", "修复", "已修", "已提交", "commit", "diff", "artifact", "截图", "链接", "http://", "https://", "日志", "receipt", "测试", "验证", "通过", "失败", "blocker", "卡点", "证据", "回归", "产物", "交付"]
+optional_contains = ["已接手", "处理中", "排查中", "复现中", "跟进中", "同步中", "观察中", "等待中"]
+forbidden_exact = ["收到", "对齐", "待命", "继续监控", "继续观察", "已知晓", "明白", "保持 ready", "保持ready", "ready", "ok", "OK"]
+forbidden_contains = ["无新事实"]
+broadcast_first_optional = true
+
+# manager → 老板群显式 say 的内容门禁:
+# - must_send_contains = 一定发（结构化进展卡、真实 blocker、自然窗口/心跳/receipt 风险）
+# - optional_contains  = 可发可不发（处理中/汇总中/等待回报）
+# - forbidden_exact/*  = 禁止发（收到/待命/无新事实）
+[chat.publish.manager_progress]
+must_send_contains = ["已派发", "已分派", "已回报", "自然窗口", "receipt", "sync", "watchdog", "心跳", "blocker", "阻塞", "卡点"]
+optional_contains = ["处理中", "继续跟进", "等待回报", "收集中", "汇总中", "核对中", "观察中", "等待中"]
+forbidden_exact = ["收到", "对齐", "待命", "继续监控", "继续观察", "已知晓", "明白", "ready", "ok", "OK"]
+forbidden_contains = ["无新事实"]
+
 # ── [limits]  消息长度上限 ────────────────────────────────
 [limits]
 max_card_body_chars         = 4000
@@ -197,6 +218,11 @@ decision_fields  = ["老板决策", "决策指令", "执行指令"]
 action_fields    = ["老板操作", "人工操作"]
 writeback        = true
 writeback_field  = "下发回执"
+decision_id_field = "决策对象ID"
+decision_status_field = "决策对象状态"
+decision_task_field = "决策任务ID"
+decision_receipt_field = "决策对象回执"
+decision_detail_field = "决策对象详情"
 clear_action_after_dispatch = true
 
 # ── [feishu]  飞书桥接 ─────────────────────────────────────

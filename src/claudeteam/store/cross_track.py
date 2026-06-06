@@ -32,6 +32,9 @@ VALID_STATUSES = {
 }
 TERMINAL_STATUSES = {"completed", "rejected", "cancelled"}
 ACTIVE_STATUSES = {"pending", "accepted", "in_progress", "delivering"}
+UNKNOWN_PARTNER_TEAM = "unknown_source_team"
+UNKNOWN_PARTNER_LABEL = "Unknown Source Team"
+UNBOUND_TOPIC = "[unbound]"
 
 # Valid transitions
 _ALLOWED = {
@@ -131,7 +134,10 @@ def create(*, partner_team: str, partner_label: str = "",
 
 def accept(track_id: str, *, message: str = "",
            partner_track_id: str = "", partner_task_id: str = "",
-           source_agent: str = "") -> str | None:
+           source_agent: str = "",
+           partner_team: str = "",
+           partner_label: str = "",
+           topic: str = "") -> str | None:
     """Accept an inbound cross-track request. Creates an inbound entry if
     it doesn't exist, or transitions existing outbound to 'accepted'.
 
@@ -151,6 +157,12 @@ def accept(track_id: str, *, message: str = "",
                 track["partner_track_id"] = partner_track_id
             if partner_task_id:
                 track["partner_task_id"] = partner_task_id
+            if partner_team and not str(track.get("partner_team") or "").strip():
+                track["partner_team"] = partner_team.strip()
+            if partner_label and not str(track.get("partner_label") or "").strip():
+                track["partner_label"] = partner_label.strip()
+            if topic and not str(track.get("topic") or "").strip():
+                track["topic"] = str(topic)
             if message:
                 _append_message(track, "in", message)
             _save(data)
@@ -158,12 +170,15 @@ def accept(track_id: str, *, message: str = "",
 
         # No existing entry → create inbound
         now = now_ms()
+        resolved_partner_team = partner_team.strip() or UNKNOWN_PARTNER_TEAM
+        resolved_partner_label = partner_label.strip() or UNKNOWN_PARTNER_LABEL
+        resolved_topic = str(topic or "").strip() or UNBOUND_TOPIC
         track = {
             "track_id": track_id,
             "direction": "inbound",
-            "partner_team": "",
-            "partner_label": "",
-            "topic": "",
+            "partner_team": resolved_partner_team,
+            "partner_label": resolved_partner_label,
+            "topic": resolved_topic,
             "status": "accepted",
             "source_agent": source_agent,
             "target_agent": "",

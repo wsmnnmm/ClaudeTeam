@@ -75,6 +75,31 @@ def test_mark_delegate_closes_latest_open_record():
     assert rows[0]["closure_ref"] == "msg_worker"
 
 
+def test_mark_delegate_prefers_matching_owner_over_latest_open_record():
+    with isolated_env(team=_team()):
+        visual_id = local_facts.append_message(
+            "manager", "user", "第 4 张图重做得更正式")
+        local_facts.mark_read(visual_id)
+        manager_action_guard.record_boss_read(local_facts.get_message(visual_id))
+
+        code_id = local_facts.append_message(
+            "manager", "user", "接口报错先修一下")
+        local_facts.mark_read(code_id)
+        manager_action_guard.record_boss_read(local_facts.get_message(code_id))
+
+        closed = manager_action_guard.mark_delegate(
+            "worker_visual", "请重做第 4 张图", ref="msg_worker")
+        rows = {
+            row["local_id"]: row
+            for row in manager_action_guard.list_records()
+        }
+
+    assert closed is not None
+    assert closed["local_id"] == visual_id
+    assert rows[visual_id]["closed_at"]
+    assert rows[code_id]["closed_at"] is None
+
+
 def test_mark_boss_say_closes_open_record():
     with isolated_env(team=_team()):
         local_id = local_facts.append_message(

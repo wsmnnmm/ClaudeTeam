@@ -2,17 +2,24 @@
 
   task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>]
                                    [--topic <name>]
+                                   [--parent <T-id>]
                                    [--stage idea|mvp|launch|scale]
                                    [--evidence <text>] [--evidence-action <text>]
-                                   [--non-goal <text>]
+                                   [--non-goal <text>] [--issue-class <type>]
+                                   [--segment <segment>] [--next-window <text>]
+                                   [--base-absorb-needed yes|no]
   task update <id>       [--status S] [--assignee A] [--title T] [--desc D] [--artifact <path>] [--by <agent>]
                                    [--topic <name>]
+                                   [--parent <T-id>]
                                    [--stage idea|mvp|launch|scale]
                                    [--evidence <text>] [--evidence-action <text>]
-                                   [--non-goal <text>]
-  task list              [--status S] [--assignee A] [--topic <name>] [--active]
+                                   [--non-goal <text>] [--issue-class <type>]
+                                   [--segment <segment>] [--next-window <text>]
+                                   [--base-absorb-needed yes|no]
+  task list              [--status S] [--assignee A] [--topic <name>] [--parent <T-id>] [--active]
   task get <id>
   task done <id>         [--artifact <path>] [--by <agent>]
+  task audit             [--assignee A] [--topic <name>] [--parent <T-id>] [--all] [--json]
 """
 from __future__ import annotations
 
@@ -23,21 +30,24 @@ from claudeteam.runtime import artifact_gate, paths
 from claudeteam.store import tasks
 from claudeteam.util import (
     error_exit, fmt_time_ms, maybe_print_help, pop_flag, usage_error,
-    pop_bool_flag,
+    pop_bool_flag, print_json, reject_extra_args,
 )
 
 
 USAGE = (
     "usage:\n"
     "  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>]\n"
-    "                     [--topic <name>] [--stage idea|mvp|launch|scale] [--evidence <text>]\n"
-    "                     [--evidence-action <text>] [--non-goal <text>]\n"
+    "                     [--topic <name>] [--parent <T-id>] [--stage idea|mvp|launch|scale] [--evidence <text>]\n"
+    "                     [--evidence-action <text>] [--non-goal <text>] [--issue-class <type>]\n"
+    "                     [--segment <segment>] [--next-window <text>] [--base-absorb-needed yes|no]\n"
     "  claudeteam task update <id>  [--status S] [--assignee A] [--title T] [--desc D] [--artifact <path>] [--by <agent>]\n"
-    "                     [--topic <name>] [--stage idea|mvp|launch|scale] [--evidence <text>]\n"
-    "                     [--evidence-action <text>] [--non-goal <text>]\n"
-    "  claudeteam task list  [--status S] [--assignee A] [--topic <name>] [--active]\n"
+    "                     [--topic <name>] [--parent <T-id>] [--stage idea|mvp|launch|scale] [--evidence <text>]\n"
+    "                     [--evidence-action <text>] [--non-goal <text>] [--issue-class <type>]\n"
+    "                     [--segment <segment>] [--next-window <text>] [--base-absorb-needed yes|no]\n"
+    "  claudeteam task list  [--status S] [--assignee A] [--topic <name>] [--parent <T-id>] [--active]\n"
     "  claudeteam task get <id>\n"
-    "  claudeteam task done <id> [--artifact <path>] [--by <agent>]"
+    "  claudeteam task done <id> [--artifact <path>] [--by <agent>]\n"
+    "  claudeteam task audit [--assignee A] [--topic <name>] [--parent <T-id>] [--all] [--json]"
 )
 
 
@@ -58,6 +68,8 @@ def _fmt_task(t: dict) -> list[str]:
         body.append(f"  by: {t['creator']}")
     if t.get("topic"):
         body.append(f"  topic: #{t['topic']}")
+    if t.get("parent_task_id"):
+        body.append(f"  parent_task: {t['parent_task_id']}")
     if t.get("description"):
         body.append(f"  desc: {t['description']}")
     if t.get("artifact_path"):
@@ -70,8 +82,18 @@ def _fmt_task(t: dict) -> list[str]:
         body.append(f"  evidence_action: {t['evidence_action']}")
     if t.get("non_goal"):
         body.append(f"  non_goal: {t['non_goal']}")
+    if t.get("issue_class"):
+        body.append(f"  issue_class: {t['issue_class']}")
+    if t.get("current_segment"):
+        body.append(f"  current_segment: {t['current_segment']}")
+    if t.get("next_natural_window"):
+        body.append(f"  next_natural_window: {t['next_natural_window']}")
+    if t.get("base_absorb_needed"):
+        body.append(f"  base_absorb_needed: {t['base_absorb_needed']}")
     if t.get("reviewed_by"):
         body.append(f"  reviewed_by: {t['reviewed_by']}")
+    if t.get("child_rollup"):
+        body.append(f"  child_tasks: {t['child_rollup']}")
     body.append(f"  created: {ts}")
     return [head] + body
 
@@ -81,10 +103,15 @@ def _cmd_create(rest: list[str]) -> int:
     desc = pop_flag(rest, "--desc") or ""
     artifact = pop_flag(rest, "--artifact") or ""
     topic = pop_flag(rest, "--topic") or ""
+    parent = pop_flag(rest, "--parent") or ""
     stage_raw = pop_flag(rest, "--stage")
     evidence = pop_flag(rest, "--evidence") or ""
     evidence_action = pop_flag(rest, "--evidence-action") or ""
     non_goal = pop_flag(rest, "--non-goal") or ""
+    issue_class = pop_flag(rest, "--issue-class") or ""
+    current_segment = pop_flag(rest, "--segment") or ""
+    next_natural_window = pop_flag(rest, "--next-window") or ""
+    base_absorb_needed = pop_flag(rest, "--base-absorb-needed") or ""
     if len(rest) < 2:
         return usage_error(USAGE)
     assignee = rest[0]
@@ -93,9 +120,13 @@ def _cmd_create(rest: list[str]) -> int:
         stage = _stage_from_cli(stage_raw)
         tid = tasks.create(
             assignee, title, description=desc, creator=by,
-            topic=topic, artifact_path=artifact, founder_stage=stage,
+            topic=topic, parent_task_id=parent,
+            artifact_path=artifact, founder_stage=stage,
             stage_exit_evidence=evidence, evidence_action=evidence_action,
-            non_goal=non_goal)
+            non_goal=non_goal, issue_class=issue_class,
+            current_segment=current_segment,
+            next_natural_window=next_natural_window,
+            base_absorb_needed=base_absorb_needed)
     except ValueError as e:
         return error_exit(f"❌ {e}")
     print(f"✅ created {tid}: {title} → {assignee}")
@@ -153,11 +184,16 @@ def _cmd_update(rest: list[str]) -> int:
     desc = pop_flag(rest, "--desc")
     artifact = pop_flag(rest, "--artifact")
     topic = pop_flag(rest, "--topic")
+    parent = pop_flag(rest, "--parent")
     reviewed_by = pop_flag(rest, "--by")
     stage_raw = pop_flag(rest, "--stage")
     evidence = pop_flag(rest, "--evidence")
     evidence_action = pop_flag(rest, "--evidence-action")
     non_goal = pop_flag(rest, "--non-goal")
+    issue_class = pop_flag(rest, "--issue-class")
+    current_segment = pop_flag(rest, "--segment")
+    next_natural_window = pop_flag(rest, "--next-window")
+    base_absorb_needed = pop_flag(rest, "--base-absorb-needed")
     if len(rest) < 1:
         return usage_error(USAGE)
     tid = rest[0]
@@ -184,11 +220,16 @@ def _cmd_update(rest: list[str]) -> int:
         ok = tasks.update(tid, status=status, assignee=assignee,
                           title=title, description=desc,
                           topic=topic,
+                          parent_task_id=parent,
                           artifact_path=artifact, reviewed_by=reviewed_by,
                           founder_stage=founder_stage,
                           stage_exit_evidence=evidence,
                           evidence_action=evidence_action,
-                          non_goal=non_goal)
+                          non_goal=non_goal,
+                          issue_class=issue_class,
+                          current_segment=current_segment,
+                          next_natural_window=next_natural_window,
+                          base_absorb_needed=base_absorb_needed)
     except ValueError as e:
         return error_exit(f"❌ {e}")
     if not ok:
@@ -202,7 +243,7 @@ def _cmd_done(rest: list[str]) -> int:
         return usage_error(USAGE)
     tid = rest[0]
     artifact = pop_flag(rest, "--artifact")
-    reviewed_by = pop_flag(rest, "--by")
+    reviewed_by = pop_flag(rest, "--by") or "manager"
     args = [tid, "--status", "已完成"]
     if artifact:
         args.extend(["--artifact", artifact])
@@ -215,8 +256,10 @@ def _cmd_list(rest: list[str]) -> int:
     status = pop_flag(rest, "--status")
     assignee = pop_flag(rest, "--assignee")
     topic = pop_flag(rest, "--topic")
+    parent = pop_flag(rest, "--parent")
     active = pop_bool_flag(rest, "--active")
-    rows = tasks.list_tasks(status=status, assignee=assignee, topic=topic)
+    rows = tasks.list_tasks(
+        status=status, assignee=assignee, topic=topic, parent_task_id=parent)
     if active:
         active_statuses = tasks.VALID_STATUSES - tasks.TERMINAL_STATUSES
         rows = [t for t in rows if t.get("status") in active_statuses]
@@ -237,9 +280,61 @@ def _cmd_get(rest: list[str]) -> int:
     t = tasks.get(rest[0])
     if t is None:
         return error_exit(f"❌ no such task: {rest[0]}")
+    children = tasks.list_tasks(parent_task_id=str(t.get("id") or ""))
+    if children:
+        open_children = [
+            child for child in children
+            if child.get("status") not in tasks.TERMINAL_STATUSES
+        ]
+        t = dict(t)
+        t["child_rollup"] = f"{len(children)} total / {len(open_children)} open"
     for line in _fmt_task(t):
         print(line)
     return 0
+
+
+def _render_audit(payload: dict) -> list[str]:
+    lines = [
+        "✅ task audit passed"
+        if payload.get("ok")
+        else "❌ task audit failed"
+    ]
+    lines[0] += (
+        f" team={payload.get('team') or '-'}"
+        f" scanned={payload.get('scanned_tasks') or 0}"
+        f" findings={payload.get('finding_count') or 0}"
+        f" active_only={'yes' if payload.get('active_only') else 'no'}"
+    )
+    if payload.get("ok"):
+        return lines
+    for finding in payload.get("findings", []):
+        task_id = str(finding.get("task_id") or "?")
+        title = str(finding.get("title") or "").strip()
+        label = f"{task_id} {title}".strip()
+        lines.append(f"- {label}: {finding.get('message') or ''}".rstrip())
+    return lines
+
+
+def _cmd_audit(rest: list[str]) -> int:
+    assignee = pop_flag(rest, "--assignee")
+    topic = pop_flag(rest, "--topic")
+    parent = pop_flag(rest, "--parent")
+    include_all = pop_bool_flag(rest, "--all")
+    as_json = pop_bool_flag(rest, "--json")
+    if (rc := reject_extra_args(rest, USAGE)) is not None:
+        return rc
+    payload = tasks.audit_tasks(
+        assignee=assignee,
+        topic=topic,
+        parent_task_id=parent,
+        active_only=not include_all,
+    )
+    if as_json:
+        print_json(payload)
+    else:
+        for line in _render_audit(payload):
+            print(line)
+    return 0 if payload.get("ok") else 1
 
 
 SUBCOMMANDS = {
@@ -248,6 +343,7 @@ SUBCOMMANDS = {
     "done":   _cmd_done,
     "list":   _cmd_list,
     "get":    _cmd_get,
+    "audit":  _cmd_audit,
 }
 
 

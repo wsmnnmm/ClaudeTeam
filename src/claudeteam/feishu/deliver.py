@@ -253,7 +253,10 @@ def _topic_event_for_decision(decision: Decision, agent: str) -> tuple[dict | No
     cur = topics.current()
     if cur and not has_marker:
         capsule = str(cur.get("capsule") or "")
-        if topics.topic_drift_detected(decision.text, capsule):
+        if (
+            bool(tunables.tunable("topics.auto_drift_enabled", False))
+            and topics.topic_drift_detected(decision.text, capsule)
+        ):
             auto_name = topics.auto_topic_name(decision.text)
             try:
                 row = topics.switch(
@@ -471,6 +474,14 @@ def _compose_inject_text(agent: str, decision: Decision,
     read_hint = (f" 完成后用 `{ct} read {local_id}` 销 inbox。"
                  if local_id else "")
     task_list_hint = f"先 `{ct} task list --assignee {agent} --active` 对账当前活跃任务。"
+    boss_preempt_hint = ""
+    if agent == "manager" and sender in {"user", ""}:
+        boss_preempt_hint = (
+            "老板消息绝对抢占：先只处理当前老板这条，"
+            "不要先跑 `task list --assignee manager --active`，"
+            "不要先验收旧 worker 回执，也不要先批量 `task done` 清尾巴。"
+        )
+    boss_or_task_hint = boss_preempt_hint or task_list_hint
     context_hint = (
         f"{current_time_line()} 遇到 今天/上午/刚才/之前/还记得吗，"
         f"先查 `{ct} recall {agent}`、inbox、task、logs/artifacts 再答。"
@@ -552,14 +563,14 @@ def _compose_inject_text(agent: str, decision: Decision,
                 f"\"trace={local_id or decision.msg_id}; intent=一句话; risk=一句话; "
                 "owner=职责或worker; next_evidence=下一证据\" "
                 f"{local_id or decision.msg_id}` 记录内部审计；"
-                f"然后再执行常规核验：{task_list_hint}{context_hint}"
+                f"然后再执行常规核验：{boss_or_task_hint}{context_hint}"
                 "补查/派活/看日志/看产物；禁止把自动 fast_ack 当成 manager 已响应；"
                 "如果超过首响时限是 Feishu/router/发送链路导致，单独记为 blocker。"
                 f"{summary_hint}{natural_progress_hint}"
                 f"{realtime_status_hint}{read_hint}"
             )
         else:
-            hint = (f"[群聊·老板] {context_hint}{task_list_hint}"
+            hint = (f"[群聊·老板] {context_hint}{boss_or_task_hint}"
                     f"先做最小真实动作：查证/跑命令/派活/看日志/看产物，"
                     f"{reply_hint}"
                     f"禁止只说「我去核对/稍后给结论」就 `read` 销账；"
@@ -618,7 +629,8 @@ def _inject_to_pane(agent: str, decision: Decision,
             print(f"  ⚠️ identity refresh skipped for {agent}: {e}")
         if wake_fn is not None and not ready_before:
             if not wake_fn(target, adapter, **_build_wake_args(agent, adapter)):
-                print(f"  ⚠️ {agent} pane not ready; injecting anyway")
+                print(f"  ⚠️ {agent} pane not ready; inbox row kept, inject skipped")
+                return "failed_inject"
         elif identity_changed:
             if deps.tmux_inject(
                     target, _identity.init_prompt(agent),

@@ -120,6 +120,9 @@ def test_accept_creates_inbound_entry():
             tid,
             message="Accepted, will process",
             source_agent="manager",
+            partner_team="todo002_cloud",
+            partner_label="TODO002 Cloud",
+            topic="Strategy Package",
             partner_task_id="T-5",
         )
         assert result == tid
@@ -128,9 +131,24 @@ def test_accept_creates_inbound_entry():
         assert t["direction"] == "inbound"
         assert t["status"] == "accepted"
         assert t["source_agent"] == "manager"
+        assert t["partner_team"] == "todo002_cloud"
+        assert t["partner_label"] == "TODO002 Cloud"
+        assert t["topic"] == "Strategy Package"
         assert t["local_task_id"] == "T-5"
         assert len(t["message_history"]) == 1
         assert t["message_history"][0]["content"] == "Accepted, will process"
+
+
+def test_accept_inbound_uses_explicit_unknown_source_marker_when_missing_context():
+    with isolated_env():
+        tid = "XT-9999000000-unknown"
+        result = ct.accept(tid, message="Accepted, will process", source_agent="manager")
+        assert result == tid
+        t = ct.get(tid)
+        assert t is not None
+        assert t["partner_team"] == ct.UNKNOWN_PARTNER_TEAM
+        assert t["partner_label"] == ct.UNKNOWN_PARTNER_LABEL
+        assert t["topic"] == ct.UNBOUND_TOPIC
 
 
 def test_accept_on_existing_outbound_transitions():

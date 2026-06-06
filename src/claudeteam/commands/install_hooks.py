@@ -135,19 +135,33 @@ def _full_body(name: str) -> str:
     return body if name in _NAME_AGNOSTIC else _HEAD + body
 
 
-def _write_command_files(target_dir: Path) -> tuple[int, int]:
-    """Write each slash-command .md. Returns (created, overwritten).
-    atomic_write_text handles parent mkdir, so no explicit setup needed."""
+def _write_command_files(target_dir: Path) -> tuple[int, int, int]:
+    """Write each slash-command .md.
+
+    Returns (created, updated, unchanged). Only count a file as updated when
+    its content actually changes; repeated idempotent installs should not
+    create stale-pane warnings.
+    """
     created = 0
-    overwritten = 0
+    updated = 0
+    unchanged = 0
     for name in _COMMANDS:
         path = target_dir / f"{name}.md"
-        if path.exists():
-            overwritten += 1
-        else:
+        body = _full_body(name)
+        if not path.exists():
             created += 1
-        atomic_write_text(path, _full_body(name))
-    return created, overwritten
+            atomic_write_text(path, body)
+            continue
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = None
+        if existing == body:
+            unchanged += 1
+            continue
+        updated += 1
+        atomic_write_text(path, body)
+    return created, updated, unchanged
 
 
 def _find_hook_script() -> str | None:
@@ -161,6 +175,22 @@ def _find_hook_script() -> str | None:
         if p.exists():
             return str(p)
     return None
+
+
+def _pretool_entry_contains_cost_guard(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if "check-api-cost" in str(entry.get("command", "")):
+        return True
+    hooks = entry.get("hooks")
+    if not isinstance(hooks, list):
+        return False
+    for hook in hooks:
+        if not isinstance(hook, dict):
+            continue
+        if "check-api-cost" in str(hook.get("command", "")):
+            return True
+    return False
 
 
 def _write_cost_guard_hook(claude_dir: Path) -> bool:
@@ -190,12 +220,20 @@ def _write_cost_guard_hook(claude_dir: Path) -> bool:
     }
 
     hooks = existing.get("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
     pretool = hooks.get("PreToolUse", [])
-    # Check if cost guard is already registered
-    for entry in pretool:
-        if isinstance(entry, dict) and "check-api-cost" in str(entry.get("command", "")):
-            return False  # already installed
+    if not isinstance(pretool, list):
+        pretool = []
+    kept_pretool = [entry for entry in pretool if not _pretool_entry_contains_cost_guard(entry)]
+    already_normalized = (
+        len(kept_pretool) == len(pretool) - 1
+        and any(entry == cost_guard_hook for entry in pretool)
+    )
+    if already_normalized:
+        return False
 
+    pretool = list(kept_pretool)
     pretool.append(cost_guard_hook)
     hooks["PreToolUse"] = pretool
     existing["hooks"] = hooks
@@ -215,10 +253,14 @@ def _remove_cost_guard_hook(claude_dir: Path) -> bool:
         return False
 
     hooks = existing.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
     pretool = hooks.get("PreToolUse", [])
+    if not isinstance(pretool, list):
+        return False
     new_pretool = [
         e for e in pretool
-        if not (isinstance(e, dict) and "check-api-cost" in str(e.get("command", "")))
+        if not _pretool_entry_contains_cost_guard(e)
     ]
     if len(new_pretool) == len(pretool):
         return False
@@ -247,11 +289,18 @@ def main(argv: list[str]) -> int:
     base = Path(rest[0]) if rest else Path.cwd()
     claude_dir = base / ".claude"
     target = claude_dir / "commands"
-    created, overwritten = _write_command_files(target)
-    total = created + overwritten
+    created, updated, unchanged = _write_command_files(target)
+    total = created + updated + unchanged
     print(f"✅ wrote {total} slash command(s) to {target}")
-    if overwritten:
-        print(f"   ({overwritten} overwritten, {created} new)")
+    details = []
+    if updated:
+        details.append(f"{updated} updated")
+    if created:
+        details.append(f"{created} new")
+    if unchanged:
+        details.append(f"{unchanged} unchanged")
+    if details:
+        print(f"   ({', '.join(details)})")
 
     if not no_cost_guard:
         added = _write_cost_guard_hook(claude_dir)
@@ -274,7 +323,7 @@ def main(argv: list[str]) -> int:
         session = config.session_name()
     except Exception:
         session = ""
-    if session and tmux.has_session(session):
+    if updated and session and tmux.has_session(session):
         warn(
             f"\n⚠️  tmux session '{session}' is already running.\n"
             f"   Existing claude-code panes cached their slash commands at startup\n"

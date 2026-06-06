@@ -83,7 +83,7 @@ def test_sweep_suppresses_duplicate_alert_until_repeat_window():
     assert len(manager_inbox) == 1
 
 
-def test_sweep_skips_waiting_review_task():
+def test_sweep_alerts_manager_for_waiting_review_task_privately():
     alerts = []
     with isolated_env(team=_team()):
         tid = _age_task_to_epoch()
@@ -107,9 +107,49 @@ def test_sweep_skips_waiting_review_task():
         )
         manager_inbox = local_facts.list_messages("manager", unread_only=True)
 
-    assert notices == []
-    assert alerts == []
-    assert manager_inbox == []
+    assert len(notices) == 1
+    assert notices[0].task_id == tid
+    assert "待验收超时" in notices[0].title
+    assert "待验收" in notices[0].body
+    assert "验收通过" in notices[0].body
+    assert notices[0].public_body == ""
+    assert alerts == [notices[0]]
+    assert len(manager_inbox) == 1
+    assert manager_inbox[0]["task_id"] == tid
+
+
+def test_sweep_alerts_manager_for_manager_owned_waiting_review_task():
+    alerts = []
+    with isolated_env(team=_team()):
+        tid = _age_task_to_epoch("manager")
+        tasks.update(
+            tid,
+            status="待验收",
+            artifact_path="artifacts/T-1/report.md",
+        )
+        path = paths.state_dir() / "tasks.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["tasks"][0]["updated_at"] = 0
+        write_json(path, data)
+        notices = manager_watch.sweep(
+            now_ms_fn=lambda: 901_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            alert_fn=lambda notice: alerts.append(notice),
+            overdue_s=300,
+            repeat_s=900,
+            public_overdue_s=300,
+        )
+        manager_inbox = local_facts.list_messages("manager", unread_only=True)
+
+    assert len(notices) == 1
+    assert notices[0].task_id == tid
+    assert "待验收超时" in notices[0].title
+    assert "主管验收" in notices[0].body
+    assert notices[0].public_body == ""
+    assert alerts == [notices[0]]
+    assert len(manager_inbox) == 1
+    assert manager_inbox[0]["task_id"] == tid
 
 
 def test_worker_heartbeat_alone_does_not_prevent_overdue_alert():
@@ -547,6 +587,27 @@ def test_sweep_first_output_accepts_existing_local_artifact():
     assert notices == []
 
 
+def test_sweep_first_output_accepts_embedded_evidence_dir_progress():
+    with isolated_env(team=_team()) as tmp:
+        tid = _age_task_to_epoch()
+        evidence_dir = tmp / "artifacts" / "builder-daily" / "2026-06-02"
+        evidence_dir.mkdir(parents=True)
+        local_facts.append_message(
+            "manager", "worker_scout",
+            f"raw 证据目录 {evidence_dir} 已落盘，当前缺最终 docs/receipt，继续生成中。",
+            task_id=tid)
+        notices = manager_watch.sweep_first_output(
+            now_ms_fn=lambda: 301_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+
+    assert notices == []
+
+
 def test_sweep_first_output_rejects_vague_blocker():
     with isolated_env(team=_team()):
         tid = _age_task_to_epoch()
@@ -587,6 +648,47 @@ def test_sweep_first_output_suppresses_duplicate_until_repeat_window():
     assert len(first) == 1
     assert second == []
     assert len(manager_inbox) == 1
+
+
+def test_sweep_first_output_public_alert_only_once_for_unchanged_problem():
+    with isolated_env(team=_team()):
+        _age_task_to_epoch()
+        first = manager_watch.sweep_first_output(
+            now_ms_fn=lambda: 301_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+        second = manager_watch.sweep_first_output(
+            now_ms_fn=lambda: 602_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+
+    assert len(first) == 1
+    assert "还没有形成可验证首产物或真实 blocker" in first[0].public_body
+    assert len(second) == 1
+    assert second[0].public_body == ""
+
+
+def test_latest_worker_signal_ignores_other_task_log_when_worker_has_multiple_open_tasks():
+    with isolated_env(team=_team()):
+        tid_a = tasks.create("worker_scout", "默会晨训校准｜2026-06-02｜worker_scout", creator="manager")
+        tid_b = tasks.create("worker_scout", "请生成今天的 Builder Daily。", creator="manager")
+        _set_task_times(tid_a, created_at=0, updated_at=0)
+        _set_task_times(tid_b, created_at=0, updated_at=0)
+        log_id = local_facts.append_log(
+            "worker_scout", "say",
+            "请生成今天的 Builder Daily。raw 证据目录 artifacts/builder-daily/2026-06-02 已落盘")
+        _set_log_created(log_id, 200_000)
+        tasks_by_id = {task["id"]: task for task in tasks.list_tasks()}
+        assert manager_watch._latest_worker_signal_ms(tasks_by_id[tid_a]) == 0
+        assert manager_watch._latest_worker_signal_ms(tasks_by_id[tid_b]) == 200_000
 
 
 def test_sweep_ignores_non_team_assignee():
@@ -634,6 +736,17 @@ def _set_inbox_message_created(local_id: str, created_at: int) -> None:
     for msg in data["messages"]:
         if msg["local_id"] == local_id:
             msg["created_at"] = created_at
+            break
+    write_json(path, data)
+
+
+def _set_task_times(task_id: str, *, created_at: int, updated_at: int) -> None:
+    path = paths.state_dir() / "tasks.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for task in data["tasks"]:
+        if task["id"] == task_id:
+            task["created_at"] = created_at
+            task["updated_at"] = updated_at
             break
     write_json(path, data)
 
@@ -763,6 +876,34 @@ def test_sweep_boss_inbox_suppresses_duplicate_until_repeat_window():
 
     assert len(first) == 1
     assert second == []
+
+
+def test_sweep_boss_inbox_public_alert_only_once_for_same_message():
+    with isolated_env(team=_team()):
+        local_id = local_facts.append_message(
+            "manager", "user", "团队成员还活着吗", priority="高")
+        _age_inbox_message_to_epoch(local_id)
+        first = manager_watch.sweep_boss_inbox(
+            now_ms_fn=lambda: 601_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+        second = manager_watch.sweep_boss_inbox(
+            now_ms_fn=lambda: 902_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+
+    assert len(first) == 1
+    assert "已自动重投给 manager" in first[0].public_body
+    assert len(second) == 1
+    assert second[0].public_body == ""
 
 
 def test_sweep_boss_inbox_stops_after_max_age_even_if_alerted_before():

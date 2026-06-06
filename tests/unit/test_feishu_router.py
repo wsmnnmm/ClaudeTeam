@@ -262,12 +262,12 @@ def test_slash_unknown_command_still_emits_slash():
 
 
 def test_slash_strips_sender_prefix_before_detection():
-    """REGRESSION (round A2 B1): \`claudeteam say boss "/team"\` produces
-    \`[boss] /team\` in chat. Without prefix-strip, slash detection
+    """REGRESSION (round A2 B1): `claudeteam say boss "/team"` produces
+    `[boss] /team` in chat. Without prefix-strip, slash detection
     misses it and the message gets routed to manager (which then has
     its LLM cobble together a fake response). The prefix must be
     stripped BEFORE the / check, AND propagated as decision.text so the
-    handler receives just \`/team\`."""
+    handler receives just `/team`."""
     d = classify_event(_ev(text="[boss] /team"), team_agents=_AGENTS)
     assert d.action is Action.SLASH
     assert d.text == "/team"

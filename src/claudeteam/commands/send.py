@@ -18,12 +18,14 @@ expecting recipient to read NOW).
 """
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 
 from claudeteam.agents import adapter_for_agent, identity as _identity
 from claudeteam.runtime import (
     artifact_gate, config, lifecycle, manager_action_guard, paths, team_command,
-    tmux, wake,
+    tmux, tunables, wake,
 )
 from claudeteam.feishu.text import normalize_visible_escapes
 from claudeteam.store import local_facts, memory, tasks
@@ -35,6 +37,22 @@ USAGE = (
     "[--task-id <T-id>] [--artifact <path>] [--done] [--no-task] [--no-inject]"
 )
 _ASSIGNMENT_MEMORY_MAX_CHARS = 800
+_DEFAULT_WORKER_PROGRESS_FORBIDDEN_EXACT = (
+    "收到", "对齐", "待命", "继续监控", "继续观察", "已知晓", "明白", "保持 ready",
+    "保持ready", "ready", "ok", "OK",
+)
+_DEFAULT_WORKER_PROGRESS_FORBIDDEN_CONTAINS = (
+    "无新事实",
+)
+_DEFAULT_WORKER_PROGRESS_MUST_SEND_CONTAINS = (
+    "已定位", "定位到", "根因", "修复", "已修", "已提交", "commit", "diff",
+    "artifact", "截图", "链接", "http://", "https://", "日志",
+    "receipt", "测试", "验证", "通过", "失败", "blocker", "卡点", "证据",
+    "回归", "产物", "交付",
+)
+_DEFAULT_WORKER_PROGRESS_OPTIONAL_CONTAINS = (
+    "已接手", "处理中", "排查中", "复现中", "跟进中", "同步中", "观察中", "等待中",
+)
 
 
 def _task_title(message: str) -> str:
@@ -118,6 +136,173 @@ def _ui_completion_gate_error(task_id: str, artifact: str,
         "image and a clickable http(s) preview URL")
 
 
+def _public_progress_message(*, task_id: str, worker: str, task: dict,
+                             message: str, artifact: str,
+                             done: bool,
+                             manager_owned_delegation: bool) -> str:
+    status = "进行中"
+    next_step = "继续推进该任务；有新证据再播报。"
+    if done and manager_owned_delegation:
+        status = "员工已交付，待主管汇总"
+        next_step = "manager 汇总员工产物后，再给老板最终判断。"
+    elif done:
+        status = "待验收"
+        next_step = "manager 验收该产物并决定通过或退回。"
+    title = str(task.get("title") or "").strip() or "未命名任务"
+    lines = [
+        f"任务进展播报：{title}",
+        f"任务号：{task_id}",
+        f"员工：{worker}",
+        f"状态：{status}",
+        f"最新进展：{str(message or '').strip() or '无补充文字，见任务产物。'}",
+    ]
+    if artifact:
+        lines.append(f"产物：{artifact}")
+    lines.append(f"下一步：{next_step}")
+    return "\n".join(lines)
+
+
+def _normalize_progress_token(value: object) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _worker_progress_policy_tokens(path: str,
+                                   default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = tunables.tunable(path, list(default))
+    if isinstance(raw, (list, tuple)):
+        values = raw
+    elif raw is None:
+        values = []
+    else:
+        values = [raw]
+    normalized = [_normalize_progress_token(value) for value in values]
+    return tuple(token for token in normalized if token)
+
+
+def _worker_progress_broadcast_class(*, message: str, artifact: str,
+                                     done: bool) -> str:
+    if done or artifact:
+        return "must_send"
+    compact = " ".join(str(message or "").split()).strip()
+    if not compact:
+        return "optional"
+    normalized = compact.casefold()
+    forbidden_exact = _worker_progress_policy_tokens(
+        "chat.publish.worker_progress.forbidden_exact",
+        _DEFAULT_WORKER_PROGRESS_FORBIDDEN_EXACT,
+    )
+    if normalized in forbidden_exact:
+        return "forbidden"
+    forbidden_contains = _worker_progress_policy_tokens(
+        "chat.publish.worker_progress.forbidden_contains",
+        _DEFAULT_WORKER_PROGRESS_FORBIDDEN_CONTAINS,
+    )
+    if any(token in normalized for token in forbidden_contains):
+        return "forbidden"
+    must_send_contains = _worker_progress_policy_tokens(
+        "chat.publish.worker_progress.must_send_contains",
+        _DEFAULT_WORKER_PROGRESS_MUST_SEND_CONTAINS,
+    )
+    if any(token in normalized for token in must_send_contains):
+        return "must_send"
+    optional_contains = _worker_progress_policy_tokens(
+        "chat.publish.worker_progress.optional_contains",
+        _DEFAULT_WORKER_PROGRESS_OPTIONAL_CONTAINS,
+    )
+    if any(token in normalized for token in optional_contains):
+        return "optional"
+    return "optional"
+
+
+def _should_auto_broadcast_worker_progress(*, message: str, artifact: str,
+                                           done: bool,
+                                           task_id: str = "",
+                                           worker: str = "") -> bool:
+    progress_class = _worker_progress_broadcast_class(
+        message=message,
+        artifact=artifact,
+        done=done,
+    )
+    if progress_class == "must_send":
+        return True
+    if progress_class != "optional":
+        return False
+    if not bool(tunables.tunable(
+            "chat.publish.worker_progress.broadcast_first_optional", True)):
+        return False
+    if not task_id or not worker:
+        return False
+    rows = local_facts.list_logs(worker, limit=200)
+    return not any(
+        row.get("type") == "worker_progress_optional_public"
+        and row.get("ref") == task_id
+        for row in rows
+    )
+
+
+def _worker_progress_gate_hint() -> str:
+    return (
+        "群播报三分类：一定发（真实交付/真实 blocker/需要老板动作，或带 "
+        "artifact/--done，会自动播报）；可发可不发（如已接手/排查中/复现中，"
+        "默认首条可自动冒一次头，后续同类回声不重复刷群）；禁止发（收到/对齐/待命/继续监控/无新事实，不要 `say` 刷群）。"
+        "具体词表可在 claudeteam.toml 的 [chat.publish.worker_progress] 调整。"
+    )
+
+
+def _maybe_broadcast_worker_progress(*, to: str, frm: str, task_id: str,
+                                     message: str, artifact: str,
+                                     done: bool,
+                                     manager_owned_delegation: bool) -> None:
+    if not (_worker_report_to_manager(to, frm) and task_id):
+        return
+    progress_class = _worker_progress_broadcast_class(
+        message=message,
+        artifact=artifact,
+        done=done,
+    )
+    if not _should_auto_broadcast_worker_progress(
+        message=message,
+        artifact=artifact,
+        done=done,
+        task_id=task_id,
+        worker=frm,
+    ):
+        return
+    task = tasks.get(task_id)
+    if task is None:
+        return
+    from claudeteam.commands import say as say_cmd
+    progress = _public_progress_message(
+        task_id=task_id,
+        worker=frm,
+        task=task,
+        message=message,
+        artifact=artifact,
+        done=done,
+        manager_owned_delegation=manager_owned_delegation,
+    )
+
+    def _broadcast_once(sender: str) -> tuple[int, str, bool]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = say_cmd.main([sender, progress, "--to", "user"])
+        out = stdout.getvalue().strip()
+        err = stderr.getvalue().strip()
+        detail = err or out or "unknown error"
+        silenced = "silenced" in out.casefold() or "silenced" in err.casefold()
+        return rc, detail, silenced
+
+    rc, detail, silenced = _broadcast_once(frm)
+    if silenced and to == "manager" and frm != "manager":
+        rc, detail, silenced = _broadcast_once("manager")
+    if rc == 0 and not silenced and progress_class == "optional":
+        local_facts.append_log(
+            frm, "worker_progress_optional_public", progress, ref=task_id)
+    if rc != 0 or silenced:
+        print(f"  ⚠️ progress broadcast skipped for {frm}/{task_id}: {detail}")
+
+
 def main(argv: list[str]) -> int:
     rest = list(argv)
     task_id = pop_flag(rest, "--task-id") or ""
@@ -189,8 +374,7 @@ def main(argv: list[str]) -> int:
         if gate_error:
             return error_exit(gate_error)
         if manager_owned_delegation:
-            if current_status == tasks.DEFAULT_STATUS:
-                tasks.update(task_id, status="进行中")
+            tasks.update(task_id, status="待验收", artifact_path=effective_artifact)
         else:
             tasks.update(task_id, status="待验收", artifact_path=effective_artifact)
     visible_message = message
@@ -200,6 +384,14 @@ def main(argv: list[str]) -> int:
         visible_message = f"{visible_message}\nStatus: 员工已交付，待主管汇总"
     elif done and "待验收" not in visible_message:
         visible_message = f"{visible_message}\nStatus: 待验收"
+    if task_id and not worker_report:
+        try:
+            from claudeteam.runtime import incident_learning
+            learning_context = incident_learning.render_task_context(task_id)
+        except Exception:
+            learning_context = ""
+        if learning_context and learning_context not in visible_message:
+            visible_message = f"{visible_message}\n\n{learning_context}"
     local_id = local_facts.append_message(
         to, frm, visible_message, priority=priority, task_id=task_id,
         artifact=effective_artifact)
@@ -213,11 +405,20 @@ def main(argv: list[str]) -> int:
     if frm == "manager" and _is_worker(to):
         manager_action_guard.mark_delegate(
             to, visible_message, task_id=task_id, ref=local_id)
+    _maybe_broadcast_worker_progress(
+        to=to,
+        frm=frm,
+        task_id=task_id,
+        message=visible_message,
+        artifact=effective_artifact,
+        done=done,
+        manager_owned_delegation=manager_owned_delegation,
+    )
     suffix = f"  [task_id={task_id}]" if task_id else ""
     if effective_artifact:
         suffix += f"  [artifact={effective_artifact}]"
     if done and manager_owned_delegation:
-        suffix += "  [handoff=待主管汇总]"
+        suffix += "  [handoff=待主管汇总]  [status=待验收]"
     elif done:
         suffix += "  [status=待验收]"
     print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]{suffix}")
@@ -248,15 +449,16 @@ def main(argv: list[str]) -> int:
         # on the next input-accept turn.
         cfg = config.agent_config(to) if to in config.agent_names() else {}
         if cfg.get("lazy") and not wake.is_ready(target, adapter):
-            from claudeteam.runtime import tunables
-            wake.wake_if_dormant(
+            if not wake.wake_if_dormant(
                 target, adapter,
                 spawn_cmd=lifecycle.lazy_spawn_cmd(to),
                 init_msg=_identity.init_prompt(to),
                 timeout_s=float(tunables.tunable("wake.lazy_wake_timeout_s", 30.0)),
                 on_woken=lambda: local_facts.upsert_status(
                     to, "进行中", "responding to first message"),
-            )
+            ):
+                print(f"  ⚠️ {to} pane not ready after wake; inbox row kept, inject skipped")
+                return 0
         ct = team_command.safe_cli_cmd(ensure=True)
         task_hint = (f"先 `{ct} task get {task_id}` 看任务卡；"
                      if task_id else
@@ -265,9 +467,9 @@ def main(argv: list[str]) -> int:
             reply_hint = (
                 f"内部回执用 `{ct} send {frm} {to} \"...\"`"
                 f"{' --task-id ' + task_id if task_id else ' --task-id <T-id>'}；"
-                "只有真实交付、真实 blocker、需要老板动作或老板点名要你直报时，"
-                f"才用 stdin 形式 `{ct} say {to} - --to user`。"
-                "对齐、待命、继续监控、无新事实不要 `say` 刷群。"
+                f"只有属于“一定发”的情况，才用 stdin 形式 "
+                f"`{ct} say {to} - --to user`。"
+                f"{_worker_progress_gate_hint()}"
             )
         else:
             reply_hint = f"必要时用 stdin 形式 `{ct} say {to} - --to user`。"

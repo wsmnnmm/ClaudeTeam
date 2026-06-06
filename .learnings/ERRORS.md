@@ -30,6 +30,93 @@ For `codex-cli` agents, let `effective_model_for_agent()` prefer non-empty `OPEN
 
 ---
 
+## [ERR-20260604-002] git_status_cross_repo_pathspec
+
+**Logged**: 2026-06-04T21:40:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `git status -- <absolute path in another repository>` from the wrong repository fails and adds noise during cleanup verification.
+
+### Error
+```text
+fatal: /Users/wsm/Project/product-lab/claudeteam.toml: '/Users/wsm/Project/product-lab/claudeteam.toml' is outside repository at '/Users/wsm/Project/ClaudeTeam'
+```
+
+### Context
+- Verifying cleanup across `/Users/wsm/Project/ClaudeTeam` and `/Users/wsm/Project/product-lab`.
+- A single `git status` command was run from the ClaudeTeam repo with a ProductLab pathspec.
+
+### Suggested Fix
+Run repository status checks from each repository root separately, or use `git -C <repo> status --short`.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `/Users/wsm/Project/ClaudeTeam`, `/Users/wsm/Project/product-lab`
+
+---
+
+## [ERR-20260604-001] parallel_chmod_execute_race
+
+**Logged**: 2026-06-04T19:00:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `chmod +x` and immediately executing the same new script in parallel can race and produce a misleading permission error.
+
+### Error
+```text
+zsh:1: permission denied: /Users/wsm/Project/ClaudeTeam/scripts/local/claudeteam-local-fleet-ensure-up.sh
+```
+
+### Context
+- Added `scripts/local/claudeteam-local-fleet-ensure-up.sh`.
+- Kicked off `chmod +x`, `plutil -lint`, and a script smoke run through a parallel tool call.
+- The smoke run started before chmod completed.
+
+### Suggested Fix
+For permission-dependent validation, run `chmod` first, then run lint/smoke checks. Only parallelize independent checks after file mode is settled.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `scripts/local/claudeteam-local-fleet-ensure-up.sh`
+
+---
+
+## [ERR-20260602-001] remote_pkill_matched_own_shell
+
+**Logged**: 2026-06-02T23:02:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+Remote `pkill -f` can match the SSH shell command itself when the search pattern appears in the command line, terminating the SSH session.
+
+### Error
+```text
+ssh ... 'pkill -f "/srv/ai/projects/todo002-study-coach/private/deepsea-browser-profile-cloud" ...'
+Process exited with code 255
+```
+
+### Context
+- While stopping TODO002 cloud alert noise, the cleanup command used `pkill -f` with the full browser profile path.
+- The remote shell command also contained that path, so `pkill` killed the shell/SSH command before follow-up verification could print output.
+- A second attempt with hand-escaped `awk` also failed due nested shell quoting.
+
+### Suggested Fix
+For remote process cleanup, prefer `pgrep -f '[p]attern' | xargs kill` or list PIDs first and kill exact PIDs. Avoid raw `pkill -f "literal"` inside SSH one-liners when the literal appears in the same command.
+
+### Metadata
+- Reproducible: yes
+- Related Files: remote operational command, no repo code path
+
+---
+
 ## [ERR-20260517-002] codex_provider_secret_in_tmux_spawn_line
 
 **Logged**: 2026-05-17T17:39:08+08:00

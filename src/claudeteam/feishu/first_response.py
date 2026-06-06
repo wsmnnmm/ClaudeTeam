@@ -51,6 +51,19 @@ _DEFAULT_NEXT_STEP = {
     "clarification": "先确认缺失条件，再给可执行方案",
     "blocker": "定位阻塞点、影响范围和需要谁处理",
 }
+_STATUS_PROBE_MARKERS = (
+    "还活着", "还在吗", "团队成员", "是否在线", "在线吗", "可响应",
+    "能不能继续接活", "能不能接活", "最近回执", "活跃状态",
+)
+_STATUS_PROBE_ACTION_MARKERS = (
+    "已查", "刚查", "查了", "确认", "看到", "对账", "自检",
+    "实测", "复核", "已核对", "已看", "刚看", "核对了",
+)
+_STATUS_PROBE_EVIDENCE_MARKERS = (
+    "health", "router", "watchdog", "heartbeat", "heartbeats",
+    "task", "active", "inbox", "回执", "日志", "截图", "端口",
+    "curl", "可连", "不可连", "二维码",
+)
 
 
 HttpJson = Callable[[str, dict, dict, float], dict]
@@ -129,6 +142,14 @@ def run_once(decision: Decision, *, local_id: str, topic_event: dict | None = No
     )
     elapsed_ms = result.elapsed_ms or int((time.monotonic() - started) * 1000)
     if not result.ok:
+        _send_failure_fallback(
+            decision,
+            local_id=local_id,
+            topic_event=topic_event,
+            chat_send=chat_send,
+            chat_id=chat_id,
+            profile=profile,
+        )
         _log_failure(decision, local_id, result.error, elapsed_ms, result)
         return result
 
@@ -231,6 +252,15 @@ def generate_text(decision: Decision, *, topic_event: dict | None = None,
         return FirstResponseResult(
             ok=False,
             error="empty model response",
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            provider=provider,
+            model=model,
+            contract=contract,
+        )
+    if quality_error := _first_response_quality_error(decision, text):
+        return FirstResponseResult(
+            ok=False,
+            error=quality_error,
             elapsed_ms=int((time.monotonic() - started) * 1000),
             provider=provider,
             model=model,
@@ -458,7 +488,8 @@ def _system_prompt() -> str:
         "就这样等省略句，必须先用回复上下文和近期上下文补全指代；上下文已经能"
         "判断时不要反问老板仓库、选项或目标对象。只输出一个 JSON 对象，字段为 "
         "text 和 response_contract。text 是老板可见正文；response_contract "
-        "只给系统看。"
+        "只给系统看。如果老板是在问“还活着吗/是否在线/能不能接活”这类状态探针，"
+        "首响里必须至少带一条刚核对过的证据；做不到就宁可失败，不要用空话冒充进展。"
     )
 
 
@@ -467,6 +498,94 @@ def _topic_line(topic_event: dict | None) -> str:
     if row and row.get("name") and topic_event.get("kind") == "switch":
         return f"切换到 #{row['name']}"
     return "首响暂不展开历史话题；只按老板本条原话判断"
+
+
+def _format_failure_fallback_text(topic_event: dict | None) -> str:
+    raw = str(tunables.tunable(
+        "router.first_response.failure_fallback_text",
+        str(tunables.tunable(
+            "router.fast_ack.text",
+            "系统已收到并写入主管队列。这只是自动入队回执，不代表主管已完成处理。",
+        ) or ""),
+    ) or "").strip()
+    if not raw:
+        return ""
+    topic_line = _topic_line(topic_event)
+    topic_name = ""
+    row = topic_event.get("topic") if topic_event else None
+    if row:
+        topic_name = str(row.get("name") or "")
+    try:
+        text = raw.format(topic=topic_name, topic_line=topic_line)
+    except (KeyError, IndexError, ValueError):
+        text = raw
+    if "话题：" not in text and "话题:" not in text and topic_line not in text:
+        text = f"{text}\n话题：{topic_line}"
+    return _normalize_failure_fallback_text(text)
+
+
+def _normalize_failure_fallback_text(text: str) -> str:
+    compact = str(text or "").strip()
+    if not compact:
+        return ""
+    if ("系统自动回执" not in compact
+            and "自动入队回执" not in compact
+            and "自动兜底回执" not in compact):
+        compact = f"系统自动回执：{compact}"
+    disclaimer = "这只是自动入队回执，不代表已完成处理或已有事实结论。"
+    low = compact.casefold()
+    if ("不代表已完成处理" not in compact
+            and "不代表主管已完成处理" not in compact
+            and "不是最终结论" not in compact
+            and "不是事实结论" not in compact):
+        if "\n" in compact:
+            first, rest = compact.split("\n", 1)
+            compact = f"{first} {disclaimer}\n{rest}"
+        else:
+            compact = f"{compact} {disclaimer}"
+    return compact
+
+
+def _send_failure_fallback(decision: Decision, *, local_id: str,
+                           topic_event: dict | None,
+                           chat_send: Callable | None,
+                           chat_id: str | None,
+                           profile: str | None) -> bool:
+    if not bool(tunables.tunable("router.fast_ack.enabled", False)):
+        return False
+    chat = chat_id if chat_id is not None else config.chat_id()
+    if not chat:
+        return False
+    text = _format_failure_fallback_text(topic_event)
+    if not text:
+        return False
+    prof = profile if profile is not None else config.lark_profile()
+    send = chat_send or _chat.send_text
+    try:
+        sent = send(chat, text, profile=prof, as_user=False)
+    except Exception as e:
+        local_facts.append_log(
+            "manager", "first_response_fallback_failed",
+            f"trace={local_id or decision.msg_id}; msg_id={decision.msg_id}; error={e}",
+            ref=local_id or decision.msg_id,
+        )
+        return False
+    if sent is None:
+        local_facts.append_log(
+            "manager", "first_response_fallback_failed",
+            (f"trace={local_id or decision.msg_id}; msg_id={decision.msg_id}; "
+             "error=chat send returned None"),
+            ref=local_id or decision.msg_id,
+        )
+        return False
+    sent_msg_id = str(sent.get("message_id") or sent.get("messageId") or "")
+    local_facts.append_log(
+        "manager", "first_response_fallback_sent",
+        (f"trace={local_id or decision.msg_id}; msg_id={decision.msg_id}; "
+         f"fallback_message_id={sent_msg_id}; text={text}"),
+        ref=local_id or decision.msg_id,
+    )
+    return True
 
 
 def _user_prompt(decision: Decision, topic_event: dict | None) -> str:
@@ -767,6 +886,25 @@ def _clean_model_text(text: str) -> str:
     if max_chars > 0 and len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars].rstrip("，,。 ") + "。"
     return cleaned
+
+
+def _is_status_probe_request(decision: Decision) -> bool:
+    text = f"{decision.reply_context or ''}\n{decision.text or ''}".casefold()
+    return any(marker in text for marker in _STATUS_PROBE_MARKERS)
+
+
+def _has_concrete_status_probe_evidence(text: str) -> bool:
+    low = str(text or "").casefold()
+    return (
+        any(marker in low for marker in _STATUS_PROBE_ACTION_MARKERS)
+        and any(marker in low for marker in _STATUS_PROBE_EVIDENCE_MARKERS)
+    )
+
+
+def _first_response_quality_error(decision: Decision, text: str) -> str:
+    if _is_status_probe_request(decision) and not _has_concrete_status_probe_evidence(text):
+        return "status probe first response lacks concrete evidence"
+    return ""
 
 
 def _log_failure(decision: Decision, local_id: str, error: str, elapsed_ms: int,

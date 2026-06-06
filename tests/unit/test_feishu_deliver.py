@@ -655,7 +655,7 @@ def test_wake_fn_called_per_target_with_spawn_cmd():
     assert "opus" in wake_script
 
 
-def test_wake_fn_returning_false_still_attempts_inject():
+def test_wake_fn_returning_false_skips_inject_and_records_failure():
     decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
     inject_calls = []
     with isolated_env(team=_WAKE_TEAM):
@@ -666,8 +666,9 @@ def test_wake_fn_returning_false_still_attempts_inject():
             wake_fn=lambda *a, **kw: False,
             session="S",
         )
-    assert len(inject_calls) == 1
-    assert report.injected == ["worker_a"]
+    assert inject_calls == []
+    assert report.injected == []
+    assert report.failed_inject == ["worker_a"]
 
 
 def test_no_wake_fn_skips_wake_step():
@@ -823,6 +824,14 @@ def test_compose_inject_text_includes_real_time_context_lookup_hint():
     assert "今天/上午/刚才/之前/还记得吗" in out
     assert "bin/ct recall manager" in out
     assert "logs/artifacts" in out
+
+
+def test_compose_inject_text_manager_boss_message_preempts_old_tasks():
+    out = _compose_inject_text("manager", _decision("你们能自我进化吗？说说你们的思路"))
+    assert "老板消息绝对抢占" in out
+    assert "不要先验收旧 worker 回执" in out
+    assert "不要先批量 `task done` 清尾巴" in out
+    assert "先 `task list --assignee manager --active` 对账当前活跃任务。" not in out
 
 
 def test_compose_inject_text_manager_real_first_response_when_enabled():
@@ -1030,8 +1039,25 @@ def test_topic_event_quote_reply_switches_to_parent_topic():
         assert topics.current_name() == "TeamOps"
 
 
-def test_topic_event_drift_detection_auto_creates_topic():
+def test_topic_event_drift_detection_is_disabled_by_default():
     with isolated_env(), env_patch(CLAUDETEAM_ROUTER_BOSS_PREEMPT_ENABLED="false"):
+        topics.set_capsule("TeamOps", "T-164 暂停；恢复时先查三维定位接口。")
+        topics.switch("TeamOps")
+
+        event, ctx = _topic_event_for_decision(
+            _boss_decision("飞书文档权限要改成公开可读并且需要设置下载水印限制"),
+            "manager",
+        )
+        assert event is not None
+        assert "自动检测话题漂移" not in ctx
+        assert topics.current_name() == "TeamOps"
+
+
+def test_topic_event_drift_detection_auto_creates_topic_when_enabled():
+    with isolated_env(), env_patch(
+        CLAUDETEAM_ROUTER_BOSS_PREEMPT_ENABLED="false",
+        CLAUDETEAM_TOPICS_AUTO_DRIFT_ENABLED="true",
+    ):
         topics.set_capsule("TeamOps", "T-164 暂停；恢复时先查三维定位接口。")
         topics.switch("TeamOps")
 
@@ -1042,8 +1068,7 @@ def test_topic_event_drift_detection_auto_creates_topic():
         assert event is not None
         assert event["kind"] == "switch"
         assert "自动检测话题漂移" in ctx
-        new_name = topics.current_name()
-        assert new_name != "TeamOps"
+        assert topics.current_name() != "TeamOps"
 
 
 def test_topic_event_short_text_does_not_trigger_drift():

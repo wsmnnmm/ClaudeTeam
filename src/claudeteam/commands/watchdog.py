@@ -128,7 +128,7 @@ def _make_manager_watch_alert_fn():
     chat card is the boss-visible fallback so a silent manager/worker pair
     does not stay invisible for another 15 minutes.
     """
-    if not bool(tunables.tunable("manager_watch.chat_alert", True)):
+    if not bool(tunables.tunable("manager_watch.public_chat_alert", False)):
         return None
     chat_id = config.chat_id()
     if not chat_id:

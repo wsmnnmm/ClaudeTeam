@@ -255,6 +255,11 @@ The base image deliberately does **not** bake in `claude` / `codex` /
 and `RUN` the install you actually need, or bind-mount the host binary
 into the container's `$PATH`.
 
+Optional: if you want to add ECC to ClaudeTeam, prefer installing it
+into ClaudeTeam's isolated per-agent homes rather than the operator's
+real global CLI homes. See
+[`docs/ecc-minimal-integration.md`](ecc-minimal-integration.md).
+
 ---
 
 ## Configuration: `claudeteam.toml`
@@ -293,8 +298,137 @@ worker_to_user    = true                      # show worker completions in group
 worker_to_worker  = true                      # show inter-worker pings in group
 ```
 
-Defaults are wide open (everything visible) — flip individual keys
-to `false` once the team's noise level needs trimming.
+Treat `[chat.publish]` as a **3-class gate**:
+
+- `"always"` = **must publish**. Use for channels that can never be
+  muted, such as boss → manager and manager → boss.
+- `true` = **optional publish**. Normal progress cards may enter the
+  group, but this lane is allowed to become quieter later.
+- `false` = **do not publish**. The message should stay in local
+  `send`/`inbox`/audit flow and not surface to the group.
+
+Operator rule of thumb: start noisy, then trim. Keep boss-facing lanes
+on `"always"`, leave routine worker chatter on `true` during early
+rollout, and only flip a lane to `false` after you are sure that lane
+is pure noise.
+
+Boss-facing cadence should stay event-driven, not loop-driven:
+
+- **Send immediately** when the boss assigns work, so the group has a
+  visible "received / taking it" acknowledgement.
+- **Send on real new progress**: a new artifact, a new blocker, a stage
+  change, or a decision that changes what happens next.
+- **Send one follow-up nudge** when the boss has been silent for a long
+  time and a reply/decision is needed to unblock the team.
+- **Do not spam repeated status checks**. If you already sent "checking",
+  "still looking", or a similar status card, do not re-send the same
+  update every 5 minutes with no new fact.
+
+**Forced-broadcast exception:** mainline is expected to treat worker
+completion receipts carrying `artifact` or `--done` as **must
+publish**, even if the ordinary progress lane for that direction is
+configured `false`. In other words, "done with evidence" belongs to the
+"always lands" class, not the "optional progress update" class.
+
+For worker progress that flows through `claudeteam send manager ...`,
+you can further tune the **content-level** auto-broadcast gate:
+
+```toml
+[chat.publish.worker_progress]
+must_send_contains = ["根因", "修复", "artifact", "receipt", "blocker", "交付"]
+optional_contains = ["已接手", "排查中", "复现中", "处理中"]
+forbidden_exact = ["收到", "对齐", "待命", "继续监控"]
+forbidden_contains = ["无新事实"]
+broadcast_first_optional = true
+```
+
+Treat these lists as another 3-class gate:
+
+- `must_send_contains` = **must publish**. If the worker progress text
+  contains any of these markers, ClaudeTeam auto-broadcasts it to the group.
+- `optional_contains` = **optional publish**. These updates are allowed
+  but do not fully free-run. With `broadcast_first_optional = true`,
+  the first optional progress for one worker/task pair can surface once,
+  so the boss hears the基层开始干活; later same-class echoes stay quiet
+  unless they turn into must-send evidence.
+- `forbidden_exact` / `forbidden_contains` = **do not publish**. These
+  are routine acknowledgements that should stay in the internal
+  `send`/`inbox`/audit chain.
+
+Precedence is: `artifact` / `--done` forced publish → forbidden lists →
+must-send list → first optional heartbeat (if enabled) → optional /
+unmatched text.
+
+For explicit `claudeteam say manager ... --to user` progress cards, you
+can tune a parallel gate:
+
+```toml
+[chat.publish.manager_progress]
+must_send_contains = ["已派发", "已分派", "已回报", "自然窗口", "receipt", "sync", "watchdog", "心跳", "blocker", "阻塞", "卡点"]
+optional_contains = ["处理中", "继续跟进", "等待回报", "收集中", "汇总中", "核对中", "观察中", "等待中"]
+forbidden_exact = ["收到", "对齐", "待命", "继续监控"]
+forbidden_contains = ["无新事实"]
+```
+
+Use this to keep two promises at once:
+
+- the boss should still hear real manager progress cards;
+- the boss should not see meaningless "收到 / 对齐 / 无新事实" noise.
+
+Structured manager progress cards like `结论 / 证据 / 下一步 / 需要老板`
+should be treated as **must-send** progress, not as final delivery
+cards. They may carry task IDs or worker names, but path-only delivery,
+CLI flags, and heavy internal gate jargon should still be blocked.
+
+### 20 operator scenarios
+
+1. **Boss assigns a task in group** → **must publish**. Reply once right
+   away with "received / taking it / dispatching".
+2. **Boss asks who is handling the task** → **must publish**. State the
+   current owner and the next step.
+3. **Manager already started internal dispatch** → **must publish** one
+   boss-facing acknowledgement anyway; internal dispatch does not replace
+   the receipt.
+4. **Worker sends a new artifact path plus a useful summary** → **must
+   publish**. This is real progress with evidence.
+5. **Worker sends `--done` with `artifact`** → **must publish** even if
+   ordinary worker progress is otherwise muted.
+6. **Manager reviews and accepts the artifact** → **must publish**. Boss
+   should see accepted completion, not only raw worker output.
+7. **A new blocker appears and changes the plan** → **must publish**.
+   Real blocker updates belong in the boss feed.
+8. **The blocker needs boss approval, login, money, or credentials** →
+   **must publish** and ask clearly for that action.
+9. **The team moves from investigation to active fix** → **may
+   publish** if it helps the boss understand risk and momentum.
+10. **The team moves from fix-in-progress to waiting-review** → **may
+    publish**; if paired with artifact or `--done`, treat it as **must
+    publish**.
+11. **Boss has been silent for a long time and the team is blocked on a
+    decision** → **must publish** one follow-up nudge.
+12. **Boss has been silent but the team is not blocked** → **do not
+    publish** a reminder just to keep the thread warm.
+13. **Manager sends the first "checking now" update after task intake** →
+    **may publish** once if reassurance is useful.
+14. **Five minutes later there is still no new fact, only "still
+    checking"** → **do not publish**. Repeating the same status is spam.
+15. **Ten minutes later there is still no new artifact, blocker, or
+    conclusion** → **do not publish**. Silence is better than looped
+    noise.
+16. **Worker pings another worker for help** → **may publish** during
+    setup/debug, but usually becomes **do not publish** after noise
+    trimming.
+17. **Manager sends a normal internal dispatch card to a worker** →
+    **may publish** during early rollout, but often becomes **do not
+    publish** in production.
+18. **A watcher wants to repeat a status-check card on a timer** → **do
+    not publish** unless there is a new fact, artifact, blocker, or ask.
+19. **A message only says "received", "aligned", "standing by", "still
+    working", or "no new update"** → **do not publish**. Keep it in
+    local audit.
+20. **Any message changes the boss's understanding of reality**: new
+    evidence, new conclusion, new ETA, new risk, new ask, or accepted
+    delivery → **must publish**.
 
 **Override precedence** (highest wins): `env` > `claudeteam.toml` > code default.
 See `src/claudeteam/runtime/tunables.py` for the cascade.

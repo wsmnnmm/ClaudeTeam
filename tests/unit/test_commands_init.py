@@ -73,6 +73,17 @@ def test_init_emits_chat_publish_section():
         assert cfg["chat"]["publish"]["manager_to_worker"] is True
         assert cfg["chat"]["publish"]["worker_to_manager"] is True
         assert cfg["chat"]["publish"]["worker_to_worker"] is True
+        worker_progress = cfg["chat"]["publish"]["worker_progress"]
+        assert "根因" in worker_progress["must_send_contains"]
+        assert "排查中" in worker_progress["optional_contains"]
+        assert "收到" in worker_progress["forbidden_exact"]
+        assert "无新事实" in worker_progress["forbidden_contains"]
+        assert worker_progress["broadcast_first_optional"] is True
+        manager_progress = cfg["chat"]["publish"]["manager_progress"]
+        assert "已派发" in manager_progress["must_send_contains"]
+        assert "处理中" in manager_progress["optional_contains"]
+        assert "收到" in manager_progress["forbidden_exact"]
+        assert "无新事实" in manager_progress["forbidden_contains"]
 
 
 def test_init_enables_fast_ack_by_default():
@@ -226,3 +237,5 @@ def test_init_template_passes_tomllib_parse():
         assert "limits" in cfg
         assert "router" in cfg
         assert "feishu" in cfg
+        assert cfg["base_intake"]["decision_receipt_field"] == "决策对象回执"
+        assert cfg["base_intake"]["decision_detail_field"] == "决策对象详情"

@@ -130,6 +130,10 @@ claudeteam health                # 查 green/yellow/red
 
 详细安装、Docker 部署、多团队隔离、故障排查见 **[docs/DEPLOYMENT.md](DEPLOYMENT.md)**。
 
+如果你想把 ECC 接进 ClaudeTeam，建议优先走“只增强专岗 worker、
+不接管全局 `~/.codex` / `~/.claude`”的最小方案，见
+**[docs/ecc-minimal-integration.md](ecc-minimal-integration.md)**。
+
 ---
 
 ## 多 CLI 适配
@@ -160,6 +164,10 @@ role = "数据分析员工"
 cli = "kimi-code"
 role = "策划员工"
 ```
+
+如果你的目标是加强审查、文档核验、TDD、verification，建议保持
+`manager` 轻量，把 ECC 只装到专岗 worker 上。接入方法见
+**[docs/ecc-minimal-integration.md](ecc-minimal-integration.md)**。
 
 ---
 

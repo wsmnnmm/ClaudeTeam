@@ -21,14 +21,22 @@ class FirstOutputCheck:
 _URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&*+,;=%-]+")
 _MARKDOWN_URL_RE = re.compile(r"\[[^\]]+\]\((?P<url>https?://[^)]+)\)")
 _REFERENCE_FIELD_RE = re.compile(
-    r"(?:artifact|Artifact|产物|链接|URL|url|截图|报告|文件|路径|"
+    r"(?:artifact|Artifact|产物|链接|URL|url|截图|报告|文件|路径|目录|证据|receipt|日志|"
     r"commit|diff|PR|pr|预览|preview)\s*[:：]\s*(?P<value>.+)"
+)
+_PATH_RE = re.compile(
+    r"(?P<value>(?:/|(?:\./)|(?:\.\./)|(?:[A-Za-z0-9._-]+/))"
+    r"[A-Za-z0-9._~!$&'()*+,;=:@%/\-]+)"
 )
 _BLOCKER_RE = re.compile(
     r"(?:blocker|Blocker|卡点|阻塞|卡住|失败原因|需要授权|需要登录|"
     r"缺少数据|缺少|429|接口报错|报错)\s*[:：]?\s*(?P<detail>.*)"
 )
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_EMBEDDED_REFERENCE_CUES = (
+    "artifact", "产物", "链接", "url", "截图", "报告", "文件", "路径",
+    "目录", "证据", "receipt", "日志", "log", "raw", "已落盘", "已生成",
+)
 _VAGUE_OUTPUT_MARKERS = (
     "收到", "已收到", "在看", "处理中", "正在处理", "正在生成",
     "生成中", "马上", "稍后", "待会", "继续推进", "有进展再同步",
@@ -186,13 +194,48 @@ def _url_usable(ref: str, task: dict) -> FirstOutputCheck:
     return FirstOutputCheck(True, "ok", url)
 
 
-def _reference_values(text: str) -> list[str]:
+def _reference_field_values(text: str) -> list[str]:
     values = []
     for line in str(text or "").splitlines():
         match = _REFERENCE_FIELD_RE.search(line)
         if match:
             values.append(match.group("value"))
     return values
+
+
+def _embedded_reference_values(text: str) -> list[str]:
+    values = []
+    for line in str(text or "").splitlines():
+        values.extend(_line_reference_values(line))
+    return values
+
+
+def _line_reference_values(line: str) -> list[str]:
+    values: list[str] = []
+    match = _REFERENCE_FIELD_RE.search(line)
+    if match:
+        values.append(match.group("value"))
+
+    lowered = line.lower()
+    if not any(cue in line or cue in lowered for cue in _EMBEDDED_REFERENCE_CUES):
+        return values
+
+    for md in _MARKDOWN_URL_RE.finditer(line):
+        values.append(md.group("url"))
+    for url in _URL_RE.findall(line):
+        values.append(url)
+    for path_match in _PATH_RE.finditer(line):
+        values.append(path_match.group("value"))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = _clean_ref(value)
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        deduped.append(value)
+    return deduped
 
 
 def check_reference(value: str, task: dict) -> FirstOutputCheck:
@@ -264,7 +307,7 @@ def check(task: dict, msg: dict) -> FirstOutputCheck:
     if artifact:
         return check_reference(artifact, task)
     text = str(msg.get("content") or "")
-    refs = _reference_values(text)
+    refs = _reference_field_values(text)
     if refs:
         results = [check_reference(ref, task) for ref in refs]
         for result in results:
@@ -283,6 +326,13 @@ def check(task: dict, msg: dict) -> FirstOutputCheck:
     summary = _structured_summary_check(text, task)
     if summary is not None:
         return summary
+    embedded_refs = _embedded_reference_values(text)
+    if embedded_refs:
+        results = [check_reference(ref, task) for ref in embedded_refs]
+        for result in results:
+            if result.valid:
+                return result
+        return results[0]
     if _text_is_vague_output(text):
         return FirstOutputCheck(False, "空话", _one_line(text))
     return FirstOutputCheck(False, "无证据", _one_line(text)[:160])

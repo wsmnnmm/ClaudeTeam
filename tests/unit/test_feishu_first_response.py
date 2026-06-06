@@ -116,6 +116,84 @@ def test_generate_text_can_use_first_response_provider_preset():
     assert result.contract["type"] == "research"
 
 
+def test_generate_text_service_override_scrubs_stale_alias_model():
+    captured = {}
+
+    def fake_http(url, payload, headers, timeout_s):
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["headers"] = headers
+        captured["timeout_s"] = timeout_s
+        return {"output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "text": "我先接住这条催促，下一条补核验后的正式进展。",
+            "response_contract": {
+                "type": "verification",
+                "next_step": "补正式核验进展",
+            },
+        }, ensure_ascii=False)}]}]}
+
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+                "provider_preset": "deepseek-primary",
+            },
+        }
+    }
+    with isolated_env(team=team) as tmp, env_patch(
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_PROVIDER="anthropic",
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_ENDPOINT="responses",
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_MODEL="haiku"):
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "ccswitch.json").write_text(json.dumps({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+                "ANTHROPIC_MODEL": "deepseek-v4-pro",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-pro",
+                "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+                "OPENAI_API_KEY": "sk-deepseek",
+                "OPENAI_MODEL": "deepseek-v4-pro",
+                "OPENAI_WIRE_API": "chat",
+            },
+        }), encoding="utf-8")
+        (state / "provider-presets.json").write_text(json.dumps({
+            "presets": {
+                "deepseek-primary": {
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+                    "ANTHROPIC_MODEL": "deepseek-v4-pro",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-pro",
+                },
+            },
+        }), encoding="utf-8")
+        (state / "provider-service.json").write_text(json.dumps({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-primary",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "pk-zyapi",
+                "OPENAI_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "OPENAI_API_KEY": "pk-zyapi",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_MODEL_PROVIDER": "custom",
+                "OPENAI_WIRE_API": "responses",
+                "OPENAI_REQUIRES_OPENAI_AUTH": "true",
+                "OPENAI_DISABLE_RESPONSE_STORAGE": "true",
+            },
+        }), encoding="utf-8")
+
+        result = generate_text(_boss_decision(), http_json=fake_http)
+
+    assert result.ok is True
+    assert result.model == "gpt-5.5"
+    assert captured["url"] == "https://zyapi.tuluo.top:8888/v1/responses"
+    assert captured["payload"]["model"] == "gpt-5.5"
+    assert captured["headers"]["authorization"] == "Bearer pk-zyapi"
+
+
 def test_generate_text_includes_recent_manager_context_for_option_reply():
     captured = {}
 
@@ -288,6 +366,36 @@ def test_generate_text_falls_back_when_messages_endpoint_is_not_allowed():
     assert result.contract["type"] == "quick_answer"
 
 
+def test_generate_text_rejects_status_probe_placeholder_without_evidence():
+    def fake_http(_url, _payload, _headers, _timeout_s):
+        body = {
+            "text": (
+                "我理解你是在问团队成员是否在线、是否还能继续推进；"
+                "我先按当前上下文去核对最近回执和活跃状态，"
+                "下一条我会带上能证明成员是否可响应的最新证据。"
+            ),
+            "response_contract": {
+                "type": "verification",
+                "next_step": "补团队成员在线证据",
+            },
+        }
+        return {"output_text": json.dumps(body, ensure_ascii=False)}
+
+    env = {
+        "ANTHROPIC_BASE_URL": "https://api.example.com/v1",
+        "ANTHROPIC_AUTH_TOKEN": "sk-test",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "fast-model",
+    }
+    decision = _boss_decision(text="团队成员还活着吗")
+    with isolated_env(), env_patch(
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_PROVIDER="anthropic",
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_ENDPOINT="responses"):
+        result = generate_text(decision, http_json=fake_http, provider_env=env)
+
+    assert result.ok is False
+    assert "status probe" in result.error
+
+
 def test_run_once_sends_and_marks_first_response_without_reading_inbox():
     sent = []
 
@@ -358,5 +466,125 @@ def test_run_once_logs_failure_and_keeps_inbox_unmarked():
     assert result.ok is False
     assert "first_response_at" not in row
     assert row["read"] is False
+    assert any(log["type"] == "first_response_failed"
+               and "timeout" in log["content"] for log in logs)
+
+
+def test_run_once_failure_sends_fast_ack_fallback_and_logs_both_events():
+    sent = []
+
+    def fake_generate(*_a, **_kw):
+        return FirstResponseResult(
+            ok=False,
+            error="timeout",
+            provider="anthropic",
+            model="fast-model",
+            elapsed_ms=6001,
+        )
+
+    def fake_send(chat_id, text, **kw):
+        sent.append({"chat_id": chat_id, "text": text, **kw})
+        return {"message_id": "om_fallback"}
+
+    with isolated_env(), env_patch(
+            CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true",
+            CLAUDETEAM_ROUTER_FIRST_RESPONSE_FAILURE_FALLBACK_TEXT=(
+                "自动兜底回执：首响模型超时，已转主管队列。")):
+        local_id = local_facts.append_message("manager", "user", "老板消息", priority="高")
+        result = run_once(
+            _boss_decision(),
+            local_id=local_id,
+            chat_id="oc_x",
+            profile="prod",
+            chat_send=fake_send,
+            generate_fn=fake_generate,
+            topic_event={"kind": "switch", "topic": {"name": "TeamOps"}},
+        )
+        row = local_facts.get_message(local_id)
+        logs = local_facts.list_logs("manager", limit=10)
+
+    assert result.ok is False
+    assert row["read"] is False
+    assert "first_response_at" not in row
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == "oc_x"
+    assert sent[0]["profile"] == "prod"
+    assert sent[0]["as_user"] is False
+    assert "自动兜底回执" in sent[0]["text"]
+    assert "话题：切换到 #TeamOps" in sent[0]["text"]
+    assert any(log["type"] == "first_response_fallback_sent"
+               and "om_fallback" in log["content"] for log in logs)
+    assert any(log["type"] == "first_response_failed"
+               and "timeout" in log["content"] for log in logs)
+
+
+def test_run_once_failure_fallback_appends_honest_system_disclaimer():
+    sent = []
+
+    def fake_generate(*_a, **_kw):
+        return FirstResponseResult(
+            ok=False,
+            error="timeout",
+            provider="anthropic",
+            model="fast-model",
+            elapsed_ms=6001,
+        )
+
+    def fake_send(chat_id, text, **kw):
+        sent.append({"chat_id": chat_id, "text": text, **kw})
+        return {"message_id": "om_fallback"}
+
+    with isolated_env(), env_patch(
+            CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true",
+            CLAUDETEAM_ROUTER_FAST_ACK_TEXT=(
+                "收到，已进入云上学习团队主管前台。"
+                "我会先做云上最小真实核验；1-3 分钟内给你当前事实/卡点/下一步。")):
+        local_id = local_facts.append_message("manager", "user", "团队成员还活着吗", priority="高")
+        result = run_once(
+            _boss_decision(text="团队成员还活着吗"),
+            local_id=local_id,
+            chat_id="oc_x",
+            chat_send=fake_send,
+            generate_fn=fake_generate,
+        )
+
+    assert result.ok is False
+    assert len(sent) == 1
+    assert "系统自动回执" in sent[0]["text"]
+    assert "不代表已完成处理或已有事实结论" in sent[0]["text"]
+
+
+def test_run_once_failure_logs_fallback_send_error_without_marking_inbox():
+    def fake_generate(*_a, **_kw):
+        return FirstResponseResult(
+            ok=False,
+            error="timeout",
+            provider="anthropic",
+            model="fast-model",
+            elapsed_ms=6001,
+        )
+
+    def fake_send(*_a, **_kw):
+        raise RuntimeError("lark down")
+
+    with isolated_env(), env_patch(
+            CLAUDETEAM_ROUTER_FAST_ACK_ENABLED="true",
+            CLAUDETEAM_ROUTER_FAST_ACK_TEXT="自动入队回执"):
+        local_id = local_facts.append_message("manager", "user", "老板消息", priority="高")
+        result = run_once(
+            _boss_decision(),
+            local_id=local_id,
+            chat_id="oc_x",
+            chat_send=fake_send,
+            generate_fn=fake_generate,
+        )
+        row = local_facts.get_message(local_id)
+        logs = local_facts.list_logs("manager", limit=10)
+
+    assert result.ok is False
+    assert row["read"] is False
+    assert "first_response_at" not in row
+    assert any(log["type"] == "first_response_fallback_failed"
+               and "lark down" in log["content"] for log in logs)
     assert any(log["type"] == "first_response_failed"
                and "timeout" in log["content"] for log in logs)

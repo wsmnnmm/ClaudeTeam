@@ -144,6 +144,28 @@ def _record_sort_key(row: dict) -> tuple[int, int]:
     return (_ms(row, "read_at"), _ms(row, "created_at"))
 
 
+def _pick_open_record(rows: list[dict], *, expected_owner: str = "",
+                      task_id: str = "", local_id: str = "") -> dict | None:
+    if not rows:
+        return None
+    if local_id:
+        exact = [row for row in rows if str(row.get("local_id") or "") == local_id]
+        if exact:
+            return sorted(exact, key=_record_sort_key)[-1]
+    if task_id:
+        matching_task = [row for row in rows if str(row.get("task_id") or "") == task_id]
+        if matching_task:
+            return sorted(matching_task, key=_record_sort_key)[-1]
+    if expected_owner:
+        matching_owner = [
+            row for row in rows
+            if str(row.get("expected_owner") or "") == expected_owner
+        ]
+        if matching_owner:
+            return sorted(matching_owner, key=_record_sort_key)[-1]
+    return sorted(rows, key=_record_sort_key)[-1]
+
+
 def _iter_known_messages() -> list[dict]:
     names = {"manager", "user"}
     try:
@@ -249,7 +271,9 @@ def record_boss_read(row: dict, *, now_ms_fn: Callable[[], int] = now_ms) -> dic
 
 
 def close_latest(kind: str, detail: str, *, closed_by: str = "manager",
-                 ref: str = "", now_ms_fn: Callable[[], int] = now_ms) -> dict | None:
+                 ref: str = "", task_id: str = "",
+                 expected_owner: str = "", local_id: str = "",
+                 now_ms_fn: Callable[[], int] = now_ms) -> dict | None:
     if not enabled():
         return None
     now = now_ms_fn()
@@ -258,7 +282,14 @@ def close_latest(kind: str, detail: str, *, closed_by: str = "manager",
         rows = _open_records(data)
         if not rows:
             return None
-        target = sorted(rows, key=_record_sort_key)[-1]
+        target = _pick_open_record(
+            rows,
+            expected_owner=expected_owner,
+            task_id=task_id,
+            local_id=local_id,
+        )
+        if target is None:
+            return None
         target.update({
             "closed_at": now,
             "closed_by": closed_by,
@@ -279,7 +310,7 @@ def mark_delegate(to_agent: str, message: str, *, task_id: str = "",
         detail += f": {_clip(message, 120)}"
     return close_latest(
         "delegate", detail, closed_by=f"manager->{to_agent}",
-        ref=ref, now_ms_fn=now_ms_fn)
+        ref=ref, task_id=task_id, expected_owner=to_agent, now_ms_fn=now_ms_fn)
 
 
 def mark_boss_say(message: str, *, image: str = "", ref: str = "",

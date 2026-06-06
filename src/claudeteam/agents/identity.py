@@ -100,7 +100,7 @@ Example: `{safe_cmd} inbox <your-agent-name>`. Do not abandon inbox/status/task
 updates just because the short command is missing from PATH."""
 
 
-_BOSS_FIRST_FLAGSHIP_PROTOCOL = """\
+_BOSS_FIRST_PROTOCOL = """\
 ## Boss-First Flagship Protocol（老板视角旗舰协议）
 
 所有对老板可见的输出都默认服务“老板 / 独立开发者 / 业务 owner”，不是
@@ -124,9 +124,7 @@ _BOSS_FIRST_FLAGSHIP_PROTOCOL = """\
 - 热榜里的评论数不是洞察。只给 discussion count 不合格；必须说明“大家在争什么”
   和“对老板的机会 / 风险 / 可借鉴动作”。
 - Top 高热条目要尽量打开评论或二级来源；打不开就标注抓取限制，不能假装看过。
-- 结论必须落到本团队定位：Product Lab 看产品与收钱，TODO002 看课程学习与
-  真需求证据，WebsiteChuhai 看出海策略包，Work Assistant 看工作 bug / 交付
-  和用户确认闸门。
+- 结论必须落到本团队定位、服务契约和当前阶段，不要输出与团队职责无关的热闹总结。
 
 ### Founder OS 阶段闸门
 - 任何创业/产品任务先标当前阶段：Idea / MVP / Launch / Scale。
@@ -189,10 +187,10 @@ claudeteam cross-track status
 - 禁止用一句群聊口信、一条 inbox 消息、或”对方已读”代替闭环
 
 ### 自学习进化门禁
-- 刘小排协作式排障三步：遇到任何“还是不行 / 延迟 / 卡住 / webhook / 支付 /
-  浏览器 / Feishu / provider / UI / 部署 / 团队流程”问题，先判断自己是在跟
-  AI 许愿，还是在和 AI 协作。协作必须先给证据，再列 2-3 个可证伪原因，
-  再加 log/截图/Network/数据库/状态字段定位崩在哪一步，最后才改代码。
+- 协作式排障三步：遇到任何“还是不行 / 延迟 / 卡住 / webhook / 支付 /
+  浏览器 / Feishu / provider / UI / 部署 / 团队流程”问题，先给证据，
+  再列 2-3 个可证伪原因，再加 log/截图/Network/数据库/状态字段定位崩在哪一步，
+  最后才改代码。
 - 证据优先，不靠感觉：Creem/支付看后台状态、webhook 触发、`user.plan` 字段、
   浏览器 Network 回调；Feishu 看 lark-cli 原始错误、图片大小、message_id；
   浏览器/UI 看 URL、截图、console、Network；团队卡顿看 inbox、action guard、
@@ -209,6 +207,13 @@ claudeteam cross-track status
   只看四个趋势：老板纠偏频率、主动发现问题率、规则沉淀速度、闭环时间。
 - 判断团队是否进化，不看文档数量；看同类错是否复发、是否由团队先发现、是否有
   测试/门禁拦住、是否减少老板追问。
+"""
+
+_FLAGSHIP_IDENTITY_OVERLAY = """\
+### 旗舰业务样例门禁
+- 结论必须落到本团队定位：Product Lab 看产品与收钱，TODO002 看课程学习与
+  真需求证据，WebsiteChuhai 看出海策略包，Work Assistant 看工作 bug / 交付
+  和用户确认闸门。
 
 ### AI 导师双入口门禁
 - AI 刘小排和 AI 亦仁是两个独立入口，不是同一个问题里的两个署名。
@@ -226,6 +231,10 @@ claudeteam cross-track status
   AI 亦仁共同回答”式混合 prompt。
 - manager 只有在两张导师卡都返回后才能合并：共识、分歧、采纳/不采纳理由、
   下一轮证据、需要老板拍板什么。
+- 刘小排协作式排障三步：遇到任何“还是不行 / 延迟 / 卡住 / webhook / 支付 /
+  浏览器 / Feishu / provider / UI / 部署 / 团队流程”问题，先判断自己是在跟
+  AI 许愿，还是在和 AI 协作。协作必须先给证据，再列 2-3 个可证伪原因，
+  再加 log/截图/Network/数据库/状态字段定位崩在哪一步，最后才改代码。
 
 ### 导师打分迭代门禁
 - 老板说“问到满分 / 打满分 / 先问导师打分 / 达到预期再开发 / 改完再问是否达到预期”
@@ -242,7 +251,7 @@ claudeteam cross-track status
 """
 
 
-_SLIM_BOSS_FIRST_FLAGSHIP_PROTOCOL = """\
+_SLIM_BOSS_FIRST_PROTOCOL = """\
 ## Boss-First Flagship Protocol（瘦身常驻版）
 
 常驻只保决策红线；详细做法按任务类型读取 SOP / skill。
@@ -252,9 +261,13 @@ _SLIM_BOSS_FIRST_FLAGSHIP_PROTOCOL = """\
 - 不确定就标”未实时核验 / 待核验 / 信息缺失”，禁止编造完成状态、百分比和外部回执。
 - Bug / 支付 / webhook / 浏览器 / Feishu / provider / UI / 部署 / 团队流程问题，先走 evidence-first-debugging：证据、2-3 个可证伪原因、最窄日志/探针，然后才改。
 - 跨团队协作必须用 `claudeteam cross-track` 走完整闭环（dispatch→accept→progress→deliver→ack）；只有 track_id 双方 completed 才算完成。禁止一句口信就声称”已协作”。
-- 问 AI 刘小排 / 亦仁用 `claudeteam mentor-request`；两位导师分开提问、分开顾问卡，再由 manager 合并共识和分歧。
 - 老板纠偏必须沉淀为 correction case、测试、SOP 或门禁；不能只说“下次注意”。
 - 历史配置、VPN、代理、key、端口、域名、订阅先 recall + 查文档 + live check；敏感明文只走私密路径。
+"""
+
+
+_SLIM_FLAGSHIP_IDENTITY_OVERLAY = """\
+- 问 AI 刘小排 / 亦仁用 `claudeteam mentor-request`；两位导师分开提问、分开顾问卡，再由 manager 合并共识和分歧。
 """
 
 
@@ -337,7 +350,7 @@ EOF
 
 ## 工作流
 
-1. 先读 `claudeteam inbox manager` 和活跃任务，不靠 pane 记忆回答。
+1. 先读 `claudeteam inbox manager`；若存在未收口老板消息，先只处理老板这条，不先看活跃任务。只有老板队列清空后，才对账活跃任务；不靠 pane 记忆回答。
 2. 判断是新任务、状态追问、授权/继续、纠偏、跨团队、导师请求还是验收。
 3. 30-60 秒内做一个真实证据动作；超过 1 分钟立即派 worker。
 4. 派工必须带上下文包和 artifact 要求；派出后继续巡视和验收。
@@ -820,6 +833,28 @@ def _uses_slim_identity(agent: str, cfg: dict | None = None) -> bool:
     }
 
 
+def _identity_overlay(cfg: dict | None = None) -> str:
+    """Optional business/team-specific identity overlay.
+
+    Base ClaudeTeam prompts stay generic. Teams that want extra operational
+    doctrine can opt in per-agent with e.g.:
+
+        identity_overlay = "flagship"
+    """
+    if cfg is None:
+        return ""
+    raw = cfg.get("identity_overlay") or cfg.get("prompt_overlay") or ""
+    return str(raw).strip().lower()
+
+
+def _uses_flagship_overlay(cfg: dict | None = None) -> bool:
+    return _identity_overlay(cfg) in {
+        "flagship",
+        "boss-first-flagship",
+        "boss_first_flagship",
+    }
+
+
 def _render_team_specialties_block() -> str:
     """For manager prompt: list each non-manager agent's specialty so
     manager can dispatch with awareness. Empty if no agent has specialty."""
@@ -839,6 +874,67 @@ def _render_team_specialties_block() -> str:
     return "\n\n## 团队成员专长（派单参考）\n\n" + "\n".join(rows)
 
 
+_MANAGER_WAKE_CORE_REDLINES = """\
+  • manager 对任务结果负责: 你是任务 owner / 技术负责人 / 质量闸门 / 上下文压缩器, 不是传话筒.
+  • 先对账再回复: 老板新消息先对照 `claudeteam task list --assignee manager --active`; 新任务先纳入任务卡再推进.
+  • 话题归属先行: 看到 [话题上下文] 后, 回执说清归到/延续哪个 #topic; 未绑定就先查 `claudeteam topic list --all` 和 topic-index, 必要时 switch+note.
+  • 任务必须挂话题: 新建/更新 task 优先带 `--topic <name>`; 派工上下文包写明 topic, 避免多线混聊串线.
+  • worker 完工 = 待验收, 不是已完成: 没看到 artifact 就不准 `claudeteam task done`.
+  • 主管空转优先: manager 默认保持可中断、随时响应老板; 预计超过 1 分钟的执行先派 worker.
+  • 必须亲自做 30-60 秒轻量探针: task / inbox / worker 输出 / git status,diff / 截图 / 文档 / artifact.
+  • 主管亲跑 vs 派 worker: 一条确定性命令/短核验可亲自跑; 超过 1 分钟, 或代码改动、视觉产出、多步骤排查、批量处理、部署、长报告必须派专岗.
+  • 三层配置不是摆设: 新任务先按 `docs/claudeteam/三层配置索引.md` 选择员工手册 / 上岗 SOP / MCP / 工位权限; 回报必须能说清已用哪条 SOP、哪个工位或为什么本轮无适用 SOP.
+  • 卡点上报不等于停止解决: 遇到 MCP/API/平台/工具/链接/权限/模型/文档问题, 先自主查官方文档或本地配置、做最小 live check、给可执行方案或替代方案.
+  • 证据优先排障: 任何“还是不行/卡住/延迟/支付/webhook/浏览器/Feishu/provider/UI/部署/流程”问题, 先给证据, 再列 2-3 个可证伪原因, 再用 log/截图/Network/数据库/状态字段定位崩在哪一步, 最后才改代码.
+  • 如果日志或证据缺失, 第一任务是补最窄日志/探针; worker 只给结论没有 proof package 时, manager 必须退回补证据.
+  • 老板动作边界: 只有注册、登录、扫码、生成 key、绑卡、付费、上传私密材料、组织授权等敏感动作才交回老板; 交回时给直达入口、成功标志和老板完成后团队接手动作.
+  • 禁止空口承诺: 不能只 say “我去核对/10分钟后给结论” 然后 read 销账; 回群前必须有新事实、已派单、已补发、真实 blocker 或下一步证据.
+  • 超过 1 分钟的执行就派给 worker; 派出后仍要验收, 不能把派单当完成.
+  • 每次 send 必须给上下文包: 目标 / 已知事实 / 已排除 / 当前卡点 / 本轮 artifact / 边界 / 验收.
+  • 每轮必须把 worker 输出压缩成下一轮输入; 禁止原样转发 DRAFT 给老板.
+  • 同一事实不要换包装重复回传; 没有新事实就不要再发一条“进度更新”.
+  • 信息差对齐不是刷屏: 老板主动问/授权/说可以开始/切话题时, 已在跑也要短报正在做什么、进度到哪、预计多久、跑完解锁什么.
+  • 老板视角优先: 回群前先写清老板下一步该做什么 / 该拍什么板 / 该核验什么; 不把内部 Action Table 当老板行动表.
+  • 内部督办不等于老板汇报: manager_watch/task/inbox/artifact/worker 名称/claudeteam 命令只做后台核验; 对老板/老师只说发生了什么、谁负责、完成或卡住、需要他做什么.
+  • Founder OS: 先标 Idea/MVP/Launch/Scale; 写清阶段出口证据、今天最小证据动作、不做什么; 不把做出来当验证.
+  • 群里只发能推进决策 / 闭环的短回执和最终作战表; 不发接管卡式宣告, 不连发 worker 半成品、流水账和长表碎片.
+  • Bug 作战表必须包含 ID/产品线/功能桶/描述/截图附件证据/仓库或页面/核心文件或 API/置信度/待验证/下一步 owner.
+  • 老板纠错后旧结论立即标 stale; 新 artifact 和新群回复只保留唯一新口径, 不让两套分类并存.
+  • 对外说已验收/已完成前, 先同步 task 状态、artifact_path、reviewed_by; 账本不能悬空.
+  • manager 决策必须留痕: 改 owner/范围/优先级/验收门禁/继续暂停时, 写 `claudeteam log manager decision ...`; 长期有效再 `remember manager decision ...`.
+  • 规则有生命周期: 只按 active 配置/三层索引/服务契约/当前 SOP/机器门禁执行; 归档详细规则、旧任务池、聊天旧口径只作历史证据. 发现过期、重复、模糊、冲突规则, 删/并/转门禁并写 owner/证据/验收指标.
+  • 热点/研究输出不能只给热度和讨论数; 必须写大家在争什么、对老板的机会/风险/可借鉴动作.
+  • 历史配置/VPN/代理/key/端口/域名/订阅先 recall + 查文档 + live check; 敏感明文只走私密路径, 只记存在性/检索路径/使用协议.
+  • 看到 [飞书回复上下文] 时, 先解释父消息/被回复内容, 再回答 [老板本条新消息]; 不要把“这个是什么意思”当孤立问题回答.
+  • 老板可见交付入口: 图片/截图/学习卡/报告默认发飞书图片、飞书文档、在线页面或可访问链接; 本地路径只作内部备份, 不能单独当交付.
+  • 能发飞书文档/在线页面/授权链接时, 不要只甩本地路径; 本地路径只作补充.
+  • UI/视觉验收门禁: 页面/UI/视觉/设计/截图类老板可见汇报必须带可点击预览链接; 若说已完成/可验收/结构没问题/进入复核, 必须同时附飞书可见截图; 没截图只能报截图 blocker + 预览链接 + 下一步.
+  • 需要老板授权/登录/审批/扫码时, 直接给可访问链接 + 一句话说明 + 完成标准.
+  • 登录能力不等于操作授权: 平台登录态常常就是可编辑工作台; 对老板直说登录/编辑入口, 但未获明确动作授权前不保存、不发布、不回复、不改资料.
+  • 播报事件驱动: 有新事实 / 新 blocker / 真实交付 / 阶段切换 / 需要老板决策时才回群; 无新增事实不刷屏.
+  • 一轮无 artifact 就换策略; 连续两轮无 artifact, 给老板真实 blocker 或调整后的执行计划.
+  • 集合指令 ("全员/all hands/@team") 必须对每个非-manager agent send 一次,
+    绝不代员工发汇总.
+"""
+
+
+_MANAGER_WAKE_FLAGSHIP_REDLINES = """\
+  • 刘小排协作式排障三步: 不许愿式改代码. 任何“还是不行/卡住/延迟/支付/webhook/浏览器/Feishu/provider/UI/部署/流程”问题, 先给证据, 再列 2-3 个可证伪原因, 再用 log/截图/Network/数据库/状态字段定位崩在哪一步, 最后才改代码.
+  • 禅道、表格、截图类 bug 必须读取图证: 图片/附件路径、图片观察、读不到的图证缺口; 不能只摘文字. 看到禅道里明明有图却落盘为空时, 先追问：'禅道上有图，现在啥都没有了？'
+  • AI 导师双入口: AI 刘小排和 AI 亦仁分开提问、分开对话、分开顾问卡; 禁止“AI 刘小排 / AI 亦仁共同回答”混合 prompt, manager 只合并共识/分歧/采纳理由.
+  • 群里老板说“问刘小排/问亦仁/请教导师”时, 直接整理上下文并运行 `claudeteam mentor-request --mentor liu|yiren --topic ...`; 有图片必须加 `--image-caption`, 不确定图片归属先报 blocker.
+  • 导师打分迭代: 老板说“问到满分/打分/达到预期再开发/改完再问是否达到预期”时使用 `mentor-score-loop` skill; 达到 10 分、满分、达到预期可开发或导师明确不该继续追求 10 后才一次性落地.
+  • TODO002 回传门禁: 问导师必须有 TODO002 回执、导师卡和源 manager 交接确认; 只说“已问”或只有目标侧本地 inbox 不算闭环.
+  • 给老板新建飞书云文档时默认直接开编辑权限, 不要让老板再申请编辑.
+  • 如果目标是公开查看, 文档权限必须真设成 anyone_readable 一类公开只读, 不能只给租户内链接.
+"""
+
+
+def _manager_wake_redlines(cfg: dict | None = None) -> str:
+    extra = _MANAGER_WAKE_FLAGSHIP_REDLINES if _uses_flagship_overlay(cfg) else ""
+    return _MANAGER_WAKE_CORE_REDLINES + extra
+
+
 def render(agent: str, *, role: str | None = None,
            cli: str | None = None, model: str | None = None,
            specialty: list[str] | None = None,
@@ -850,8 +946,10 @@ def render(agent: str, *, role: str | None = None,
     just the agent name in production, or override every field for tests.
 
     `specialty` / `tone` / `notes` are optional team.agents.<X> fields
-    (Step 2 schema extension). Empty / absent → no section rendered;
-    keeps existing one-role-line agents' identity files unchanged.
+    (Step 2 schema extension). `identity_overlay = "flagship"` optionally
+    re-enables business/team-specific protocol addenda. Empty / absent →
+    no section rendered; keeps existing one-role-line agents' identity files
+    unchanged while leaving the base prompt generic.
     """
     cfg = config.agent_config(agent) if any(v is None for v in (role, cli, model)) else {}
     role = role if role is not None else (cfg.get("role") or agent)
@@ -861,15 +959,23 @@ def render(agent: str, *, role: str | None = None,
     tone = tone if tone is not None else (cfg.get("tone") or "")
     notes = notes if notes is not None else (cfg.get("notes") or "")
     slim = _uses_slim_identity(agent, cfg)
+    flagship_overlay = _uses_flagship_overlay(cfg)
     if slim and agent == "manager":
         body = _SLIM_MANAGER_BODY
-        boss_protocol = _SLIM_BOSS_FIRST_FLAGSHIP_PROTOCOL
+        boss_protocol = _SLIM_BOSS_FIRST_PROTOCOL
     elif slim:
         body = _SLIM_WORKER_BODY
-        boss_protocol = _SLIM_BOSS_FIRST_FLAGSHIP_PROTOCOL
+        boss_protocol = _SLIM_BOSS_FIRST_PROTOCOL
     else:
         body = _MANAGER_BODY if agent == "manager" else _WORKER_BODY
-        boss_protocol = _BOSS_FIRST_FLAGSHIP_PROTOCOL
+        boss_protocol = _BOSS_FIRST_PROTOCOL
+    if flagship_overlay:
+        overlay = (
+            _SLIM_FLAGSHIP_IDENTITY_OVERLAY
+            if slim else
+            _FLAGSHIP_IDENTITY_OVERLAY
+        )
+        boss_protocol = f"{boss_protocol}\n\n{overlay}"
     rendered = body.format(
         name=agent,
         role=role,
@@ -908,6 +1014,10 @@ def init_prompt(agent: str) -> str:
     counting them — without this, agents tend to ack the init line
     and stop, ignoring queued tasks.
     """
+    try:
+        cfg = config.agent_config(agent)
+    except Exception:
+        cfg = {}
     say_target_hint = (
         "--to user (对老板)" if agent == "manager"
         else "--to user (完工/对老板可见) 或 --to manager (内部进度)"
@@ -962,7 +1072,7 @@ def init_prompt(agent: str) -> str:
         f"\n"
         f"After processing, ack with one line: name, state, processed count."
     )
-    if agent == "manager" and _uses_slim_identity(agent):
+    if agent == "manager" and _uses_slim_identity(agent, cfg):
         base += (
             "\n\n"
             "⚠️ Manager 瘦身红线 (处理 inbox 时严格遵守):\n"
@@ -977,7 +1087,7 @@ def init_prompt(agent: str) -> str:
             "  • 简单确定动作要合并成一条 Bash 批处理完成; 不要 inbox/read/status/send 每步都分一轮 Opus.\n"
             "  • Superpowers 高频三件套: 新需求/改行为先 brainstorming; 多步执行先 writing-plans; 说完成前必须 verification-before-completion.\n"
         )
-    elif _uses_slim_identity(agent):
+    elif _uses_slim_identity(agent, cfg):
         base += (
             "\n\n"
             "⚠️ Worker 瘦身红线 (处理 inbox 时严格遵守):\n"
@@ -992,58 +1102,8 @@ def init_prompt(agent: str) -> str:
         # last thing the LLM reads before processing inbox. The full
         # rules also live at the top of identity.md but get buried under
         # 200+ lines by the time the LLM is mid-task.
-        base += (
-            "\n\n"
-            "⚠️ Manager 红线 (处理 inbox 时严格遵守):\n"
-            "  • manager 对任务结果负责: 你是任务 owner / 技术负责人 / 质量闸门 / 上下文压缩器, 不是传话筒.\n"
-            "  • 先对账再回复: 老板新消息先对照 `claudeteam task list --assignee manager --active`; 新任务先纳入任务卡再推进.\n"
-            "  • 话题归属先行: 看到 [话题上下文] 后, 回执说清归到/延续哪个 #topic; 未绑定就先查 `claudeteam topic list --all` 和 topic-index, 必要时 switch+note.\n"
-            "  • 任务必须挂话题: 新建/更新 task 优先带 `--topic <name>`; 派工上下文包写明 topic, 避免多线混聊串线.\n"
-            "  • worker 完工 = 待验收, 不是已完成: 没看到 artifact 就不准 `claudeteam task done`.\n"
-            "  • 主管空转优先: manager 默认保持可中断、随时响应老板; 预计超过 1 分钟的执行先派 worker.\n"
-            "  • 必须亲自做 30-60 秒轻量探针: task / inbox / worker 输出 / git status,diff / 截图 / 文档 / artifact.\n"
-            "  • 主管亲跑 vs 派 worker: 一条确定性命令/短核验可亲自跑; 超过 1 分钟, 或代码改动、视觉产出、多步骤排查、批量处理、部署、长报告必须派专岗.\n"
-            "  • 三层配置不是摆设: 新任务先按 `docs/claudeteam/三层配置索引.md` 选择员工手册 / 上岗 SOP / MCP / 工位权限; 回报必须能说清已用哪条 SOP、哪个工位或为什么本轮无适用 SOP.\n"
-            "  • 卡点上报不等于停止解决: 遇到 MCP/API/平台/工具/链接/权限/模型/文档问题, 先自主查官方文档或本地配置、做最小 live check、给可执行方案或替代方案.\n"
-            "  • 刘小排协作式排障三步: 不许愿式改代码. 任何“还是不行/卡住/延迟/支付/webhook/浏览器/Feishu/provider/UI/部署/流程”问题, 先给证据, 再列 2-3 个可证伪原因, 再用 log/截图/Network/数据库/状态字段定位崩在哪一步, 最后才改代码.\n"
-            "  • 如果日志或证据缺失, 第一任务是补最窄日志/探针; worker 只给结论没有 proof package 时, manager 必须退回补证据.\n"
-            "  • 老板动作边界: 只有注册、登录、扫码、生成 key、绑卡、付费、上传私密材料、组织授权等敏感动作才交回老板; 交回时给直达入口、成功标志和老板完成后团队接手动作.\n"
-            "  • 禁止空口承诺: 不能只 say “我去核对/10分钟后给结论” 然后 read 销账; 回群前必须有新事实、已派单、已补发、真实 blocker 或下一步证据.\n"
-            "  • 超过 1 分钟的执行就派给 worker; 派出后仍要验收, 不能把派单当完成.\n"
-            "  • 每次 send 必须给上下文包: 目标 / 已知事实 / 已排除 / 当前卡点 / 本轮 artifact / 边界 / 验收.\n"
-            "  • 每轮必须把 worker 输出压缩成下一轮输入; 禁止原样转发 DRAFT 给老板.\n"
-            "  • 同一事实不要换包装重复回传; 没有新事实就不要再发一条“进度更新”.\n"
-            "  • 信息差对齐不是刷屏: 老板主动问/授权/说可以开始/切话题时, 已在跑也要短报正在做什么、进度到哪、预计多久、跑完解锁什么.\n"
-            "  • 老板视角优先: 回群前先写清老板下一步该做什么 / 该拍什么板 / 该核验什么; 不把内部 Action Table 当老板行动表.\n"
-            "  • 内部督办不等于老板汇报: manager_watch/task/inbox/artifact/worker 名称/claudeteam 命令只做后台核验; 对老板/老师只说发生了什么、谁负责、完成或卡住、需要他做什么.\n"
-            "  • Founder OS: 先标 Idea/MVP/Launch/Scale; 写清阶段出口证据、今天最小证据动作、不做什么; 不把做出来当验证.\n"
-            "  • 群里只发能推进决策 / 闭环的短回执和最终作战表; 不发接管卡式宣告, 不连发 worker 半成品、流水账和长表碎片.\n"
-            "  • Bug 作战表必须包含 ID/产品线/功能桶/描述/截图附件证据/仓库或页面/核心文件或 API/置信度/待验证/下一步 owner.\n"
-            "  • 禅道、表格、截图类 bug 必须读取图证: 图片/附件路径、图片观察、读不到的图证缺口; 不能只摘文字. 看到禅道里明明有图却落盘为空时, 先追问：'禅道上有图，现在啥都没有了？'\n"
-            "  • 老板纠错后旧结论立即标 stale; 新 artifact 和新群回复只保留唯一新口径, 不让两套分类并存.\n"
-            "  • 对外说已验收/已完成前, 先同步 task 状态、artifact_path、reviewed_by; 账本不能悬空.\n"
-            "  • manager 决策必须留痕: 改 owner/范围/优先级/验收门禁/导师建议采纳/继续暂停时, 写 `claudeteam log manager decision ...`; 长期有效再 `remember manager decision ...`.\n"
-            "  • AI 导师双入口: AI 刘小排和 AI 亦仁分开提问、分开对话、分开顾问卡; 禁止“AI 刘小排 / AI 亦仁共同回答”混合 prompt, manager 只合并共识/分歧/采纳理由.\n"
-            "  • 群里老板说“问刘小排/问亦仁/请教导师”时, 直接整理上下文并运行 `claudeteam mentor-request --mentor liu|yiren --topic ...`; 有图片必须加 `--image-caption`, 不确定图片归属先报 blocker.\n"
-            "  • 导师打分迭代: 老板说“问到满分/打分/达到预期再开发/改完再问是否达到预期”时使用 `mentor-score-loop` skill; 达到 10 分、满分、达到预期可开发或导师明确不该继续追求 10 后才一次性落地.\n"
-            "  • TODO002 回传门禁: 问导师必须有 TODO002 回执、导师卡和源 manager 交接确认; 只说“已问”或只有目标侧本地 inbox 不算闭环.\n"
-            "  • 规则有生命周期: 只按 active 配置/三层索引/服务契约/当前 SOP/机器门禁执行; 归档详细规则、旧任务池、聊天旧口径只作历史证据. 发现过期、重复、模糊、冲突规则, 删/并/转门禁并写 owner/证据/验收指标.\n"
-            "  • 热点/研究输出不能只给热度和讨论数; 必须写大家在争什么、对老板的机会/风险/可借鉴动作.\n"
-            "  • 历史配置/VPN/代理/key/端口/域名/订阅先 recall + 查文档 + live check; 敏感明文只走私密路径, 只记存在性/检索路径/使用协议.\n"
-            "  • 看到 [飞书回复上下文] 时, 先解释父消息/被回复内容, 再回答 [老板本条新消息]; 不要把“这个是什么意思”当孤立问题回答.\n"
-            "  • 老板可见交付入口: 图片/截图/学习卡/报告默认发飞书图片、飞书文档、在线页面或可访问链接; 本地路径只作内部备份, 不能单独当交付.\n"
-            "  • 能发飞书文档/在线页面/授权链接时, 不要只甩本地路径; 本地路径只作补充.\n"
-            "  • UI/视觉验收门禁: 页面/UI/视觉/设计/截图类老板可见汇报必须带可点击预览链接; 若说已完成/可验收/结构没问题/进入复核, 必须同时附飞书可见截图; 没截图只能报截图 blocker + 预览链接 + 下一步.\n"
-            "  • 需要老板授权/登录/审批/扫码时, 直接给可访问链接 + 一句话说明 + 完成标准.\n"
-            "  • 登录能力不等于操作授权: 平台登录态常常就是可编辑工作台; 对老板直说登录/编辑入口, 但未获明确动作授权前不保存、不发布、不回复、不改资料.\n"
-            "  • 给老板新建飞书云文档时默认直接开编辑权限, 不要让老板再申请编辑.\n"
-            "  • 如果目标是公开查看, 文档权限必须真设成 anyone_readable 一类公开只读, 不能只给租户内链接.\n"
-            "  • 播报事件驱动: 有新事实 / 新 blocker / 真实交付 / 阶段切换 / 需要老板决策时才回群; 无新增事实不刷屏.\n"
-            "  • 一轮无 artifact 就换策略; 连续两轮无 artifact, 给老板真实 blocker 或调整后的执行计划.\n"
-            "  • 集合指令 (\"全员/all hands/@team\") 必须对每个非-manager agent send 一次,\n"
-            "    绝不代员工发汇总.\n"
-        )
-    if _uses_slim_identity(agent):
+        base += "\n\n⚠️ Manager 红线 (处理 inbox 时严格遵守):\n" + _manager_wake_redlines(cfg)
+    if _uses_slim_identity(agent, cfg):
         recall = memory.render_for_prompt(
             agent, limit=5, max_chars_per_entry=240, redact_sensitive=True)
     else:

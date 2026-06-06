@@ -4,8 +4,10 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+from pathlib import Path
 
 from helpers import attr_patch, isolated_env, run_cli, tmux_patch
+from claudeteam.commands import down as down_cmd
 from claudeteam.runtime import paths, watchdog
 
 
@@ -271,6 +273,74 @@ def test_down_handles_corrupt_pid_file():
         assert rc == 0
         assert "corrupt pid file" in out
         assert not paths.router_pid_file().exists()
+
+
+def test_matching_orphan_daemon_pids_prefers_current_team_fingerprints():
+    team = {"session": "S", "agents": {"manager": {}}}
+    with isolated_env(team=team):
+        current_state_dir = str(paths.state_dir().resolve())
+        current_config = str(paths.config_file().resolve())
+        current_cwd = str(Path.cwd().resolve())
+
+        class _Result:
+            returncode = 0
+            stdout = (
+                "PID COMMAND\n"
+                "111 /usr/bin/python3 -m claudeteam.cli router\n"
+                "222 /usr/bin/python3 -m claudeteam.cli router\n"
+                "333 /usr/bin/python3 -m claudeteam.cli watchdog\n"
+                "444 /usr/bin/python3 -m claudeteam.cli router\n"
+            )
+
+        envs = {
+            111: {"CLAUDETEAM_STATE_DIR": current_state_dir},
+            222: {"CLAUDETEAM_CONFIG_FILE": current_config},
+            333: {},
+            444: {"CLAUDETEAM_STATE_DIR": "/tmp/other-team/state"},
+        }
+        cwds = {
+            111: "/tmp/other",
+            222: "/tmp/other",
+            333: current_cwd,
+            444: current_cwd,
+        }
+
+        pids = down_cmd._matching_orphan_daemon_pids(
+            "router",
+            run=lambda *a, **kw: _Result(),
+            read_environ=lambda pid: envs.get(pid, {}),
+            readlink=lambda path: cwds[int(path.split("/")[2])],
+        )
+        assert pids == [111, 222, 444]
+
+        watchdog_pids = down_cmd._matching_orphan_daemon_pids(
+            "watchdog",
+            run=lambda *a, **kw: _Result(),
+            read_environ=lambda pid: envs.get(pid, {}),
+            readlink=lambda path: cwds[int(path.split("/")[2])],
+        )
+        assert watchdog_pids == [333]
+
+
+def test_down_kills_orphan_router_when_pid_file_missing():
+    import signal as _signal
+    team = {"session": "S", "agents": {"manager": {}}}
+    with isolated_env(team=team), _fake_tmux(session_alive=False):
+        kill_calls = []
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+            if sig == 0:
+                raise ProcessLookupError()
+            return None
+
+        with attr_patch(down_cmd, _matching_orphan_daemon_pids=lambda name: [54321] if name == "router" else []), \
+                attr_patch(os, kill=fake_kill):
+            rc, out, _ = run_cli(["down"])
+
+        assert rc == 0
+        assert "router orphan: pid 54321 stopped" in out
+        assert (_signal.SIGTERM in [sig for _pid, sig in kill_calls])
 
 
 def test_down_returns_one_when_pid_refuses_to_die():

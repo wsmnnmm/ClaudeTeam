@@ -343,7 +343,7 @@ def test_normalises_flat_event_with_top_level_fields():
 
 def test_normalises_real_lark_cli_compact_wire_format():
     """REGRESSION: round 3 smoke captured this exact shape from
-    \`npx @larksuite/cli event +subscribe --compact\` (lark-cli 1.0.21).
+    `npx @larksuite/cli event +subscribe --compact` (lark-cli 1.0.21).
     Top-level fields, content as a plain string (NOT JSON-encoded), and
     message_type rather than msg_type. The pre-fix _normalise dropped
     these as text="" → reason="empty"."""

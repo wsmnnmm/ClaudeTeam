@@ -161,11 +161,58 @@ def _apply_backup_preset(name: str, agents: list[str]) -> int:
         for agent in agents:
             entry = dict(overrides.get(agent, {}))
             entry["provider_preset"] = name
+            # Team-wide service overrides resolve after agent presets. Mark
+            # failing lanes to bypass that final layer so the backup preset
+            # actually takes effect for just these recycled agents.
+            entry["bypass_service_override"] = True
+            entry["failover_managed"] = True
             overrides[agent] = entry
         provider_mod.save_agent_overrides(overrides)
         return 0
     except Exception:
         return 1
+
+
+def _reset_to_primary(cfg: dict, state: dict, *, now_ts: float, log=print) -> dict:
+    from claudeteam.runtime import providers as provider_mod
+
+    known_agents = {
+        *cfg["targets"],
+        *cfg["recycle_targets"],
+        *[str(v) for v in state.get("last_failed_agents", []) if isinstance(v, str)],
+    }
+    overrides = provider_mod.load_agent_overrides()
+    changed = False
+    for agent in sorted(known_agents):
+        entry = dict(overrides.get(agent, {}))
+        if entry.get("failover_managed") is not True:
+            continue
+        entry.pop("provider_preset", None)
+        entry.pop("bypass_service_override", None)
+        entry.pop("failover_managed", None)
+        if entry:
+            overrides[agent] = entry
+        else:
+            overrides.pop(agent, None)
+        changed = True
+    if changed:
+        provider_mod.save_agent_overrides(overrides)
+
+    state["mode"] = "primary"
+    state["active_preset"] = cfg["primary_preset"]
+    state["cooldown_until"] = 0.0
+    state["recent_incidents"] = []
+    state["last_failed_agents"] = []
+    state["last_markers"] = {}
+    state["last_action"] = "reset_to_primary"
+    state["last_action_at"] = now_ts
+    _save_state(state)
+    log("  ✅ provider_failover: cleared failover-managed overrides and reset to primary")
+    return {
+        "action": "reset_to_primary",
+        "preset": cfg["primary_preset"],
+        "changed": changed,
+    }
 
 
 def _recycle_agents(agents: list[str]) -> int:
@@ -237,6 +284,10 @@ def sweep(*,
     ]
     state["recent_incidents"] = recent
     if not matched:
+        if (
+                state.get("mode") in {"backup", "rescue_alerted"}
+                and t >= float(state.get("cooldown_until", 0.0))):
+            return _reset_to_primary(cfg, state, now_ts=t, log=log)
         _save_state(state)
         return None
 

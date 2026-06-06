@@ -477,6 +477,15 @@ def _models_list_url_from_base(base_url: str) -> str:
     return base + "/v1/models"
 
 
+def _responses_url_from_base(base_url: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1"):
+        return base + "/responses"
+    return base + "/v1/responses"
+
+
 def _parse_model_ids(payload: dict) -> list[str]:
     if not isinstance(payload, dict):
         return []
@@ -508,19 +517,38 @@ def _parse_model_ids(payload: dict) -> list[str]:
     return deduped
 
 
-def _http_json(url: str, headers: dict[str, str]) -> dict:
-    req = urlrequest.Request(url, headers=headers)
+def _http_json(url: str, headers: dict[str, str], *,
+               payload: dict | None = None,
+               error_label: str = "request api") -> dict:
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(url, data=data, headers=headers)
     try:
         with urlrequest.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except urlerror.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"models api failed ({e.code})"
+            f"{error_label} failed ({e.code})"
             f"{': ' + body[:200] if body else ''}"
         ) from e
     except urlerror.URLError as e:
-        raise RuntimeError(f"models api failed: {e.reason}") from e
+        raise RuntimeError(f"{error_label} failed: {e.reason}") from e
+
+
+def _resolve_probe_auth_token(payload: dict[str, str], *,
+                              auth_token_override: str,
+                              error_label: str) -> str:
+    auth_token = (
+        auth_token_override.strip()
+        or str(payload.get("OPENAI_API_KEY") or "").strip()
+        or str(payload.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+        or _read_openai_auth_token()
+    )
+    if not auth_token:
+        raise RuntimeError(f"no auth token available for provider {error_label}")
+    return auth_token
 
 
 def _fetch_model_catalog(source: str, payload: dict[str, str],
@@ -531,14 +559,11 @@ def _fetch_model_catalog(source: str, payload: dict[str, str],
     )
     if not base_url:
         raise RuntimeError("provider base_url is empty")
-    auth_token = (
-        auth_token_override.strip()
-        or str(payload.get("OPENAI_API_KEY") or "").strip()
-        or str(payload.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
-        or _read_openai_auth_token()
+    auth_token = _resolve_probe_auth_token(
+        payload,
+        auth_token_override=auth_token_override,
+        error_label="models api",
     )
-    if not auth_token:
-        raise RuntimeError("no auth token available for provider models api")
     models_url = _models_list_url_from_base(base_url)
     raw = _http_json(
         models_url,
@@ -547,6 +572,7 @@ def _fetch_model_catalog(source: str, payload: dict[str, str],
             "Content-Type": "application/json",
             "User-Agent": "claudeteam-switch/1.0",
         },
+        error_label="models api",
     )
     models = _parse_model_ids(raw)
     configured = _model_candidates(payload)
@@ -561,6 +587,79 @@ def _fetch_model_catalog(source: str, payload: dict[str, str],
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "raw": raw,
     }
+
+
+def _service_probe_model(payload: dict[str, str]) -> str:
+    configured = _model_candidates(payload)
+    if configured:
+        return configured[0]
+    for agent in config.agent_names():
+        try:
+            if config.agent_cli(agent) != "codex-cli":
+                continue
+        except KeyError:
+            continue
+        requested = config.agent_model(agent)
+        effective = providers.effective_model_for_agent(agent, requested)
+        if effective:
+            return effective
+    return ""
+
+
+def _responses_payload_error(raw: dict) -> str:
+    if not isinstance(raw, dict):
+        return "invalid responses payload"
+    err = raw.get("error")
+    if isinstance(err, dict):
+        message = str(err.get("message") or err.get("type") or "").strip()
+        return message or "provider returned error payload"
+    if raw.get("success") is False:
+        message = str(raw.get("message") or raw.get("detail") or "").strip()
+        code = raw.get("code")
+        prefix = f"code={code}" if code not in (None, "") else "success=false"
+        return f"{prefix}{': ' + message if message else ''}"
+    code = raw.get("code")
+    if isinstance(code, int) and code >= 400:
+        message = str(raw.get("message") or raw.get("detail") or "").strip()
+        return f"code={code}{': ' + message if message else ''}"
+    status = str(raw.get("status") or "").strip().lower()
+    if status in {"failed", "error", "errored", "cancelled", "canceled", "incomplete"}:
+        message = str(raw.get("message") or raw.get("detail") or "").strip()
+        return f"status={status}{': ' + message if message else ''}"
+    return ""
+
+
+def _probe_responses_endpoint(source: str, payload: dict[str, str],
+                              *, auth_token_override: str = "") -> dict:
+    base_url = _payload_base_url(payload)
+    if not base_url:
+        raise RuntimeError(f"provider base_url is empty for {source}")
+    auth_token = _resolve_probe_auth_token(
+        payload,
+        auth_token_override=auth_token_override,
+        error_label="responses api",
+    )
+    probe_model = _service_probe_model(payload)
+    if not probe_model:
+        raise RuntimeError(f"no probe model available for provider {source}")
+    raw = _http_json(
+        _responses_url_from_base(base_url),
+        {
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "claudeteam-switch/1.0",
+        },
+        payload={
+            "model": probe_model,
+            "input": "ping",
+            "max_output_tokens": 1,
+        },
+        error_label="responses api",
+    )
+    semantic_error = _responses_payload_error(raw)
+    if semantic_error:
+        raise RuntimeError(f"responses api semantic failure: {semantic_error}")
+    return raw
 
 
 def _save_model_catalog(catalog: dict) -> Path:
@@ -697,6 +796,20 @@ def _service_env_from_payload(payload: dict[str, str]) -> dict[str, str]:
         value = payload.get(key)
         if isinstance(value, str) and value:
             env[key] = value
+    if _payload_looks_codex_compatible(payload):
+        base_url = _payload_base_url(payload)
+        token = _payload_token(payload)
+        if base_url:
+            env.setdefault("OPENAI_BASE_URL", base_url)
+        if token:
+            env.setdefault("OPENAI_API_KEY", token)
+        model_candidates = _model_candidates(payload)
+        if model_candidates:
+            env.setdefault("OPENAI_MODEL", model_candidates[0])
+        env.setdefault("OPENAI_MODEL_PROVIDER", "custom")
+        env.setdefault("OPENAI_WIRE_API", "responses")
+        env.setdefault("OPENAI_REQUIRES_OPENAI_AUTH", "true")
+        env.setdefault("OPENAI_DISABLE_RESPONSE_STORAGE", "true")
     return env
 
 
@@ -769,6 +882,79 @@ def _service_candidates(order: list[str] | None = None) -> list[dict]:
     return rows
 
 
+def _service_recycle_candidate_agents() -> list[str]:
+    known = set(config.agent_names())
+    raw = tunables.tunable("provider_service.recycle_targets", [])
+    configured: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            agent = str(item).strip()
+            if agent and agent in known and agent not in configured:
+                configured.append(agent)
+    if configured:
+        return configured
+
+    team_agents = config.load_team().get("agents", {})
+    apply_to_claude = bool(
+        tunables.tunable("provider_service.apply_to_claude_code", False)
+    )
+    out: list[str] = []
+    for agent in config.agent_names():
+        cfg = team_agents.get(agent, {})
+        cli = str(cfg.get("cli", "claude-code")).strip()
+        if cli == "codex-cli":
+            out.append(agent)
+            continue
+        if cli == "claude-code" and apply_to_claude:
+            out.append(agent)
+    return out
+
+
+def _service_recycle_targets(*, session_exists=None,
+                             has_window=None) -> list[str]:
+    from claudeteam.runtime import tmux
+
+    session_exists = session_exists or tmux.has_session
+    has_window = has_window or tmux.has_window
+    session = config.session_name()
+    if not session_exists(session):
+        return []
+
+    out: list[str] = []
+    for agent in _service_recycle_candidate_agents():
+        target = tmux.Target(session, agent)
+        if has_window(target):
+            out.append(agent)
+    return out
+
+
+def _maybe_recycle_service_targets(*, recycle_main=None,
+                                   session_exists=None,
+                                   has_window=None) -> dict[str, object]:
+    targets = _service_recycle_targets(
+        session_exists=session_exists,
+        has_window=has_window,
+    )
+    if not targets:
+        return {
+            "attempted": False,
+            "ok": True,
+            "targets": [],
+            "rc": 0,
+        }
+
+    if recycle_main is None:
+        from claudeteam.commands import recycle as recycle_cmd
+        recycle_main = recycle_cmd.main
+    rc = int(recycle_main(list(targets)) or 0)
+    return {
+        "attempted": True,
+        "ok": rc == 0,
+        "targets": list(targets),
+        "rc": rc,
+    }
+
+
 def _apply_service(service: str, preset: str, payload: dict[str, str],
                    *, reason: str, quiet: bool = False) -> int:
     env = _service_env_from_payload(payload)
@@ -781,12 +967,23 @@ def _apply_service(service: str, preset: str, payload: dict[str, str],
         "reason": reason,
         "applied_at": datetime.now(timezone.utc).isoformat(),
     })
+    recycle = _maybe_recycle_service_targets()
     if not quiet:
         print(f"✅ applied service: {service} ({preset})")
         print(f"base_url: {_payload_base_url(env)}")
         print(f"service_state: {providers.service_state_path()}")
-        print("hint         recycle active panes so Codex/Claude homes pick up the new service")
-    return 0
+        if recycle["attempted"]:
+            joined = " ".join(str(v) for v in recycle["targets"])
+            if recycle["ok"]:
+                print(f"recycled:     {joined}")
+            else:
+                print(
+                    "warning:      service override saved, but pane recycle failed; "
+                    f"run `claudeteam recycle {joined}` after fixing the pane error"
+                )
+        else:
+            print("hint         no running affected panes to recycle right now")
+    return int(recycle.get("rc", 0) or 0)
 
 
 def _probe_service_candidates(candidates: list[dict], *,
@@ -799,12 +996,18 @@ def _probe_service_candidates(candidates: list[dict], *,
                 row["preset"], row["payload"],
                 auth_token_override=auth_token_override,
             )
+            response_probe = _probe_responses_endpoint(
+                row["preset"], row["payload"],
+                auth_token_override=auth_token_override,
+            )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             results.append({
                 **row,
                 "ok": True,
                 "elapsed_ms": elapsed_ms,
                 "models_count": len(catalog.get("models") or []),
+                "probe_model": _service_probe_model(row["payload"]),
+                "responses_status": str(response_probe.get("status") or ""),
             })
         except RuntimeError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -849,7 +1052,19 @@ def _service_subcommand(rest: list[str]) -> int:
     if do_clear:
         providers.clear_service_state()
         print(f"✅ cleared service override: {providers.service_state_path()}")
-        return 0
+        recycle = _maybe_recycle_service_targets()
+        if recycle["attempted"]:
+            joined = " ".join(str(v) for v in recycle["targets"])
+            if recycle["ok"]:
+                print(f"recycled:     {joined}")
+            else:
+                print(
+                    "warning:      service override cleared, but pane recycle failed; "
+                    f"run `claudeteam recycle {joined}` after fixing the pane error"
+                )
+        else:
+            print("hint         no running affected panes to recycle right now")
+        return int(recycle.get("rc", 0) or 0)
 
     order = _configured_service_order(raw_order)
     candidates = _service_candidates(order)

@@ -27,12 +27,12 @@ from typing import Callable
 
 from claudeteam.commands import cross_send as _cross_send
 from claudeteam.runtime import config, team_registry
-from claudeteam.store import cross_track as store
+from claudeteam.store import cross_track as store, tasks as task_store
 from claudeteam.util import error_exit, pop_flag, pop_bool_flag, usage_error
 
 USAGE = (
     "usage: claudeteam cross-track <action> [...]\n"
-    "  dispatch <team-ref> <to> <from> <message> [--topic <t>] [--priority <p>]\n"
+    "  dispatch <team-ref> <to> <from> <message> [--topic <t>] [--task-id <T-id>] [--priority <p>]\n"
     "  accept   <track-id> [--message <msg>]\n"
     "  progress <track-id> [--message <msg>]\n"
     "  deliver  <track-id> --artifact <path> [--message <msg>]\n"
@@ -56,10 +56,13 @@ def _team_name() -> str:
 def _dispatch(argv: list[str]) -> int:
     rest = list(argv)
     topic = pop_flag(rest, "--topic") or ""
+    local_task_id = pop_flag(rest, "--task-id") or ""
     if len(rest) < 4:
         return usage_error(USAGE)
     team_ref, to, frm, message = rest[:4]
     priority = rest[4] if len(rest) > 4 else "高"
+    if local_task_id and task_store.get(local_task_id) is None:
+        return error_exit(f"{FAIL_EMOJI} no such task: {local_task_id}")
 
     # Resolve target team to get its label
     target = _cross_send._resolve_target(
@@ -74,6 +77,7 @@ def _dispatch(argv: list[str]) -> int:
         topic=topic,
         source_agent=frm,
         target_agent=to,
+        local_task_id=local_task_id,
         initial_message=message,
     )
 
@@ -313,7 +317,8 @@ def _send_ack(track_id: str, action: str, message: str) -> None:
 # ── main ───────────────────────────────────────────────────────────
 
 
-def _apply_remote_action(track_id: str, action: str, message: str) -> None:
+def _apply_remote_action(track_id: str, action: str, message: str,
+                         source_team: str = "", source_label: str = "") -> None:
     """Apply a cross-track action from a remote ack. Called both in-process
     (by cross_send._cross_track_update_local) and via SSH exec on remote hosts."""
     import re
@@ -331,7 +336,10 @@ def _apply_remote_action(track_id: str, action: str, message: str) -> None:
         return
     existing = ct.get(track_id)
     if existing is None:
-        ct.accept(track_id, message=clean, source_agent="manager")
+        ct.accept(
+            track_id, message=clean, source_agent="manager",
+            partner_team=source_team, partner_label=source_label,
+        )
         if new_status != "accepted":
             ct.transition(track_id, new_status, message=clean)
     else:

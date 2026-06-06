@@ -65,6 +65,41 @@ def test_state_dir_re_reads_env_each_call():
             assert paths.state_dir() == Path(tmp2)
 
 
+def test_state_dir_uses_relative_path_from_cwd_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        team = Path(tmp) / "team-a"
+        team.mkdir(parents=True)
+        (team / "claudeteam.toml").write_text(
+            'state_dir = "state"\n',
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(team)
+            with env_patch(CLAUDETEAM_STATE_DIR=None, CLAUDETEAM_CONFIG_FILE=None):
+                assert paths.state_dir() == (team / "state").resolve()
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_state_dir_prefers_explicit_config_file_when_env_unset():
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+        cfg_dir = Path(tmp) / "cloud"
+        cfg_dir.mkdir(parents=True)
+        cfg = cfg_dir / "claudeteam.cloud.toml"
+        cfg.write_text('state_dir = "runtime-state"\n', encoding="utf-8")
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(cwd)
+            with env_patch(CLAUDETEAM_STATE_DIR=None,
+                           CLAUDETEAM_CONFIG_FILE=str(cfg)):
+                assert paths.state_dir() == (cfg_dir / "runtime-state").resolve()
+        finally:
+            os.chdir(old_cwd)
+
+
 def test_config_file_infers_team_root_from_state_dir_when_cwd_drifted():
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
         team = Path(tmp) / "team-a"

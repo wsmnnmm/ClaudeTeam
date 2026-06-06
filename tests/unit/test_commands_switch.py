@@ -1,9 +1,11 @@
 """Tests for `claudeteam switch` — multi-team env-export emitter."""
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 from pathlib import Path
+from urllib import error as urllib_error
 
 from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.commands import switch as switch_cmd
@@ -19,6 +21,34 @@ def _team_dir(tmp: Path, *, with_team_json: bool = True) -> Path:
         (d / "team.json").write_text(
             json.dumps({"agents": {"manager": {}}}), encoding="utf-8")
     return d
+
+
+class _FakeUrlopenResponse:
+    def __init__(self, payload: dict, *, status: int = 200):
+        self._body = json.dumps(payload).encode("utf-8")
+        self.status = status
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _fake_switch_urlopen(routes: dict[tuple[str, str], object]):
+    def fake(req, timeout=20):
+        url = getattr(req, "full_url", str(req))
+        method = "POST" if getattr(req, "data", None) is not None else "GET"
+        key = (method, url)
+        result = routes[key]
+        if isinstance(result, urllib_error.HTTPError):
+            raise result
+        return result
+
+    return fake
 
 
 # ── help / no-arg ────────────────────────────────────────────────
@@ -572,6 +602,164 @@ def test_switch_model_service_use_overrides_agent_preset_without_editing_agent()
     assert effective["ANTHROPIC_AUTH_TOKEN"] == "sk-zy"
 
 
+def test_switch_model_service_use_derives_openai_override_for_codex_flux_service():
+    team = {
+        "agents": {
+            "manager": {
+                "cli": "codex-cli",
+                "model": "gpt-5.5",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        state_dir = tmp / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "flux-codex-dev": {
+                        "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-flux",
+                        "ANTHROPIC_MODEL": "gpt-5.3-codex",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.3-codex",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        (state_dir / "ccswitch.json").write_text(
+            json.dumps({
+                "env": {
+                    "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+                    "OPENAI_API_KEY": "sk-deepseek",
+                    "OPENAI_MODEL": "deepseek-v4-pro",
+                    "OPENAI_MODEL_PROVIDER": "custom",
+                    "OPENAI_WIRE_API": "chat",
+                    "OPENAI_REQUIRES_OPENAI_AUTH": "true",
+                }
+            }),
+            encoding="utf-8",
+        )
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            rc, out, err = run_cli([
+                "switch", "model", "service", "--use", "flux"
+            ])
+            service_state = providers.load_service_state()
+            codex_env = providers.codex_provider_env_for_agent("manager")
+        finally:
+            os.chdir(old_cwd)
+
+    assert rc == 0, err
+    assert "applied service: flux (flux-codex-dev)" in out
+    assert service_state["env"]["OPENAI_BASE_URL"] == "https://api.fluxincode.com/v1"
+    assert service_state["env"]["OPENAI_API_KEY"] == "sk-flux"
+    assert service_state["env"]["OPENAI_MODEL"] == "gpt-5.3-codex"
+    assert service_state["env"]["OPENAI_WIRE_API"] == "responses"
+    assert codex_env["OPENAI_BASE_URL"] == "https://api.fluxincode.com/v1"
+    assert codex_env["OPENAI_API_KEY"] == "sk-flux"
+    assert codex_env["OPENAI_MODEL"] == "gpt-5.5"
+    assert codex_env["OPENAI_WIRE_API"] == "responses"
+
+
+def test_switch_model_service_use_recycles_running_codex_agents():
+    team = {
+        "session": "S",
+        "agents": {
+            "manager": {"cli": "codex-cli", "model": "gpt-5.5"},
+            "worker_a": {"cli": "codex-cli", "model": "gpt-5.4"},
+            "worker_b": {"cli": "claude-code", "model": "opus"},
+        },
+    }
+    with isolated_env(team=team) as tmp:
+        state_dir = tmp / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "zyapi-backup": {
+                        "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        recycled = {}
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            with attr_patch(
+                    switch_cmd, _maybe_recycle_service_targets=lambda **_: (
+                        recycled.setdefault("called", True) and {
+                            "attempted": True,
+                            "ok": True,
+                            "targets": ["manager", "worker_a"],
+                            "rc": 0,
+                        }
+                    )):
+                rc, out, err = run_cli([
+                    "switch", "model", "service", "--use", "zyapi"
+                ])
+        finally:
+            os.chdir(old_cwd)
+
+    assert rc == 0, err
+    assert recycled["called"] is True
+    assert "recycled:     manager worker_a" in out
+
+
+def test_switch_model_service_clear_recycles_running_codex_agents():
+    team = {
+        "session": "S",
+        "agents": {
+            "manager": {"cli": "codex-cli", "model": "gpt-5.5"},
+        },
+    }
+    with isolated_env(team=team) as tmp:
+        state_dir = tmp / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "provider-service.json").write_text(
+            json.dumps({
+                "active_service": "zyapi",
+                "source_preset": "zyapi-backup",
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+                },
+            }),
+            encoding="utf-8",
+        )
+        recycled = {}
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            with attr_patch(
+                    switch_cmd, _maybe_recycle_service_targets=lambda **_: (
+                        recycled.setdefault("called", True) and {
+                            "attempted": True,
+                            "ok": True,
+                            "targets": ["manager"],
+                            "rc": 0,
+                        }
+                    )):
+                rc, out, err = run_cli([
+                    "switch", "model", "service", "--clear"
+                ])
+        finally:
+            os.chdir(old_cwd)
+
+    assert rc == 0, err
+    assert recycled["called"] is True
+    assert "recycled:     manager" in out
+    assert not (state_dir / "provider-service.json").exists()
+
+
 def test_switch_model_service_auto_picks_fastest_healthy_service():
     with isolated_env(team={"agents": {"manager": {"cli": "codex-cli", "model": "gpt-5.5"}}}) as tmp:
         (tmp / "state").mkdir(parents=True, exist_ok=True)
@@ -615,7 +803,11 @@ def test_switch_model_service_auto_picks_fastest_healthy_service():
         try:
             import os
             os.chdir(tmp)
-            with attr_patch(switch_cmd, _fetch_model_catalog=fake_fetch), \
+            with attr_patch(
+                    switch_cmd,
+                    _fetch_model_catalog=fake_fetch,
+                    _probe_responses_endpoint=lambda *a, **kw: {"status": "completed"},
+            ), \
                     attr_patch(switch_cmd.time, perf_counter=lambda: next(ticks)):
                 rc, out, err = run_cli([
                     "switch", "model", "service", "--auto",
@@ -630,6 +822,122 @@ def test_switch_model_service_auto_picks_fastest_healthy_service():
     assert "applied service: zyapi (zyapi-backup)" in out
     assert state["active_service"] == "zyapi"
     assert state["source_preset"] == "zyapi-backup"
+
+
+def test_switch_model_service_auto_rejects_provider_with_dead_responses_endpoint():
+    team = {"agents": {"manager": {"cli": "codex-cli", "model": "gpt-5.5"}}}
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "flux-primary": {
+                        "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-flux",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.2",
+                    },
+                    "zyapi-backup": {
+                        "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        routes = {
+            ("GET", "https://api.fluxincode.com/v1/models"): _FakeUrlopenResponse(
+                {"data": [{"id": "gpt-5.2"}]}),
+            ("POST", "https://api.fluxincode.com/v1/responses"): urllib_error.HTTPError(
+                "https://api.fluxincode.com/v1/responses",
+                503,
+                "Service Unavailable",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"auth_unavailable: no auth available"}}'),
+            ),
+            ("GET", "https://zyapi.tuluo.top:8888/v1/models"): _FakeUrlopenResponse(
+                {"data": [{"id": "gpt-5.5"}]}),
+            ("POST", "https://zyapi.tuluo.top:8888/v1/responses"): _FakeUrlopenResponse(
+                {"id": "resp_1", "status": "completed"}),
+        }
+        ticks = iter([0.0, 0.050, 1.0, 1.200])
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            with attr_patch(switch_cmd.urlrequest, urlopen=_fake_switch_urlopen(routes)), \
+                    attr_patch(switch_cmd.time, perf_counter=lambda: next(ticks)):
+                rc, out, err = run_cli([
+                    "switch", "model", "service", "--auto",
+                    "--order", "flux,zyapi",
+                ])
+            state = providers.load_service_state()
+        finally:
+            os.chdir(old_cwd)
+
+    assert rc == 0, err
+    assert "flux" in out and "auth_unavailable" in out
+    assert "applied service: zyapi (zyapi-backup)" in out
+    assert state["active_service"] == "zyapi"
+    assert state["source_preset"] == "zyapi-backup"
+
+
+def test_switch_model_service_list_marks_dead_responses_endpoint_unhealthy():
+    team = {"agents": {"manager": {"cli": "codex-cli", "model": "gpt-5.5"}}}
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "flux-primary": {
+                        "ANTHROPIC_BASE_URL": "https://api.fluxincode.com/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-flux",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.2",
+                    },
+                    "zyapi-backup": {
+                        "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-zy",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        routes = {
+            ("GET", "https://api.fluxincode.com/v1/models"): _FakeUrlopenResponse(
+                {"data": [{"id": "gpt-5.2"}]}),
+            ("POST", "https://api.fluxincode.com/v1/responses"): urllib_error.HTTPError(
+                "https://api.fluxincode.com/v1/responses",
+                503,
+                "Service Unavailable",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"auth_unavailable: no auth available"}}'),
+            ),
+            ("GET", "https://zyapi.tuluo.top:8888/v1/models"): _FakeUrlopenResponse(
+                {"data": [{"id": "gpt-5.5"}]}),
+            ("POST", "https://zyapi.tuluo.top:8888/v1/responses"): _FakeUrlopenResponse(
+                {"id": "resp_1", "status": "completed"}),
+        }
+        old_cwd = Path.cwd()
+        try:
+            import os
+            os.chdir(tmp)
+            with attr_patch(switch_cmd.urlrequest, urlopen=_fake_switch_urlopen(routes)):
+                rc, out, err = run_cli([
+                    "switch", "model", "service", "--list", "--json",
+                    "--order", "flux,zyapi",
+                ])
+            payload = json.loads(out)
+        finally:
+            os.chdir(old_cwd)
+
+    assert rc == 0, err
+    services = {row["preset"]: row for row in payload["services"]}
+    assert services["flux-primary"]["ok"] is False
+    assert "auth_unavailable" in services["flux-primary"]["error"]
+    assert services["zyapi-backup"]["ok"] is True
 
 
 def test_switch_model_service_classifies_by_real_base_url_before_preset_name():
@@ -649,6 +957,29 @@ def test_switch_model_service_classifies_by_real_base_url_before_preset_name():
     service, preset, _ = switch_cmd._resolve_service_candidate("onekey", presets)
     assert service == "onekey"
     assert preset == "zyapi-backup"
+
+
+def test_switch_model_service_recycle_targets_only_running_supported_agents():
+    team = {
+        "session": "S",
+        "agents": {
+            "manager": {"cli": "codex-cli", "model": "gpt-5.5"},
+            "worker_a": {"cli": "codex-cli", "model": "gpt-5.4"},
+            "worker_b": {"cli": "claude-code", "model": "opus"},
+        },
+    }
+    with isolated_env(team=team):
+        with attr_patch(
+                switch_cmd,
+                _service_recycle_candidate_agents=lambda: [
+                    "manager", "worker_a", "worker_b"
+                ]):
+            targets = switch_cmd._service_recycle_targets(
+                session_exists=lambda session: session == "S",
+                has_window=lambda target: str(target) in {"S:manager", "S:worker_b"},
+            )
+
+    assert targets == ["manager", "worker_b"]
 
 
 def test_switch_model_service_skips_claude_only_onekey_for_codex_team():

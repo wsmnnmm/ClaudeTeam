@@ -17,6 +17,11 @@ project provider, while specific roles (for example translation /
 integration) can be routed to a cheaper or older backend. The service
 override is deliberately last so an operator can move the whole Codex
 fleet off a broken provider without editing every employee preset.
+
+Runtime failover is a special case: it may temporarily mark a failing
+agent to bypass the team-wide service override so a targeted rescue lane
+can actually take effect even while the rest of the fleet stays pinned
+to a manual service switch.
 """
 from __future__ import annotations
 
@@ -60,17 +65,35 @@ _MANAGED_PROVIDER_ENV = "claudeteam-provider.env"
 _AGENT_OVERRIDES_FILE = "agent-provider-overrides.json"
 _SERVICE_STATE_FILE = "provider-service.json"
 
-SERVICE_ENV_KEYS = (
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "OPENAI_BASE_URL",
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
-    "OPENAI_MODEL_PROVIDER",
-    "OPENAI_WIRE_API",
-    "OPENAI_REQUIRES_OPENAI_AUTH",
-    "OPENAI_DISABLE_RESPONSE_STORAGE",
-)
+SERVICE_ENV_KEYS = PROVIDER_ENV_KEYS
+
+
+def _normalize_service_model_env(env: dict[str, str]) -> dict[str, str]:
+    """Keep service overrides self-consistent across Anthropic/OpenAI keys.
+
+    Team-wide service overrides are applied last to rescue a whole fleet from a
+    broken backend. If the service env only overrides OPENAI_* keys but leaves
+    stale ANTHROPIC_* model aliases behind from ccswitch/agent presets, callers
+    like router.first_response can assemble a mixed config: new base/token with
+    an old model name. That produces false recoveries such as zyapi auth +
+    deepseek model 403s. Normalize the service layer itself so it fully wins.
+    """
+    openai_model = env.get("OPENAI_MODEL", "").strip()
+    anthropic_model = env.get("ANTHROPIC_MODEL", "").strip()
+    if openai_model and not anthropic_model:
+        env["ANTHROPIC_MODEL"] = openai_model
+        anthropic_model = openai_model
+    if anthropic_model and not openai_model:
+        env["OPENAI_MODEL"] = anthropic_model
+        openai_model = anthropic_model
+    default_model = anthropic_model or openai_model
+    if default_model:
+        for key in (
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL"):
+            env.setdefault(key, default_model)
+    return env
 
 
 def presets_path() -> Path:
@@ -104,7 +127,7 @@ def _clean_service_env(raw: dict | None) -> dict[str, str]:
         value = raw.get(key)
         if isinstance(value, str) and value:
             out[key] = value
-    return out
+    return _normalize_service_model_env(out)
 
 
 def _provider_env_dir() -> Path:
@@ -220,6 +243,9 @@ def service_env_for_agent(agent: str) -> dict[str, str]:
     """
     from claudeteam.runtime import tunables
 
+    override = load_agent_overrides().get(agent, {})
+    if override.get("bypass_service_override") is True:
+        return {}
     excluded = tunables.tunable("provider_service.exclude_agents", ["worker_rescue"])
     if isinstance(excluded, list) and agent in {str(v) for v in excluded}:
         return {}
@@ -243,6 +269,10 @@ def _clean_agent_override(raw: dict | None) -> dict:
     env = _clean_provider_env(raw.get("provider_env"))
     if env:
         out["provider_env"] = env
+    if raw.get("bypass_service_override") is True:
+        out["bypass_service_override"] = True
+    if raw.get("failover_managed") is True:
+        out["failover_managed"] = True
     return out
 
 
@@ -308,31 +338,41 @@ def _agent_provider_overrides(agent: str) -> dict[str, str]:
     return out
 
 
-def provider_env_for_agent(agent: str) -> dict[str, str]:
+def _base_provider_env_for_agent(agent: str) -> dict[str, str]:
     env = _global_provider_env()
     env.update(_agent_provider_overrides(agent))
+    return env
+
+
+def provider_env_for_agent(agent: str) -> dict[str, str]:
+    env = _base_provider_env_for_agent(agent)
     env.update(service_env_for_agent(agent))
     return env
 
 
 def effective_model_for_agent(agent: str, requested_model: str | None = None) -> str:
     requested = (requested_model or config.agent_model(agent) or "").strip()
-    env: dict[str, str] | None = None
-    alias_key = ALIAS_ENV_KEY.get(requested.lower())
-    if alias_key:
-        env = provider_env_for_agent(agent)
-        if env.get(alias_key):
-            return env[alias_key]
     try:
         cli = config.agent_cli(agent)
     except KeyError:
         cli = ""
     if cli == "codex-cli":
-        if env is None:
-            env = provider_env_for_agent(agent)
-        openai_model = env.get("OPENAI_MODEL", "").strip()
+        # Team-global provider switches should reroute Codex workers to a
+        # backend, not flatten every worker onto one stale OPENAI_MODEL.
+        # Only agent-local provider overrides may replace the requested model.
+        agent_env = _agent_provider_overrides(agent)
+        alias_key = ALIAS_ENV_KEY.get(requested.lower())
+        if alias_key and agent_env.get(alias_key):
+            return agent_env[alias_key]
+        openai_model = agent_env.get("OPENAI_MODEL", "").strip()
         if openai_model:
             return openai_model
+        return requested
+    alias_key = ALIAS_ENV_KEY.get(requested.lower())
+    if alias_key:
+        env = provider_env_for_agent(agent)
+        if env.get(alias_key):
+            return env[alias_key]
     return requested
 
 
@@ -351,7 +391,7 @@ def codex_provider_env_for_agent(agent: str) -> dict[str, str]:
             out[key] = value
 
     effective_model = effective_model_for_agent(agent)
-    if "OPENAI_MODEL" not in out and effective_model:
+    if effective_model:
         out["OPENAI_MODEL"] = effective_model
 
     anthropic_base = env.get("ANTHROPIC_BASE_URL", "")

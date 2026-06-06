@@ -276,12 +276,22 @@ def _cross_track_update_remote(team: TargetTeam, track_id: str,
     if not host or not product:
         return
     remote_root, config_file, runtime_config, state_dir = _remote_paths(team)
+    source_team = config.team_file().parent.name
+    source_label = config.session_name()
     python_code = (
         "import sys; sys.path.insert(0, '{root}/ClaudeTeam/src'); "
         "from claudeteam.store import cross_track as ct; "
         "from claudeteam.commands.cross_track import _apply_remote_action; "
-        "_apply_remote_action('{tid}', '{act}', '''{msg}''')"
-    ).format(root=remote_root, tid=track_id, act=action, msg=message)
+        "_apply_remote_action('{tid}', '{act}', '''{msg}''', "
+        "source_team='{source_team}', source_label='{source_label}')"
+    ).format(
+        root=remote_root,
+        tid=track_id,
+        act=action,
+        msg=message,
+        source_team=source_team,
+        source_label=source_label,
+    )
     update_cmd = (
         f"cd {shlex.quote(product)} && "
         f"export CLAUDETEAM_STATE_DIR={shlex.quote(state_dir)} && "
@@ -300,9 +310,14 @@ def _cross_track_update_remote(team: TargetTeam, track_id: str,
 def _cross_track_update_local(team: TargetTeam, track_id: str,
                               action: str, message: str) -> None:
     """Update cross-track store inside the target team's env locally."""
+    source_team = config.team_file().parent.name
+    source_label = config.session_name()
     with _temporary_env(_target_env(team)):
         from claudeteam.commands.cross_track import _apply_remote_action
-        _apply_remote_action(track_id, action, message)
+        _apply_remote_action(
+            track_id, action, message,
+            source_team=source_team, source_label=source_label,
+        )
 
 
 def main(argv: list[str], *, run: Callable = subprocess.run) -> int:

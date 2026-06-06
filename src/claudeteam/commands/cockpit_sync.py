@@ -6,7 +6,9 @@ and can write them to the Feishu boss cockpit table keyed by `战场`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -29,6 +31,9 @@ DEFAULT_TABLE_ID = "tblEyoEGZOZ0gfJr"
 DEFAULT_TASK_TABLE_ID = "tblJ67mLhY9oM91G"
 DEFAULT_AGENT_TABLE_NAME = "员工状态明细"
 _CST = timezone(timedelta(hours=8), name="CST")
+_SNAPSHOT_STALE_AFTER = timedelta(hours=2)
+_SCHEDULED_CONTINUITY_WINDOW_DAYS = 3
+_SCHEDULED_CONTINUITY_REQUIRED_STREAK = 2
 _TERMINAL = {"已完成", "已取消"}
 _BACKLOG = {"历史候选", "候选", "待归档", "已归档", "待排期"}
 _STAGE_BY_ID = {stage["id"]: stage for stage in founder_os._STAGES}
@@ -38,6 +43,7 @@ _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 USAGE = f"""usage: claudeteam cockpit-sync [--root <dir>] [--json] [--write]
+                             [--pull-remote]
                              [--base-token <token>] [--table-id <id>]
                              [--agent-table-id <id-or-name>]
                              [--task-table-id <id-or-name>]
@@ -55,6 +61,7 @@ Default target:
 Examples:
   claudeteam cockpit-sync --root /Users/wsm/Project
   claudeteam cockpit-sync --root /Users/wsm/Project --json
+  claudeteam cockpit-sync --root /Users/wsm/Project --pull-remote --json
   claudeteam cockpit-sync --root /Users/wsm/Project --write --profile product-lab
   claudeteam cockpit-sync --root /Users/wsm/Project --write --agent-table-id {DEFAULT_AGENT_TABLE_NAME}
   claudeteam cockpit-sync --root /Users/wsm/Project --write --task-table-id {DEFAULT_TASK_TABLE_ID}
@@ -72,7 +79,49 @@ _REMOTE_LABELS = {
     "product-lab-cloud": "Product Lab 云上",
     "todo002_cloud": "TODO002 云上",
     "todo002-study-coach-cloud": "TODO002 云上",
+    "traffic_ops_cloud": "Traffic Ops 云上",
+    "traffic-ops-cloud": "Traffic Ops 云上",
 }
+_HEALTH_LAYER_ORDER = ("process", "cli", "router", "deliver", "scheduler")
+_HEALTH_LAYER_RANK = {"grey": 0, "green": 1, "yellow": 2, "red": 3}
+_HEALTH_LAYER_CN = {"grey": "灰", "green": "绿", "yellow": "黄", "red": "红"}
+_BUILDER_DAILY_NATURAL_DELAY_WARN_AFTER = timedelta(minutes=30)
+_BUILDER_DAILY_RECEIPT_REQUIRED_FIELDS = (
+    "schema_version",
+    "receipt_id",
+    "report_date",
+    "agent",
+    "markdown_file",
+    "markdown_sha256",
+    "message_id",
+    "event_time",
+    "processed_time",
+    "delivered_time",
+    "verified_time",
+)
+_REMOTE_PULL_SPECS = (
+    {
+        "team_dir": "product-lab",
+        "team_key": "product_lab_cloud",
+        "label": "Product Lab 云上",
+        "script": ("product-lab", "scripts", "cloud", "claudeteam-cloud-pull-facts.sh"),
+        "env": {"CLAUDETEAM_LOCAL_ROOT": "__ROOT__"},
+    },
+    {
+        "team_dir": "todo002-study-coach",
+        "team_key": "todo002_cloud",
+        "label": "TODO002 云上",
+        "script": ("todo002-study-coach", "scripts", "cloud", "todo002-cloud-pull-facts.sh"),
+        "env": {"TODO002_LOCAL_ROOT": "__ROOT__"},
+    },
+    {
+        "team_dir": "traffic-ops-team",
+        "team_key": "traffic_ops_cloud",
+        "label": "Traffic Ops 云上",
+        "script": ("traffic-ops-team", "scripts", "cloud", "traffic-ops-cloud-pull-facts.sh"),
+        "env": {"TRAFFICOPS_LOCAL_ROOT": "__ROOT__"},
+    },
+)
 
 
 def _discover(root: Path) -> list[Path]:
@@ -156,6 +205,110 @@ def _is_terminal_or_backlog(task: dict) -> bool:
 
 def _fmt_time(dt: datetime) -> str:
     return dt.astimezone(_CST).strftime("%Y-%m-%d %H:%M CST")
+
+
+def _parse_snapshot_time(raw: object) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        value = int(text)
+        if value > 10**12:
+            value //= 1000
+        try:
+            return datetime.fromtimestamp(value, _CST)
+        except (OverflowError, OSError, ValueError):
+            return None
+    for fmt in ("%Y-%m-%d %H:%M CST", "%Y-%m-%d %H:%M:%S CST"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=_CST)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(_CST)
+    except ValueError:
+        return None
+
+
+def _snapshot_meta_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    meta = _read_remote_meta(remote_dir)
+    fetched_at = _parse_snapshot_time(meta.get("fetched_at") or meta.get("updated_at"))
+    if fetched_at is None:
+        return [f"⚠️ 云上快照没有 fetched_at，不能当实时状态: {remote_dir / 'meta.json'}"]
+    if now.astimezone(_CST) - fetched_at.astimezone(_CST) > _SNAPSHOT_STALE_AFTER:
+        return [f"⚠️ 云上快照拉取已过期: {_fmt_time(fetched_at)}"]
+    return []
+
+
+def _snapshot_cron_log_issues(remote_dir: Path) -> list[str]:
+    if _scheduled_continuity_spec(remote_dir) is None:
+        return []
+    path = remote_dir / "logs" / "cloud-cron.log"
+    if not path.exists():
+        return [f"⚠️ 云上快照缺 cron log，复盘证据不完整: {path}"]
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [f"⚠️ 云上快照 cron log 不可读，复盘证据不完整: {path}"]
+    if size <= 0:
+        return [f"⚠️ 云上快照 cron log 为空，复盘证据不完整: {path}"]
+    return []
+
+
+def _merge_snapshot_issues(result: dict, issues: list[str]) -> dict:
+    if not issues:
+        return result
+    merged = dict(result)
+    existing = [str(i) for i in merged.get("issues", []) if str(i).strip()]
+    merged["issues"] = (issues + existing)[:5]
+    merged["ok"] = False
+    merged["warn"] = max(int(merged.get("warn", 0) or 0), len(issues))
+    return merged
+
+
+def _merge_layer_status(current: str, new: str) -> str:
+    if _HEALTH_LAYER_RANK.get(new, 0) > _HEALTH_LAYER_RANK.get(current, 0):
+        return new
+    return current
+
+
+def _health_line_severity(line: str) -> str | None:
+    if "❌" in line:
+        return "red"
+    if "⚠️" in line:
+        return "yellow"
+    if "✅" in line:
+        return "green"
+    return None
+
+
+def _health_line_layers(section: str, line: str) -> tuple[str, ...]:
+    lower = line.lower()
+    if section == "scheduler":
+        return ("scheduler",)
+    if section == "paths":
+        return ("process",)
+    if section == "config":
+        if "chat_id" in lower or "lark_profile" in lower:
+            return ("deliver",)
+        return ("process",)
+    if section == "env":
+        return ("deliver",)
+    if section == "process audit":
+        if "lark-cli" in lower:
+            return ("deliver", "router")
+        return ("process",)
+    if section == "tmux":
+        if "tmux session" in lower:
+            return ("process",)
+        return ("cli",)
+    if section == "daemons":
+        if "router" in lower:
+            return ("router",)
+        return ("process",)
+    if section == "router state":
+        return ("router",)
+    return ("process",)
 
 
 def _age_text(created_ms: int | None, now: datetime) -> str:
@@ -305,6 +458,209 @@ def _boss_artifact_cell(artifact: str, visibility: str) -> str:
     return "无产物"
 
 
+def _latest_matching_file(directory: Path, pattern: str) -> Path | None:
+    if not directory.exists():
+        return None
+    rows = sorted(
+        (path for path in directory.glob(pattern) if path.is_file()),
+        key=lambda path: path.name,
+    )
+    return rows[-1] if rows else None
+
+
+def _latest_matching_files(directory: Path, pattern: str, *, limit: int) -> list[Path]:
+    if not directory.exists():
+        return []
+    rows = sorted(
+        (path for path in directory.glob(pattern) if path.is_file()),
+        key=lambda path: path.name,
+    )
+    if limit <= 0:
+        return rows
+    return rows[-limit:]
+
+
+def _mentor_real_roundtrip_summary(team_dir: Path) -> dict:
+    if team_dir.name not in {"website-chuhai-team", "work-assistant-team"}:
+        return {}
+    samples: list[dict] = []
+    boss_files = _latest_matching_files(
+        team_dir / "state" / "cross-team" / "todo002-mentor-boss-view",
+        "*.receipt.json",
+        limit=3,
+    )
+    for path in reversed(boss_files):
+        boss_receipt = read_json(path, {})
+        return_json_raw = (
+            str(boss_receipt.get("return_json") or "").strip()
+            if isinstance(boss_receipt, dict) else ""
+        )
+        return_payload = read_json(Path(return_json_raw).expanduser(), {}) if return_json_raw else {}
+        request_id = str(return_payload.get("sourceRequestId") or "").strip()
+        request_mode = str(return_payload.get("requestMode") or "").strip()
+        return_status = str(return_payload.get("status") or "").strip()
+        issues = []
+        if not str(boss_receipt.get("message_id") or "").strip():
+            issues.append("boss-view receipt 缺 message_id")
+        if not request_id:
+            issues.append("return.json 缺 sourceRequestId")
+        if request_mode == "smoke" or return_status == "smoke_ack":
+            issues.append("当前样本仍是 smoke")
+        samples.append({
+            "request_id": request_id,
+            "request_mode": request_mode,
+            "return_status": return_status,
+            "path": str(path),
+            "real": not issues,
+            "issues": issues,
+        })
+    consecutive = 0
+    for sample in samples:
+        if sample["real"]:
+            consecutive += 1
+            continue
+        break
+    issues = []
+    required = 2
+    if consecutive < required:
+        issues.append(
+            f"⚠️ TODO002 mentor return 最近连续真实样本不足: {consecutive}/{required}"
+        )
+    return {
+        "status": "passed" if not issues else "failed",
+        "consecutive_real_roundtrips": consecutive,
+        "required_consecutive_real_roundtrips": required,
+        "recent": samples,
+        "issues": issues,
+    }
+
+
+def _todo002_mentor_chain_signal(team_dir: Path) -> dict[str, list[str]]:
+    if team_dir.name not in {"website-chuhai-team", "work-assistant-team"}:
+        return {"issues": [], "parts": []}
+
+    request_path = _latest_matching_file(
+        team_dir / "state" / "cross-team" / "todo002-mentor-requests",
+        "*.receipt.json",
+    )
+    import_path = _latest_matching_file(
+        team_dir / "state" / "cross-team" / "todo002-mentor-return-import-runs",
+        "*.json",
+    )
+    boss_path = _latest_matching_file(
+        team_dir / "state" / "cross-team" / "todo002-mentor-boss-view",
+        "*.receipt.json",
+    )
+
+    issues: list[str] = []
+    parts: list[str] = []
+    request_id = ""
+    request_mode = ""
+
+    if request_path is not None:
+        request = read_json(request_path, {})
+        if isinstance(request, dict):
+            request_id = str(request.get("request_id") or "").strip()
+            request_mode = str(request.get("request_mode") or "").strip()
+            parts.append(f"mentor_request_receipt={request_path}")
+            if request_id:
+                parts.append(f"mentor_request_id={request_id}")
+            if request_mode:
+                parts.append(f"mentor_request_mode={request_mode}")
+            sent_at = str(request.get("sent_at") or "").strip()
+            if sent_at:
+                parts.append(f"mentor_request_sent_at={sent_at}")
+
+    if import_path is not None:
+        import_receipt = read_json(import_path, {})
+        if isinstance(import_receipt, dict):
+            parts.append(f"mentor_import_receipt={import_path}")
+            imported = int(import_receipt.get("imported", 0) or 0)
+            failed = int(import_receipt.get("failed", 0) or 0)
+            parts.append(f"mentor_import_imported={imported}")
+            parts.append(f"mentor_import_failed={failed}")
+            created_at = str(import_receipt.get("created_at") or "").strip()
+            if created_at:
+                parts.append(f"mentor_import_created_at={created_at}")
+            if request_path is not None and imported <= 0:
+                issues.append("⚠️ TODO002 mentor return 链缺 source-side import 证据")
+    elif request_path is not None:
+        issues.append("⚠️ TODO002 mentor return 链缺 source-side import receipt")
+
+    if boss_path is not None:
+        boss_receipt = read_json(boss_path, {})
+        if isinstance(boss_receipt, dict):
+            parts.append(f"mentor_boss_view_receipt={boss_path}")
+            message_id = str(boss_receipt.get("message_id") or "").strip()
+            if message_id:
+                parts.append(f"mentor_boss_view_message_id={message_id}")
+            return_json_raw = str(boss_receipt.get("return_json") or "").strip()
+            if return_json_raw:
+                parts.append(f"mentor_return_json={return_json_raw}")
+                return_json = Path(return_json_raw).expanduser()
+                if return_json.exists():
+                    return_payload = read_json(return_json, {})
+                    if isinstance(return_payload, dict):
+                        source_request_id = str(return_payload.get("sourceRequestId") or "").strip()
+                        return_mode = str(return_payload.get("requestMode") or "").strip()
+                        return_status = str(return_payload.get("status") or "").strip()
+                        if source_request_id:
+                            parts.append(f"mentor_source_request_id={source_request_id}")
+                        if return_mode:
+                            parts.append(f"mentor_return_request_mode={return_mode}")
+                        if return_status:
+                            parts.append(f"mentor_return_status={return_status}")
+                        if request_id and source_request_id and request_id != source_request_id:
+                            issues.append("⚠️ TODO002 mentor return 最新 boss-view 与最新 request_id 不一致，未证明同单闭环")
+                        if (
+                            request_mode == "smoke"
+                            or return_mode == "smoke"
+                            or return_status == "smoke_ack"
+                        ):
+                            issues.append("⚠️ TODO002 mentor return 当前同单闭环仍是 smoke，未证明真实 mentor-loop 业务闭环")
+                elif request_path is not None:
+                    issues.append("⚠️ TODO002 mentor return boss-view receipt 缺本地 return.json")
+    elif request_path is not None:
+        issues.append("⚠️ TODO002 mentor return 链缺本地 boss-view receipt")
+
+    continuity = _mentor_real_roundtrip_summary(team_dir)
+    if isinstance(continuity, dict):
+        continuity_issues = [
+            str(item) for item in continuity.get("issues", [])
+            if str(item).strip()
+        ]
+        for item in continuity_issues:
+            if item not in issues:
+                issues.append(item)
+        parts.append(
+            "mentor_continuity_status="
+            + str(continuity.get("status") or "")
+        )
+        parts.append(
+            "mentor_consecutive_real_roundtrips="
+            + str(int(continuity.get("consecutive_real_roundtrips") or 0))
+        )
+        parts.append(
+            "mentor_required_consecutive_real_roundtrips="
+            + str(int(continuity.get("required_consecutive_real_roundtrips") or 0))
+        )
+        recent = continuity.get("recent")
+        if isinstance(recent, list) and recent:
+            compact = "|".join(
+                f"{str(item.get('request_id') or '').strip()}:{'real' if item.get('real') else 'not_real'}"
+                for item in recent
+                if isinstance(item, dict) and str(item.get("request_id") or "").strip()
+            )
+            if compact:
+                parts.append(f"mentor_continuity_recent={compact}")
+
+    return {"issues": issues, "parts": parts}
+
+
+def _has_stale_snapshot_issue(issues: list[str]) -> bool:
+    return any("快照拉取已过期" in str(issue) or "没有 fetched_at" in str(issue) for issue in issues)
+
+
 def _normalise_founder_stage(raw: str) -> str:
     stage = founder_os._normalise_stage(raw)
     if stage:
@@ -374,6 +730,44 @@ def _founder_os_fields(top: dict, *, active_count: int,
     }
 
 
+def _task_truth_fields(top: dict, *, active_count: int,
+                       source_label: str = "本机") -> dict:
+    if not active_count:
+        no_active = f"无{source_label}未完成任务"
+        return {
+            "issue_class": no_active,
+            "current_segment": no_active,
+            "next_natural_window": no_active,
+            "base_absorb_needed": "待判断",
+            "complete": True,
+        }
+
+    issue_class = _first_task_text(
+        top, "issue_class", "issue-class", "问题类型")
+    current_segment = _first_task_text(
+        top, "current_segment", "current-segment", "segment", "当前段位")
+    next_natural_window = _first_task_text(
+        top, "next_natural_window", "next-window", "自然窗口", "下一自然窗口")
+    base_absorb_needed = _first_task_text(
+        top, "base_absorb_needed", "base-absorb-needed", "需上收基座")
+    missing = []
+    if not issue_class:
+        missing.append("问题类型")
+    if not current_segment:
+        missing.append("当前段位")
+    if not next_natural_window:
+        missing.append("下一自然窗口")
+    if not base_absorb_needed:
+        missing.append("需上收基座")
+    return {
+        "issue_class": issue_class or "待团队回写",
+        "current_segment": current_segment or "待团队回写",
+        "next_natural_window": next_natural_window or "待团队回写",
+        "base_absorb_needed": base_absorb_needed or "待判断",
+        "complete": not missing,
+    }
+
+
 def _progress_score(*, bad: int, warn: int, active: bool) -> int:
     if bad:
         return 20
@@ -416,6 +810,10 @@ def build_row(team_dir: Path, *, health: dict | None = None,
     now = now or datetime.now(_CST)
     label = label or _label_for(team_dir)
     health = health if health is not None else fleet_health._health_payload(team_dir)
+    chain_signal = (
+        _todo002_mentor_chain_signal(team_dir)
+        if source_label == "本机" else {"issues": [], "parts": []}
+    )
     tasks = _read_tasks(team_dir)
     active = _sort_tasks([t for t in tasks if not _is_terminal_or_backlog(t)])
     done = _sort_tasks([t for t in tasks if t.get("status") in _TERMINAL])
@@ -424,10 +822,19 @@ def build_row(team_dir: Path, *, health: dict | None = None,
 
     bad = int(health.get("bad", 0) or 0)
     warn = int(health.get("warn", 0) or 0)
-    issues = [str(i) for i in health.get("issues", []) if str(i).strip()]
+    issues = (
+        [str(i) for i in chain_signal.get("issues", []) if str(i).strip()]
+        + [str(i) for i in health.get("issues", []) if str(i).strip()]
+    )
+    if source_label == "云上":
+        issues = _prioritize_cloud_issues(issues)
+    if bad <= 0 and chain_signal.get("issues"):
+        warn = max(warn, len(chain_signal["issues"]))
     top = active[0] if active else {}
     active_count = len(active)
     founder = _founder_os_fields(
+        top, active_count=active_count, source_label=source_label)
+    truth = _task_truth_fields(
         top, active_count=active_count, source_label=source_label)
     founder_needs_backfill = active_count > 0 and not founder["complete"]
 
@@ -470,9 +877,14 @@ def build_row(team_dir: Path, *, health: dict | None = None,
         boss_group = "先催团队回执"
         suggested_action = "重新核验"
         operation_hint = _operation_hint(suggested_action)
-        health_lamp = f"黄｜{source_label}状态已过期待重核"
-        risk = f"黄｜{source_label}状态已过期待重核"
-        verification = "过期需重核"
+        if _has_stale_snapshot_issue(issues):
+            health_lamp = f"黄｜{source_label}状态已过期待重核"
+            risk = f"黄｜{source_label}状态已过期待重核"
+            verification = "过期需重核"
+        else:
+            health_lamp = f"黄｜{source_label}快照已刷新但有风险项"
+            risk = f"黄｜{source_label}快照已刷新但有风险项"
+            verification = "有风险项待核验"
         current_status = "待核验"
         boss_action = (
             f"{operation_hint} 要求 manager 做 live health + 任务回执。"
@@ -509,6 +921,7 @@ def build_row(team_dir: Path, *, health: dict | None = None,
         current_status = "待接入"
         boss_action = operation_hint
 
+    needs_boss = bool(bad or warn or founder_needs_backfill)
     blocker = "; ".join(issues[:3]) if issues else str(latest_status.get("blocker") or "")
     task_list = "\n".join(_task_line(t) for t in active[:5]) or f"无{source_label}未完成任务"
     finished = "\n".join(_task_line(t) for t in done[:3]) or "无新完成播报"
@@ -517,6 +930,8 @@ def build_row(team_dir: Path, *, health: dict | None = None,
         t for t in active
         if not str(t.get("artifact_path") or "").strip()
         or not _founder_os_fields(
+            t, active_count=active_count, source_label=source_label)["complete"]
+        or not _task_truth_fields(
             t, active_count=active_count, source_label=source_label)["complete"]
     ]
     next_report = now + (timedelta(minutes=30) if (bad or warn or active_count)
@@ -538,11 +953,25 @@ def build_row(team_dir: Path, *, health: dict | None = None,
         f"{label}: {current_status}，{active_count} 个{source_label}活跃任务；"
         f"{boss_need}。"
     )
+    cloud_overrides = _cloud_row_overrides(
+        team_dir, label=label, now=now, source_label=source_label, bad=bad, issues=issues)
+    if cloud_overrides:
+        state_column = str(cloud_overrides.get("state_column") or state_column)
+        boss_group = str(cloud_overrides.get("boss_group") or boss_group)
+        suggested_action = str(cloud_overrides.get("suggested_action") or suggested_action)
+        boss_action = str(cloud_overrides.get("boss_action") or boss_action)
+        verification = str(cloud_overrides.get("verification") or verification)
+        current_status = str(cloud_overrides.get("current_status") or current_status)
+        stuck = str(cloud_overrides.get("stuck") or stuck)
+        needs_boss = bool(cloud_overrides.get("needs_boss", needs_boss))
+        boss_one_liner = str(cloud_overrides.get("boss_one_liner") or boss_one_liner)
     fact_source = fact_source or (
         f"health={_config_path(team_dir)}; "
         f"tasks={_tasks_path(team_dir)}; "
         f"status={_status_path(team_dir)}"
     )
+    if chain_signal.get("parts"):
+        fact_source = f"{fact_source}; " + "; ".join(chain_signal["parts"])
 
     return {
         "战场": label,
@@ -554,12 +983,16 @@ def build_row(team_dir: Path, *, health: dict | None = None,
         "阶段出口证据": _clip(founder["exit_evidence"], 240),
         "今天最小证据动作": _clip(founder["evidence_action"], 240),
         "不做什么": _clip(founder["non_goal"], 240),
+        "问题类型": _clip(truth["issue_class"], 120),
+        "当前段位": _clip(truth["current_segment"], 120),
+        "下一自然窗口": _clip(truth["next_natural_window"], 120),
+        "需上收基座": _clip(truth["base_absorb_needed"], 120),
         "Founder OS 状态": founder["status"],
         "阶段老板问题": _clip(founder["boss_question"], 240),
         "当前状态": current_status,
         "产物": str(top.get("artifact_path") or "") if top else "",
         "阻塞": _clip(blocker or "无", 240),
-        "是否需要老板": "是" if (bad or warn or founder_needs_backfill) else "否",
+        "是否需要老板": "是" if needs_boss else "否",
         "需要老板做什么": _clip(boss_action, 240),
         "下次汇报": _fmt_time(next_report),
         "最后更新时间": _fmt_time(now),
@@ -789,14 +1222,91 @@ def _registry_rows(root: Path, team_dirs: list[Path], *,
     return rows
 
 
-def _default_remote_state_dir(root: Path) -> Path | None:
-    for candidate in (
-        root / "product-lab" / "state" / "remote-teams",
-        root / "state" / "remote-teams",
-    ):
-        if candidate.exists():
-            return candidate
-    return None
+def _default_remote_state_dirs(root: Path, team_dirs: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    rows: list[Path] = []
+
+    def add(path: Path) -> None:
+        resolved = str(path.resolve())
+        if resolved in seen or not path.exists():
+            return
+        seen.add(resolved)
+        rows.append(path)
+
+    add(root / "state" / "remote-teams")
+    add(root / "product-lab" / "state" / "remote-teams")
+    for team_dir in team_dirs:
+        add(team_dir / "state" / "remote-teams")
+    return rows
+
+
+def _clip_subprocess_output(text: object, *, limit: int = 1200) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    clipped = raw if len(raw) <= limit else raw[-limit:]
+    return clipped
+
+
+def _remote_pull_targets(root: Path, team_dirs: list[Path], *,
+                         explicit_team_dirs: bool) -> list[dict[str, object]]:
+    names = {path.name for path in team_dirs}
+    rows: list[dict[str, object]] = []
+    for spec in _REMOTE_PULL_SPECS:
+        script = root.joinpath(*spec["script"])
+        if not script.exists():
+            continue
+        row = dict(spec)
+        row["script_path"] = script
+        rows.append(row)
+    if not explicit_team_dirs:
+        return rows
+    matched = [row for row in rows if str(row.get("team_dir") or "") in names]
+    return matched or rows
+
+
+def _pull_remote_snapshots(root: Path, team_dirs: list[Path], *,
+                           explicit_team_dirs: bool,
+                           runner: Callable[..., object] | None = None) -> dict:
+    runner = runner or subprocess.run
+    targets = _remote_pull_targets(root, team_dirs, explicit_team_dirs=explicit_team_dirs)
+    runs: list[dict[str, object]] = []
+    succeeded = failed = 0
+    for target in targets:
+        script = Path(str(target["script_path"])).expanduser().resolve()
+        env = os.environ.copy()
+        for key, value in dict(target.get("env") or {}).items():
+            env[str(key)] = str(root if value == "__ROOT__" else value)
+        proc = runner(
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+            env=env,
+        )
+        rc = int(getattr(proc, "returncode", 1) or 0)
+        ok = rc == 0
+        if ok:
+            succeeded += 1
+        else:
+            failed += 1
+        runs.append({
+            "team_dir": str(target.get("team_dir") or ""),
+            "team_key": str(target.get("team_key") or ""),
+            "label": str(target.get("label") or ""),
+            "script": str(script),
+            "ok": ok,
+            "returncode": rc,
+            "stdout": _clip_subprocess_output(getattr(proc, "stdout", "")),
+            "stderr": _clip_subprocess_output(getattr(proc, "stderr", "")),
+        })
+    return {
+        "ok": failed == 0,
+        "attempted": len(targets),
+        "succeeded": succeeded,
+        "failed": failed,
+        "runs": runs,
+    }
 
 
 def _read_remote_meta(remote_dir: Path) -> dict:
@@ -804,25 +1314,53 @@ def _read_remote_meta(remote_dir: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _remote_snapshot_dirs(remote_state_dir: Path | None) -> list[Path]:
-    if remote_state_dir is None or not remote_state_dir.exists():
-        return []
+def _remote_key(remote_dir: Path) -> str:
+    meta = _read_remote_meta(remote_dir)
+    return str(meta.get("key") or remote_dir.name).strip()
+
+
+def _remote_snapshot_sort_key(remote_dir: Path) -> tuple[int, float, str]:
+    meta = _read_remote_meta(remote_dir)
+    fetched_at = _parse_snapshot_time(meta.get("fetched_at") or meta.get("updated_at"))
+    if fetched_at is not None:
+        return (1, fetched_at.timestamp(), str(remote_dir))
     try:
-        children = sorted(remote_state_dir.iterdir(), key=lambda p: p.name)
+        return (0, remote_dir.stat().st_mtime, str(remote_dir))
     except OSError:
+        return (0, 0.0, str(remote_dir))
+
+
+def _remote_snapshot_dirs(remote_state_dirs: Path | list[Path] | tuple[Path, ...] | None) -> list[Path]:
+    if remote_state_dirs is None:
         return []
-    rows: list[Path] = []
-    for child in children:
-        if not child.is_dir() or child.name.startswith("."):
+    if isinstance(remote_state_dirs, Path):
+        dirs = [remote_state_dirs]
+    else:
+        dirs = [Path(item) for item in remote_state_dirs]
+
+    snapshots_by_key: dict[str, Path] = {}
+    for remote_state_dir in dirs:
+        if not remote_state_dir.exists():
             continue
-        if (
-            _config_path(child).exists()
-            or _tasks_path(child).exists()
-            or _status_path(child).exists()
-            or (child / "meta.json").exists()
-        ):
-            rows.append(child)
-    return rows
+        try:
+            children = sorted(remote_state_dir.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if not (
+                _config_path(child).exists()
+                or _tasks_path(child).exists()
+                or _status_path(child).exists()
+                or (child / "meta.json").exists()
+            ):
+                continue
+            key = _remote_key(child) or child.name
+            current = snapshots_by_key.get(key)
+            if current is None or _remote_snapshot_sort_key(child) > _remote_snapshot_sort_key(current):
+                snapshots_by_key[key] = child
+    return sorted(snapshots_by_key.values(), key=lambda path: (_remote_key(path), str(path)))
 
 
 def _remote_label(remote_dir: Path, *,
@@ -838,6 +1376,10 @@ def _remote_label(remote_dir: Path, *,
 
 
 def _snapshot_health(remote_dir: Path, *, now: datetime) -> dict:
+    snapshot_issues = _snapshot_meta_issues(remote_dir, now=now)
+    snapshot_issues.extend(_snapshot_cron_log_issues(remote_dir))
+    snapshot_issues.extend(_cloud_delivery_snapshot_issues(remote_dir, now=now))
+    traffic_ops_standby = _traffic_ops_standby_mode(remote_dir, now=now)
     health = read_json(remote_dir / "health.json", {})
     if isinstance(health, dict) and any(k in health for k in ("ok", "bad", "warn")):
         issues = health.get("issues")
@@ -846,38 +1388,52 @@ def _snapshot_health(remote_dir: Path, *, now: datetime) -> dict:
                 line for line in health.get("lines", [])
                 if isinstance(line, str) and ("❌" in line or "⚠️" in line)
             ] if isinstance(health.get("lines"), list) else []
-        return {
+        if traffic_ops_standby:
+            issues = [
+                str(item) for item in issues
+                if not _traffic_ops_expected_standby_issue(str(item))
+            ]
+            bad = sum(1 for item in issues if "❌" in str(item))
+            warn = sum(1 for item in issues if "⚠️" in str(item))
+            ok = bad == 0
+        else:
+            bad = int(health.get("bad", 0) or 0)
+            warn = int(health.get("warn", 0) or 0)
+            ok = bool(health.get("ok"))
+        result = _merge_snapshot_issues({
             "team": remote_dir.name,
             "path": str(remote_dir),
-            "ok": bool(health.get("ok")),
-            "bad": int(health.get("bad", 0) or 0),
-            "warn": int(health.get("warn", 0) or 0),
+            "ok": ok,
+            "bad": bad,
+            "warn": warn,
             "issues": [str(i) for i in issues[:5]],
-        }
+        }, snapshot_issues)
+        return _prepend_health_layer_summary(
+            result, _remote_health_layers(remote_dir, now=now))
 
     statuses = _read_statuses(remote_dir)
     if not statuses:
-        return {
+        return _merge_snapshot_issues({
             "team": remote_dir.name,
             "path": str(remote_dir),
             "ok": False,
             "bad": 0,
             "warn": 1,
             "issues": [f"⚠️ 云上快照缺员工心跳: {_status_path(remote_dir)}"],
-        }
+        }, snapshot_issues)
     latest = max(int(s.get("updated_at") or 0) for s in statuses)
     if not latest:
-        return {
+        return _merge_snapshot_issues({
             "team": remote_dir.name,
             "path": str(remote_dir),
             "ok": False,
             "bad": 0,
             "warn": 1,
             "issues": ["⚠️ 云上快照没有 updated_at，需远端重新回写"],
-        }
+        }, snapshot_issues)
     updated = datetime.fromtimestamp(latest / 1000, _CST)
-    stale = now.astimezone(_CST) - updated > timedelta(hours=2)
-    return {
+    stale = now.astimezone(_CST) - updated > _SNAPSHOT_STALE_AFTER
+    return _merge_snapshot_issues({
         "team": remote_dir.name,
         "path": str(remote_dir),
         "ok": not stale,
@@ -887,10 +1443,1150 @@ def _snapshot_health(remote_dir: Path, *, now: datetime) -> dict:
             [f"⚠️ 云上员工心跳已过期: {_fmt_time(updated)}"]
             if stale else []
         ),
+    }, snapshot_issues)
+
+
+def _builder_daily_marker(now: datetime) -> str:
+    return f"Builder Daily | {now.astimezone(_CST).strftime('%Y-%m-%d')}"
+
+
+def _builder_daily_marker_for_date(day: str) -> str:
+    return f"Builder Daily | {day}"
+
+
+def _builder_daily_receipt_path(remote_dir: Path, *, now: datetime) -> Path:
+    day = now.astimezone(_CST).strftime("%Y-%m-%d")
+    return remote_dir / "state" / "builder-daily" / f"{day}.receipt.json"
+
+
+def _latest_receipt_file(directory: Path) -> Path | None:
+    return _latest_matching_file(directory, "*.receipt.json")
+
+
+def _builder_daily_receipt_candidate_path(remote_dir: Path, *, now: datetime) -> Path:
+    path = _builder_daily_receipt_path(remote_dir, now=now)
+    if path.exists():
+        return path
+    return _latest_receipt_file(remote_dir / "state" / "builder-daily") or path
+
+
+def _receipt_report_date(receipt: dict) -> str:
+    return str(receipt.get("report_date") or receipt.get("date") or "").strip()
+
+
+def _builder_daily_artifact_path(remote_dir: Path, *, now: datetime) -> Path:
+    day = now.astimezone(_CST).strftime("%Y-%m-%d")
+    path = remote_dir / "docs" / "builder-daily" / f"{day}.md"
+    if path.exists():
+        return path
+    receipt = _builder_daily_receipt(remote_dir, now=now)
+    receipt_day = _receipt_report_date(receipt)
+    if receipt_day:
+        fallback = remote_dir / "docs" / "builder-daily" / f"{receipt_day}.md"
+        if fallback.exists():
+            return fallback
+    latest = _latest_matching_file(remote_dir / "docs" / "builder-daily", "*.md")
+    if latest is not None:
+        return latest
+    return path
+
+
+def _builder_daily_artifact_exists(remote_dir: Path, *, now: datetime) -> bool:
+    path = _builder_daily_artifact_path(remote_dir, now=now)
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    marker = _builder_daily_marker(now)
+    receipt = _builder_daily_receipt(remote_dir, now=now)
+    receipt_day = _receipt_report_date(receipt)
+    if receipt_day and path.name == f"{receipt_day}.md":
+        marker = _builder_daily_marker_for_date(receipt_day)
+    return marker in text
+
+
+def _builder_daily_receipt(remote_dir: Path, *, now: datetime) -> dict:
+    path = _builder_daily_receipt_candidate_path(remote_dir, now=now)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"_invalid": True, "_path": str(path)}
+    if not isinstance(data, dict):
+        return {"_invalid": True, "_path": str(path)}
+    data = dict(data)
+    if (not str(data.get("delivered_time") or "").strip()
+            and str(data.get("sent_at") or "").strip()):
+        data["delivered_time"] = str(data.get("sent_at") or "").strip()
+    data["_path"] = str(path)
+    return data
+
+
+def _builder_daily_receipt_missing_fields(receipt: dict) -> list[str]:
+    missing = []
+    for key in _BUILDER_DAILY_RECEIPT_REQUIRED_FIELDS:
+        if key == "report_date":
+            if not _receipt_report_date(receipt):
+                missing.append(key)
+            continue
+        if not str(receipt.get(key) or "").strip():
+            missing.append(key)
+    if str(receipt.get("sent_at") or "").strip():
+        missing = [key for key in missing if key != "delivered_time"]
+    return missing
+
+
+def _parse_iso(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _receipt_delay_minutes(receipt: dict) -> int | None:
+    raw = receipt.get("delivery_delay_minutes")
+    if isinstance(raw, bool):
+        raw = None
+    if raw not in (None, ""):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    event_dt = _parse_iso(str(receipt.get("event_time") or ""))
+    processed_dt = _parse_iso(str(receipt.get("processed_time") or ""))
+    if not event_dt or not processed_dt:
+        return None
+    return max(0, int((processed_dt - event_dt).total_seconds()) // 60)
+
+
+def _builder_daily_truth_issues(receipt: dict) -> list[str]:
+    issues: list[str] = []
+    schedule_source = str(
+        receipt.get("schedule_source")
+        or receipt.get("trigger_source")
+        or receipt.get("source")
+        or ""
+    ).strip()
+    schedule_command = str(receipt.get("schedule_command") or "").strip()
+    delivery_mode = str(receipt.get("delivery_mode") or "").strip()
+    delay_minutes = _receipt_delay_minutes(receipt)
+
+    if delivery_mode and delivery_mode != "scheduled":
+        parts = [f"mode={delivery_mode}"]
+        if schedule_source:
+            parts.append(f"source={schedule_source}")
+        if schedule_command:
+            parts.append(f"command={schedule_command}")
+        issues.append(
+            "⚠️ Builder Daily 最新 receipt 不是自然准点发送: "
+            + ", ".join(parts)
+        )
+    elif schedule_source and schedule_source != "cron":
+        parts = [f"source={schedule_source}"]
+        if schedule_command:
+            parts.append(f"command={schedule_command}")
+        issues.append(
+            "⚠️ Builder Daily 最新 receipt 不是自然 cron 触发: "
+            + ", ".join(parts)
+        )
+
+    if delay_minutes is not None and delay_minutes > int(_BUILDER_DAILY_NATURAL_DELAY_WARN_AFTER.total_seconds() // 60):
+        issues.append(
+            f"⚠️ Builder Daily 最新 receipt 距计划时点延迟 {delay_minutes} 分钟，尚未证明自然准点"
+        )
+    return issues
+
+
+def _todo002_digest_receipt_path(remote_dir: Path, *, now: datetime) -> Path:
+    day = now.astimezone(_CST).strftime("%Y-%m-%d")
+    return remote_dir / "state" / "digest-delivery" / f"{day}.receipt.json"
+
+
+def _todo002_deepsea_freeze_path(remote_dir: Path) -> Path:
+    return remote_dir / "state" / "deepsea-freeze.json"
+
+
+def _todo002_deepsea_freeze(remote_dir: Path) -> dict:
+    path = _todo002_deepsea_freeze_path(remote_dir)
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"_invalid": True, "_path": str(path)}
+    if not text:
+        return {}
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return {"active": True, "reason": text, "_path": str(path)}
+    if not isinstance(raw, dict):
+        return {"_invalid": True, "_path": str(path)}
+    active_raw = raw.get("active")
+    if active_raw is None:
+        active_raw = raw.get("frozen")
+    if active_raw is None:
+        active_raw = raw.get("freeze")
+    if active_raw is None and "enabled" in raw:
+        active_raw = not bool(raw.get("enabled"))
+    active = True if active_raw is None else bool(active_raw)
+    payload = {
+        "active": active,
+        "reason": str(
+            raw.get("reason")
+            or raw.get("message")
+            or raw.get("freeze_reason")
+            or raw.get("freezeReason")
+            or ""
+        ).strip(),
+        "_path": str(path),
+    }
+    scope = raw.get("scope")
+    if isinstance(scope, list):
+        payload["scope"] = [str(item).strip() for item in scope if str(item).strip()]
+    return payload
+
+
+def _scheduled_freeze_state_for_kind(kind: str, remote_dir: Path) -> dict:
+    if kind == "todo002_digest":
+        return _todo002_deepsea_freeze(remote_dir)
+    return {}
+
+
+def _scheduled_freeze_issue_for_kind(kind: str, remote_dir: Path) -> str:
+    freeze = _scheduled_freeze_state_for_kind(kind, remote_dir)
+    if not freeze or freeze.get("_invalid") or not freeze.get("active"):
+        return ""
+    reason = str(freeze.get("reason") or "").strip()
+    path = str(freeze.get("_path") or "").strip()
+    issue = "⚠️ TODO002 DeepSea automation frozen"
+    if reason:
+        issue += f": {reason}"
+    if path:
+        issue += f" ({path})"
+    return issue
+
+
+def _todo002_digest_local_path(remote_dir: Path, digest_file: str) -> Path | None:
+    raw = str(digest_file or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        if path.exists():
+            return path
+        fallback = remote_dir / "knowledge-base" / "digests" / path.name
+        return fallback if fallback.exists() else None
+    candidate = remote_dir / raw
+    if candidate.exists():
+        return candidate
+    fallback = remote_dir / "knowledge-base" / "digests" / path.name
+    return fallback if fallback.exists() else None
+
+
+def _todo002_source_artifact_local_path(remote_dir: Path,
+                                        artifact_file: str) -> Path | None:
+    raw = str(artifact_file or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute() and path.exists():
+        return path
+    if not path.is_absolute():
+        candidate = remote_dir / raw
+        if candidate.exists():
+            return candidate
+    curated_root = remote_dir / "knowledge-base" / "curated"
+    if not curated_root.exists():
+        return None
+    matches = sorted(p for p in curated_root.rglob(path.name) if p.is_file())
+    return matches[-1] if matches else None
+
+
+def _file_sha256(path: Path | None) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _todo002_digest_file_meta(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    meta: dict[str, str] = {}
+    source_match = re.search(r"^-\s+来源 artifact:\s+`([^`]+)`", text, re.M)
+    if source_match:
+        meta["source_artifact_file"] = source_match.group(1).strip()
+    sha_match = re.search(r"^-\s+来源 artifact SHA256:\s+`([^`]+)`", text, re.M)
+    if sha_match:
+        meta["source_artifact_sha256"] = sha_match.group(1).strip()
+    meta["source_handoff_mode"] = (
+        "manager_takeover" if "## Manager Takeover Note" in text else "worker_handoff"
+    )
+    return meta
+
+
+def _todo002_digest_receipt(remote_dir: Path, *, now: datetime) -> dict:
+    path = _todo002_digest_receipt_path(remote_dir, now=now)
+    if not path.exists():
+        path = _latest_receipt_file(remote_dir / "state" / "digest-delivery") or path
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"_invalid": True, "_path": str(path)}
+    if not isinstance(data, dict):
+        return {"_invalid": True, "_path": str(path)}
+    data = dict(data)
+    if (not str(data.get("delivered_time") or "").strip()
+            and str(data.get("sent_at") or "").strip()):
+        data["delivered_time"] = str(data.get("sent_at") or "").strip()
+    digest_meta = _todo002_digest_file_meta(
+        _todo002_digest_local_path(remote_dir, str(data.get("digest_file") or "").strip())
+    )
+    for key, value in digest_meta.items():
+        if value and not str(data.get(key) or "").strip():
+            data[key] = value
+    source_artifact_file = str(
+        data.get("source_artifact_file")
+        or digest_meta.get("source_artifact_file")
+        or ""
+    ).strip()
+    source_local_path = _todo002_source_artifact_local_path(
+        remote_dir, source_artifact_file)
+    if source_local_path is not None:
+        data["_source_artifact_local_path"] = str(source_local_path)
+        current_sha = _file_sha256(source_local_path)
+        if current_sha:
+            data["source_artifact_current_sha256"] = current_sha
+    data["_path"] = str(path)
+    return data
+
+
+def _traffic_brief_receipt_path(remote_dir: Path, *, now: datetime) -> Path:
+    day = now.astimezone(_CST).strftime("%Y-%m-%d")
+    return remote_dir / "state" / "traffic-brief" / f"{day}.receipt.json"
+
+
+def _traffic_brief_receipt(remote_dir: Path, *, now: datetime) -> dict:
+    path = _traffic_brief_receipt_path(remote_dir, now=now)
+    if not path.exists():
+        path = _latest_receipt_file(remote_dir / "state" / "traffic-brief") or path
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"_invalid": True, "_path": str(path)}
+    if not isinstance(data, dict):
+        return {"_invalid": True, "_path": str(path)}
+    data = dict(data)
+    if (not str(data.get("delivered_time") or "").strip()
+            and str(data.get("sent_at") or "").strip()):
+        data["delivered_time"] = str(data.get("sent_at") or "").strip()
+    data["_path"] = str(path)
+    return data
+
+
+def _scheduled_truth_issues(title: str, receipt: dict) -> list[str]:
+    issues: list[str] = []
+    schedule_source = str(
+        receipt.get("schedule_source")
+        or receipt.get("trigger_source")
+        or receipt.get("source")
+        or ""
+    ).strip()
+    schedule_command = str(receipt.get("schedule_command") or "").strip()
+    delivery_mode = str(receipt.get("delivery_mode") or "").strip()
+    delay_minutes = _receipt_delay_minutes(receipt)
+
+    if delivery_mode and delivery_mode != "scheduled":
+        parts = [f"mode={delivery_mode}"]
+        if schedule_source:
+            parts.append(f"source={schedule_source}")
+        if schedule_command:
+            parts.append(f"command={schedule_command}")
+        issues.append(
+            f"⚠️ {title} 最新 receipt 不是自然准点发送: " + ", ".join(parts)
+        )
+    elif schedule_source and schedule_source != "cron":
+        parts = [f"source={schedule_source}"]
+        if schedule_command:
+            parts.append(f"command={schedule_command}")
+        issues.append(
+            f"⚠️ {title} 最新 receipt 不是自然 cron 触发: " + ", ".join(parts)
+        )
+
+    if delay_minutes is not None and delay_minutes > int(_BUILDER_DAILY_NATURAL_DELAY_WARN_AFTER.total_seconds() // 60):
+        issues.append(
+            f"⚠️ {title} 最新 receipt 距计划时点延迟 {delay_minutes} 分钟，尚未证明自然准点"
+        )
+    return issues
+
+
+def _todo002_digest_truth_issues(receipt: dict) -> list[str]:
+    issues = _scheduled_truth_issues("TODO002 Digest", receipt)
+    source_handoff_mode = str(receipt.get("source_handoff_mode") or "").strip()
+    if source_handoff_mode and source_handoff_mode != "worker_handoff":
+        issues.append(
+            "⚠️ TODO002 Digest 上游不是自然 worker 交付: "
+            f"source_handoff_mode={source_handoff_mode}"
+        )
+    declared_sha = str(receipt.get("source_artifact_sha256") or "").strip()
+    current_sha = str(receipt.get("source_artifact_current_sha256") or "").strip()
+    if declared_sha and current_sha and declared_sha != current_sha:
+        source_path = str(
+            receipt.get("_source_artifact_local_path")
+            or receipt.get("source_artifact_file")
+            or ""
+        ).strip()
+        issues.append(
+            "⚠️ TODO002 Digest source artifact 已变化："
+            f"digest记录sha256={declared_sha}，"
+            f"当前snapshot sha256={current_sha}"
+            + (f"，source_artifact={source_path}" if source_path else "")
+        )
+    return issues
+
+
+def _traffic_brief_truth_issues(receipt: dict) -> list[str]:
+    return _scheduled_truth_issues("Traffic Brief", receipt)
+
+
+def _scheduled_continuity_spec(remote_dir: Path) -> dict | None:
+    key = _remote_key(remote_dir)
+    if key in {"product_lab_cloud", "product-lab-cloud"}:
+        return {
+            "kind": "builder_daily",
+            "title": "Builder Daily",
+            "prefix": "builder_daily",
+            "window_hm": (8, 45),
+        }
+    if key in {"todo002_cloud", "todo002-study-coach-cloud"}:
+        return {
+            "kind": "todo002_digest",
+            "title": "TODO002 Digest",
+            "prefix": "todo002_digest",
+            "window_hm": (10, 0),
+        }
+    if key in {"traffic_ops_cloud", "traffic-ops-cloud"}:
+        return {
+            "kind": "traffic_brief",
+            "title": "Traffic Brief",
+            "prefix": "traffic_brief",
+            "window_hm": (18, 0),
+        }
+    return None
+
+
+def _scheduled_continuity_deadline(spec: dict, *, now: datetime) -> datetime:
+    current = now.astimezone(_CST)
+    return current.replace(
+        hour=int(spec["window_hm"][0]),
+        minute=int(spec["window_hm"][1]),
+        second=0,
+        microsecond=0,
+    )
+
+
+def _scheduled_continuity_anchor_report_date(remote_dir: Path, *, now: datetime) -> str:
+    spec = _scheduled_continuity_spec(remote_dir)
+    if spec is None:
+        return ""
+    current = now.astimezone(_CST)
+    if current < _scheduled_continuity_deadline(spec, now=now):
+        current = current - timedelta(days=1)
+    return current.strftime("%Y-%m-%d")
+
+
+def _scheduled_receipt_storage_dir(kind: str, remote_dir: Path) -> Path:
+    if kind == "builder_daily":
+        return remote_dir / "state" / "builder-daily"
+    if kind == "todo002_digest":
+        return remote_dir / "state" / "digest-delivery"
+    if kind == "traffic_brief":
+        return remote_dir / "state" / "traffic-brief"
+    return remote_dir
+
+
+def _scheduled_receipt_path_for_report_date(kind: str, remote_dir: Path, report_date: str) -> Path:
+    return _scheduled_receipt_storage_dir(kind, remote_dir) / f"{report_date}.receipt.json"
+
+
+def _read_receipt_payload(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"_invalid": True, "_path": str(path)}
+    if not isinstance(data, dict):
+        return {"_invalid": True, "_path": str(path)}
+    payload = dict(data)
+    if (not str(payload.get("delivered_time") or "").strip()
+            and str(payload.get("sent_at") or "").strip()):
+        payload["delivered_time"] = str(payload.get("sent_at") or "").strip()
+    payload["_path"] = str(path)
+    return payload
+
+
+def _scheduled_truth_issues_for_kind(kind: str, receipt: dict) -> list[str]:
+    if kind == "builder_daily":
+        return _builder_daily_truth_issues(receipt)
+    if kind == "todo002_digest":
+        return _todo002_digest_truth_issues(receipt)
+    if kind == "traffic_brief":
+        return _traffic_brief_truth_issues(receipt)
+    return []
+
+
+def _scheduled_continuity_summary(remote_dir: Path, *, now: datetime) -> dict:
+    spec = _scheduled_continuity_spec(remote_dir)
+    if spec is None:
+        return {}
+    anchor_report_date = _scheduled_continuity_anchor_report_date(remote_dir, now=now)
+    if not anchor_report_date:
+        return {}
+    anchor_day = datetime.fromisoformat(anchor_report_date).date()
+    recent: list[dict] = []
+    consecutive = 0
+    for offset in range(_SCHEDULED_CONTINUITY_WINDOW_DAYS):
+        report_date = (anchor_day - timedelta(days=offset)).isoformat()
+        path = _scheduled_receipt_path_for_report_date(spec["kind"], remote_dir, report_date)
+        receipt = _read_receipt_payload(path)
+        if receipt.get("_invalid"):
+            sample = {
+                "report_date": report_date,
+                "status": "invalid",
+                "natural": False,
+                "path": str(path),
+                "issues": [f"receipt 解析失败: {path}"],
+            }
+        elif not receipt:
+            sample = {
+                "report_date": report_date,
+                "status": "missing",
+                "natural": False,
+                "path": str(path),
+                "issues": [f"缺 receipt: {path}"],
+            }
+        else:
+            issues = []
+            if _receipt_report_date(receipt) != report_date:
+                issues.append(
+                    "receipt report_date 不匹配: "
+                    f"expected={report_date}, actual={_receipt_report_date(receipt) or 'missing'}"
+                )
+            issues.extend(_scheduled_truth_issues_for_kind(spec["kind"], receipt))
+            sample = {
+                "report_date": report_date,
+                "status": "natural" if not issues else "not_natural",
+                "natural": not issues,
+                "path": str(receipt.get("_path") or path),
+                "issues": issues,
+            }
+        recent.append(sample)
+        if offset == consecutive and sample["natural"]:
+            consecutive += 1
+    issues: list[str] = []
+    if consecutive < _SCHEDULED_CONTINUITY_REQUIRED_STREAK:
+        issues.append(
+            f"⚠️ {spec['title']} 最近连续自然样本不足: "
+            f"{consecutive}/{_SCHEDULED_CONTINUITY_REQUIRED_STREAK}"
+            f"（截至 {anchor_report_date}）"
+        )
+    return {
+        "status": "passed" if not issues else "failed",
+        "prefix": str(spec["prefix"]),
+        "title": str(spec["title"]),
+        "anchor_report_date": anchor_report_date,
+        "consecutive_natural_days": consecutive,
+        "required_consecutive_natural_days": _SCHEDULED_CONTINUITY_REQUIRED_STREAK,
+        "sample_window_days": _SCHEDULED_CONTINUITY_WINDOW_DAYS,
+        "recent": recent,
+        "issues": issues,
     }
 
 
-def _remote_fact_source(remote_dir: Path) -> str:
+def _scheduled_continuity_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    summary = _scheduled_continuity_summary(remote_dir, now=now)
+    if not isinstance(summary, dict):
+        return []
+    return [str(item) for item in summary.get("issues", []) if str(item).strip()]
+
+
+def _prioritize_cloud_issues(issues: list[str]) -> list[str]:
+    ranked: list[tuple[int, int, str]] = []
+    for idx, raw in enumerate(issues):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text.startswith((
+            "⚠️ Builder Daily",
+            "⚠️ TODO002 Digest",
+            "⚠️ Traffic Brief",
+            "⚠️ TODO002 mentor return",
+        )):
+            rank = 0
+        elif text.startswith("⚠️ 云上健康分层:"):
+            rank = 1
+        else:
+            rank = 2
+        ranked.append((rank, idx, text))
+    return [text for _, _, text in sorted(ranked)]
+
+
+def _cloud_issue_brief(issues: list[str]) -> str:
+    parts: list[str] = []
+    for raw in issues:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        mode_match = re.search(r"mode=([a-z_]+)", text)
+        if mode_match:
+            mode = mode_match.group(1)
+            if mode not in parts:
+                parts.append(mode)
+        if "不是自然 cron 触发" in text and "非cron" not in parts:
+            parts.append("非cron")
+        delay_match = re.search(r"延迟\s*(\d+)\s*分钟", text)
+        if delay_match:
+            delay = f"延迟{delay_match.group(1)}分钟"
+            if delay not in parts:
+                parts.append(delay)
+    if parts:
+        return "，".join(parts[:2])
+    if not issues:
+        return ""
+    return _clip(re.sub(r"^[⚠️❌✅ℹ️ ]+", "", str(issues[0]).strip()), 48)
+
+
+def _cloud_sample_brief(sample: dict) -> str:
+    if not isinstance(sample, dict):
+        return "暂无最近样本"
+    report_date = str(sample.get("report_date") or "").strip()
+    status = str(sample.get("status") or "").strip()
+    prefix = report_date or "最近样本"
+    if status == "natural":
+        return f"{prefix} 自然准点"
+    if status == "missing":
+        return f"{prefix} 缺 receipt"
+    if status == "invalid":
+        return f"{prefix} receipt 解析失败"
+    if status == "not_natural":
+        reason = _cloud_issue_brief([
+            str(item) for item in sample.get("issues", [])
+            if str(item).strip()
+        ])
+        return f"{prefix} 非自然{f'（{reason}）' if reason else ''}"
+    return f"{prefix} 状态待确认"
+
+
+def _scheduled_today_chain_issues(remote_dir: Path, spec: dict, *, now: datetime) -> tuple[dict, list[str]]:
+    today = now.astimezone(_CST).strftime("%Y-%m-%d")
+    receipt_path = _scheduled_receipt_path_for_report_date(spec["kind"], remote_dir, today)
+    receipt = _read_receipt_payload(receipt_path)
+    if not receipt or receipt.get("_invalid"):
+        issues = [f"receipt 解析失败: {receipt_path}"] if receipt.get("_invalid") else []
+        return receipt, issues
+    issues: list[str] = []
+    if _receipt_report_date(receipt) != today:
+        issues.append(
+            "receipt report_date 不匹配: "
+            f"expected={today}, actual={_receipt_report_date(receipt) or 'missing'}"
+        )
+    if spec["kind"] == "builder_daily":
+        issues.extend(_builder_daily_snapshot_issues(remote_dir, now=now))
+    else:
+        issues.extend(_scheduled_truth_issues_for_kind(spec["kind"], receipt))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in issues:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            deduped.append(text)
+    return receipt, deduped
+
+
+def _cloud_row_overrides(team_dir: Path, *, label: str,
+                         now: datetime, source_label: str,
+                         bad: int, issues: list[str]) -> dict:
+    if source_label != "云上" or bad > 0:
+        return {}
+    if _has_stale_snapshot_issue(issues):
+        return {}
+    spec = _scheduled_continuity_spec(team_dir)
+    if spec is None:
+        return {}
+    continuity = _scheduled_continuity_summary(team_dir, now=now)
+    if not isinstance(continuity, dict) or not continuity:
+        return {}
+    current = now.astimezone(_CST)
+    deadline = _scheduled_continuity_deadline(spec, now=now)
+    deadline_text = deadline.strftime("%H:%M")
+    consecutive = int(continuity.get("consecutive_natural_days") or 0)
+    required = int(continuity.get("required_consecutive_natural_days") or 0)
+    recent = continuity.get("recent") if isinstance(continuity.get("recent"), list) else []
+    latest = recent[0] if recent else {}
+    title = str(spec.get("title") or label).strip()
+    if current < deadline:
+        return {
+            "state_column": "等待窗口",
+            "current_status": "等待窗口",
+            "boss_group": "盯今天窗口",
+            "suggested_action": "继续执行",
+            "needs_boss": False,
+            "boss_action": (
+                f"等今天 {deadline_text} 的 {title} 自然窗口自动取证；"
+                "不要人工补发、catch-up 或让主管解释兜底。"
+            ),
+            "verification": "等待自然窗口",
+            "stuck": "未到自然窗口",
+            "boss_one_liner": (
+                f"{label}: 等待今天 {deadline_text} 自然窗口；"
+                f"上一样本 {_cloud_sample_brief(latest)}，连续自然样本 {consecutive}/{required}。"
+            ),
+        }
+
+    receipt, today_issues = _scheduled_today_chain_issues(team_dir, spec, now=now)
+    if receipt.get("_invalid"):
+        return {
+            "state_column": "未自然闭环",
+            "current_status": "未自然闭环",
+            "boss_group": "先修当日链路",
+            "suggested_action": "继续执行",
+            "needs_boss": False,
+            "boss_action": (
+                f"让云上 manager 先修今天 {title} receipt 解析失败问题，"
+                "再按 trigger -> worker -> artifact -> receipt -> sync -> boss view 重取自然样本。"
+            ),
+            "verification": "当日 receipt 解析失败",
+            "stuck": "当日 receipt 解析失败",
+            "boss_one_liner": (
+                f"{label}: 今天 {deadline_text} 窗口后的 receipt 解析失败，"
+                f"未证明自然闭环；连续自然样本 {consecutive}/{required}。"
+            ),
+        }
+    if not receipt:
+        return {
+            "state_column": "未自然闭环",
+            "current_status": "未自然闭环",
+            "boss_group": "先修当日链路",
+            "suggested_action": "继续执行",
+            "needs_boss": False,
+            "boss_action": (
+                f"让云上 manager 查今天 {title} 为什么窗口后仍缺同日 receipt，"
+                "优先定位 trigger -> worker -> artifact -> receipt 断点，禁止人工补绿。"
+            ),
+            "verification": "当日链路缺证据",
+            "stuck": "同日 receipt 缺失",
+            "boss_one_liner": (
+                f"{label}: 今天 {deadline_text} 窗口后仍缺同日 receipt，"
+                f"未证明自然闭环；连续自然样本 {consecutive}/{required}。"
+            ),
+        }
+    if today_issues:
+        reason = _cloud_issue_brief(today_issues)
+        return {
+            "state_column": "未自然闭环",
+            "current_status": "未自然闭环",
+            "boss_group": "先修当日链路",
+            "suggested_action": "继续执行",
+            "needs_boss": False,
+            "boss_action": (
+                f"让云上 manager 先修今天 {title} 自然触发链，"
+                "只接受同日自然样本，不要人工补发和主管解释。"
+            ),
+            "verification": "当日样本非自然",
+            "stuck": "当日样本非自然",
+            "boss_one_liner": (
+                f"{label}: 今日样本未自然闭环{f'（{reason}）' if reason else ''}；"
+                f"连续自然样本 {consecutive}/{required}。"
+            ),
+        }
+    if continuity.get("status") != "passed":
+        return {
+            "state_column": "连续性未证明",
+            "current_status": "连续性未证明",
+            "boss_group": "继续观察连续性",
+            "suggested_action": "继续执行",
+            "needs_boss": False,
+            "boss_action": (
+                f"今天 {title} 已自然闭环，继续保留自然调度，"
+                "等下一自然窗口拿第二个连续样本，不要人工补绿。"
+            ),
+            "verification": "今日自然闭环，连续性待证明",
+            "stuck": "连续自然样本不足",
+            "boss_one_liner": (
+                f"{label}: 今日已自然闭环，但连续自然样本仅 {consecutive}/{required}，"
+                "还不能算稳定。"
+            ),
+        }
+    return {
+        "state_column": "已连续稳定",
+        "current_status": "已连续稳定",
+        "boss_group": "已连续稳定",
+        "suggested_action": "继续执行",
+        "needs_boss": False,
+        "boss_action": (
+            f"{title} 已拿到连续自然样本，保持自动调度和自动核验；"
+            "不用人工补发或主管解释。"
+        ),
+        "verification": "连续自然样本已达标",
+        "stuck": "未发现明显卡住",
+        "boss_one_liner": (
+            f"{label}: 今日自然闭环，连续自然样本 {consecutive}/{required}，"
+            "已开始稳定运行。"
+        ),
+    }
+
+
+def _traffic_ops_standby_mode(remote_dir: Path, *, now: datetime) -> bool:
+    key = _remote_key(remote_dir)
+    if key not in {"traffic_ops_cloud", "traffic-ops-cloud"}:
+        return False
+    receipt = _traffic_brief_receipt(remote_dir, now=now)
+    if not receipt or receipt.get("_invalid"):
+        return False
+    return str(receipt.get("listener_mode") or "").strip().lower() == "standby"
+
+
+def _traffic_ops_expected_standby_issue(text: str) -> bool:
+    lower = str(text or "").lower()
+    return (
+        "tmux session traffic-ops-team not running" in lower
+        or "session down, skip" in lower
+        or "router: no pid file" in lower
+        or "watchdog: no pid file" in lower
+    )
+
+
+def _scheduler_history_day_dir(remote_dir: Path, *, now: datetime) -> Path:
+    day = now.astimezone(_CST).strftime("%Y-%m-%d")
+    return remote_dir / "state" / "scheduler" / "history" / day
+
+
+def _scheduler_history_entries(remote_dir: Path, *, now: datetime) -> list[dict]:
+    day_dir = _scheduler_history_day_dir(remote_dir, now=now)
+    if not day_dir.exists():
+        return []
+    rows: list[dict] = []
+    for path in sorted(day_dir.rglob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        row = dict(data)
+        row["_path"] = str(path)
+        rows.append(row)
+    rows.sort(
+        key=lambda row: str(
+            row.get("started_at")
+            or row.get("event_time")
+            or row.get("recorded_at")
+            or row.get("_path")
+            or ""
+        )
+    )
+    return rows
+
+
+def _builder_daily_log_seen(remote_dir: Path, *, now: datetime) -> bool:
+    marker = _builder_daily_marker(now)
+    path = remote_dir / "state" / "facts" / "logs.jsonl"
+    try:
+        fh = path.open(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    with fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if str(row.get("agent") or "") != "worker_research":
+                continue
+            if str(row.get("type") or "") != "say":
+                continue
+            if marker in str(row.get("content") or ""):
+                return True
+    return False
+
+
+def _builder_daily_snapshot_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    receipt = _builder_daily_receipt(remote_dir, now=now)
+    receipt_path = _builder_daily_receipt_path(remote_dir, now=now)
+    artifact_path = _builder_daily_artifact_path(remote_dir, now=now)
+    artifact_exists = _builder_daily_artifact_exists(remote_dir, now=now)
+    if receipt.get("_invalid"):
+        return [f"⚠️ Builder Daily receipt 解析失败: {receipt_path}"]
+    if _builder_daily_log_seen(remote_dir, now=now):
+        if not artifact_exists and not receipt:
+            return [
+                "⚠️ Builder Daily 有群发痕迹但缺 artifact + delivery receipt: "
+                f"{artifact_path} ; {receipt_path}"
+            ]
+        if not artifact_exists:
+            return [f"⚠️ Builder Daily 有群发痕迹但缺 artifact: {artifact_path}"]
+        if not receipt:
+            return [f"⚠️ Builder Daily 有群发痕迹但缺 delivery receipt: {receipt_path}"]
+    if receipt:
+        missing = _builder_daily_receipt_missing_fields(receipt)
+        if missing:
+            return [f"⚠️ Builder Daily receipt 字段不完整({','.join(missing)}): {receipt_path}"]
+        if not artifact_exists:
+            return [f"⚠️ Builder Daily receipt 存在但缺 artifact: {artifact_path}"]
+        truth_issues = _builder_daily_truth_issues(receipt)
+        if truth_issues:
+            return truth_issues
+    return []
+
+
+def _todo002_digest_snapshot_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    issues: list[str] = []
+    freeze_issue = _scheduled_freeze_issue_for_kind("todo002_digest", remote_dir)
+    if freeze_issue:
+        issues.append(freeze_issue)
+    receipt = _todo002_digest_receipt(remote_dir, now=now)
+    if receipt.get("_invalid"):
+        issues.append(
+            f"⚠️ TODO002 Digest receipt 解析失败: {_todo002_digest_receipt_path(remote_dir, now=now)}"
+        )
+        return issues
+    if receipt:
+        for item in _todo002_digest_truth_issues(receipt):
+            if item not in issues:
+                issues.append(item)
+    return issues
+
+
+def _traffic_brief_snapshot_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    receipt = _traffic_brief_receipt(remote_dir, now=now)
+    if receipt.get("_invalid"):
+        return [f"⚠️ Traffic Brief receipt 解析失败: {_traffic_brief_receipt_path(remote_dir, now=now)}"]
+    if receipt:
+        return _traffic_brief_truth_issues(receipt)
+    return []
+
+
+def _cloud_delivery_snapshot_issues(remote_dir: Path, *, now: datetime) -> list[str]:
+    key = _remote_key(remote_dir)
+    issues: list[str] = []
+    if key in {"product_lab_cloud", "product-lab-cloud"}:
+        issues = _builder_daily_snapshot_issues(remote_dir, now=now)
+    elif key in {"todo002_cloud", "todo002-study-coach-cloud"}:
+        issues = _todo002_digest_snapshot_issues(remote_dir, now=now)
+    elif key in {"traffic_ops_cloud", "traffic-ops-cloud"}:
+        issues = _traffic_brief_snapshot_issues(remote_dir, now=now)
+    for item in _scheduled_continuity_issues(remote_dir, now=now):
+        if item not in issues:
+            issues.append(item)
+    return issues
+
+
+def _builder_daily_scheduler_status(remote_dir: Path, *, now: datetime) -> str:
+    receipt = _builder_daily_receipt(remote_dir, now=now)
+    continuity_issues = _scheduled_continuity_issues(remote_dir, now=now)
+    if receipt.get("_invalid"):
+        return "yellow"
+    if receipt:
+        missing = _builder_daily_receipt_missing_fields(receipt)
+        if missing:
+            return "yellow"
+        return "yellow" if (_builder_daily_truth_issues(receipt) or continuity_issues) else "green"
+    if _builder_daily_log_seen(remote_dir, now=now):
+        return "yellow"
+    return "yellow" if continuity_issues else "grey"
+
+
+def _todo002_digest_scheduler_status(remote_dir: Path, *, now: datetime) -> str:
+    receipt = _todo002_digest_receipt(remote_dir, now=now)
+    continuity_issues = _scheduled_continuity_issues(remote_dir, now=now)
+    freeze = _scheduled_freeze_state_for_kind("todo002_digest", remote_dir)
+    if receipt.get("_invalid"):
+        return "yellow"
+    if receipt:
+        return "yellow" if (
+            _todo002_digest_truth_issues(receipt)
+            or continuity_issues
+            or freeze.get("active")
+        ) else "green"
+    if freeze.get("active"):
+        return "yellow"
+    return "yellow" if continuity_issues else "grey"
+
+
+def _traffic_brief_scheduler_status(remote_dir: Path, *, now: datetime) -> str:
+    receipt = _traffic_brief_receipt(remote_dir, now=now)
+    continuity_issues = _scheduled_continuity_issues(remote_dir, now=now)
+    if receipt.get("_invalid"):
+        return "yellow"
+    if receipt:
+        return "yellow" if (_traffic_brief_truth_issues(receipt) or continuity_issues) else "green"
+    return "yellow" if continuity_issues else "grey"
+
+
+def _cloud_scheduler_status(remote_dir: Path, *, now: datetime) -> str:
+    key = _remote_key(remote_dir)
+    if key in {"product_lab_cloud", "product-lab-cloud"}:
+        return _builder_daily_scheduler_status(remote_dir, now=now)
+    if key in {"todo002_cloud", "todo002-study-coach-cloud"}:
+        return _todo002_digest_scheduler_status(remote_dir, now=now)
+    if key in {"traffic_ops_cloud", "traffic-ops-cloud"}:
+        return _traffic_brief_scheduler_status(remote_dir, now=now)
+    return "grey"
+
+
+def _remote_health_layers(remote_dir: Path, *, now: datetime) -> dict[str, str]:
+    layers = {name: "grey" for name in _HEALTH_LAYER_ORDER}
+    scheduler_seen = False
+    health = read_json(remote_dir / "health.json", {})
+    if isinstance(health, dict):
+        section = ""
+        lines = health.get("lines")
+        if isinstance(lines, list):
+            for raw in lines:
+                line = str(raw or "")
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if not line.startswith("  ") and stripped.endswith(":"):
+                    section = stripped[:-1].lower()
+                    if section == "scheduler":
+                        scheduler_seen = True
+                    continue
+                severity = _health_line_severity(stripped)
+                if not severity:
+                    continue
+                for layer in _health_line_layers(section, stripped):
+                    layers[layer] = _merge_layer_status(layers[layer], severity)
+        if bool(health.get("ok")) and not any(
+                layers[name] != "grey" for name in ("process", "cli", "router", "deliver")):
+            for name in ("process", "cli", "router", "deliver"):
+                layers[name] = "green"
+    if _traffic_ops_standby_mode(remote_dir, now=now):
+        for name in ("process", "cli", "router"):
+            layers[name] = "grey"
+    derived_scheduler = _cloud_scheduler_status(remote_dir, now=now)
+    if not scheduler_seen and layers["scheduler"] == "grey":
+        layers["scheduler"] = derived_scheduler
+    else:
+        layers["scheduler"] = _merge_layer_status(layers["scheduler"], derived_scheduler)
+    return layers
+
+
+def _health_layer_summary(layers: dict[str, str], *, for_fact_source: bool) -> str:
+    parts = []
+    for name in _HEALTH_LAYER_ORDER:
+        status = layers.get(name, "grey")
+        if for_fact_source:
+            parts.append(f"{name}:{status}")
+        else:
+            parts.append(f"{name}={_HEALTH_LAYER_CN.get(status, '灰')}")
+    return ",".join(parts)
+
+
+def _prepend_health_layer_summary(result: dict, layers: dict[str, str]) -> dict:
+    if not any(layers.get(name, "grey") != "grey" for name in _HEALTH_LAYER_ORDER):
+        return result
+    if all(layers.get(name, "grey") == "green" for name in _HEALTH_LAYER_ORDER):
+        return result
+    summary = f"⚠️ 云上健康分层: {_health_layer_summary(layers, for_fact_source=False)}"
+    merged = dict(result)
+    existing = [str(i) for i in merged.get("issues", []) if str(i).strip()]
+    merged["issues"] = [summary] + [item for item in existing if item != summary]
+    merged["issues"] = merged["issues"][:5]
+    merged["ok"] = False
+    merged["warn"] = max(int(merged.get("warn", 0) or 0), 1)
+    return merged
+
+
+def _append_remote_receipt_fact_parts(parts: list[str], prefix: str, receipt: dict) -> None:
+    if not receipt or receipt.get("_invalid"):
+        return
+    parts.append(f"{prefix}_receipt={receipt.get('_path')}")
+    report_date = _receipt_report_date(receipt)
+    if report_date:
+        parts.append(f"{prefix}_report_date={report_date}")
+    for key in ("receipt_id", "message_id", "event_time", "processed_time", "verified_time"):
+        value = str(receipt.get(key) or "").strip()
+        if value:
+            parts.append(f"{prefix}_{key}={value}")
+    delivered = str(receipt.get("delivered_time") or receipt.get("sent_at") or "").strip()
+    if delivered:
+        parts.append(f"{prefix}_delivered_time={delivered}")
+    schedule_source = str(
+        receipt.get("schedule_source")
+        or receipt.get("trigger_source")
+        or receipt.get("source")
+        or ""
+    ).strip()
+    if schedule_source:
+        parts.append(f"{prefix}_schedule_source={schedule_source}")
+    schedule_command = str(receipt.get("schedule_command") or "").strip()
+    if schedule_command:
+        parts.append(f"{prefix}_schedule_command={schedule_command}")
+    delivery_mode = str(receipt.get("delivery_mode") or "").strip()
+    if delivery_mode:
+        parts.append(f"{prefix}_delivery_mode={delivery_mode}")
+    listener_mode = str(receipt.get("listener_mode") or "").strip()
+    if listener_mode:
+        parts.append(f"{prefix}_listener_mode={listener_mode}")
+    for key in ("source_artifact_file", "source_artifact_sha256", "source_handoff_mode"):
+        value = str(receipt.get(key) or "").strip()
+        if value:
+            parts.append(f"{prefix}_{key}={value}")
+    delay_minutes = _receipt_delay_minutes(receipt)
+    if delay_minutes is not None:
+        parts.append(f"{prefix}_delivery_delay_minutes={delay_minutes}")
+
+
+def _append_scheduled_continuity_fact_parts(parts: list[str], summary: dict) -> None:
+    if not isinstance(summary, dict) or not summary:
+        return
+    prefix = str(summary.get("prefix") or "").strip()
+    if not prefix:
+        return
+    parts.append(f"{prefix}_continuity_status={summary.get('status')}")
+    anchor_report_date = str(summary.get("anchor_report_date") or "").strip()
+    if anchor_report_date:
+        parts.append(f"{prefix}_continuity_anchor_report_date={anchor_report_date}")
+    parts.append(
+        f"{prefix}_consecutive_natural_days={int(summary.get('consecutive_natural_days') or 0)}"
+    )
+    parts.append(
+        f"{prefix}_required_consecutive_natural_days={int(summary.get('required_consecutive_natural_days') or 0)}"
+    )
+    recent = summary.get("recent")
+    if isinstance(recent, list) and recent:
+        compact = "|".join(
+            f"{str(item.get('report_date') or '').strip()}:{str(item.get('status') or '').strip()}"
+            for item in recent
+            if isinstance(item, dict) and str(item.get("report_date") or "").strip()
+        )
+        if compact:
+            parts.append(f"{prefix}_continuity_recent={compact}")
+
+
+def _remote_fact_source(remote_dir: Path, *, now: datetime | None = None) -> str:
+    now = now or datetime.now(_CST)
     meta = _read_remote_meta(remote_dir)
     fetched_at = str(meta.get("fetched_at") or meta.get("updated_at") or "").strip()
     parts = [f"remote_snapshot={remote_dir}"]
@@ -901,6 +2597,58 @@ def _remote_fact_source(remote_dir: Path) -> str:
         f"tasks={_tasks_path(remote_dir)}",
         f"status={_status_path(remote_dir)}",
     ])
+    cron_log = remote_dir / "logs" / "cloud-cron.log"
+    if cron_log.exists():
+        parts.append(f"cron_log={cron_log}")
+        try:
+            parts.append(f"cron_log_size_bytes={cron_log.stat().st_size}")
+        except OSError:
+            parts.append("cron_log_size_bytes=unreadable")
+    receipt = _builder_daily_receipt(remote_dir, now=now)
+    if receipt and not receipt.get("_invalid"):
+        _append_remote_receipt_fact_parts(parts, "builder_daily", receipt)
+        if str(receipt.get("markdown_sha256") or "").strip():
+            parts.append(f"builder_daily_markdown_sha256={receipt['markdown_sha256']}")
+        if str(receipt.get("sent_at") or "").strip():
+            parts.append(f"builder_daily_sent_at={receipt['sent_at']}")
+    artifact_path = _builder_daily_artifact_path(remote_dir, now=now)
+    if artifact_path.exists():
+        parts.append(f"builder_daily_artifact={artifact_path}")
+    todo002_receipt = _todo002_digest_receipt(remote_dir, now=now)
+    if todo002_receipt and not todo002_receipt.get("_invalid"):
+        _append_remote_receipt_fact_parts(parts, "todo002_digest", todo002_receipt)
+        if str(todo002_receipt.get("digest_file") or "").strip():
+            parts.append(f"todo002_digest_file={todo002_receipt['digest_file']}")
+    todo002_freeze = _scheduled_freeze_state_for_kind("todo002_digest", remote_dir)
+    if todo002_freeze.get("active"):
+        parts.append(f"todo002_deepsea_freeze={todo002_freeze.get('_path')}")
+        if str(todo002_freeze.get("reason") or "").strip():
+            parts.append(
+                "todo002_deepsea_freeze_reason="
+                + str(todo002_freeze.get("reason") or "").strip()
+            )
+    traffic_receipt = _traffic_brief_receipt(remote_dir, now=now)
+    if traffic_receipt and not traffic_receipt.get("_invalid"):
+        _append_remote_receipt_fact_parts(parts, "traffic_brief", traffic_receipt)
+        if str(traffic_receipt.get("artifact_file") or "").strip():
+            parts.append(f"traffic_brief_artifact={traffic_receipt['artifact_file']}")
+    history_entries = _scheduler_history_entries(remote_dir, now=now)
+    if history_entries:
+        parts.append(f"scheduler_history_dir={_scheduler_history_day_dir(remote_dir, now=now)}")
+        parts.append(f"scheduler_history_today_count={len(history_entries)}")
+        latest = history_entries[-1]
+        latest_summary = ":".join(filter(None, [
+            str(latest.get("command") or "").strip(),
+            str(latest.get("source") or latest.get("trigger_source") or "").strip(),
+            str(latest.get("started_at") or latest.get("event_time") or "").strip(),
+        ]))
+        if latest_summary:
+            parts.append(f"scheduler_history_latest={latest_summary}")
+    _append_scheduled_continuity_fact_parts(
+        parts, _scheduled_continuity_summary(remote_dir, now=now))
+    layers = _remote_health_layers(remote_dir, now=now)
+    if any(layers.get(name, "grey") != "grey" for name in _HEALTH_LAYER_ORDER):
+        parts.append(f"health_layers={_health_layer_summary(layers, for_fact_source=True)}")
     return "; ".join(parts)
 
 
@@ -1319,10 +3067,12 @@ def _task_boss_focus(task: dict) -> str:
     return "待负责人补充进展。"
 
 
-def _task_unclosed_reason(task: dict) -> str:
+def _task_unclosed_reason(task: dict, *, open_child_count: int = 0) -> str:
     status = str(task.get("status") or "")
     if status in _TERMINAL:
         return "没有未收口"
+    if open_child_count > 0:
+        return f"子任务未收口：还有 {open_child_count} 个未完成子任务"
     if _looks_waiting_on_boss(task):
         return "等老板确认/拍板"
     if status == "待验收":
@@ -1375,10 +3125,17 @@ def build_task_rows(team_dir: Path, *, now: datetime | None = None,
     """
     now = now or datetime.now(_CST)
     label = label or _label_for(team_dir)
+    all_tasks = _read_tasks(team_dir)
     tasks = [
-        t for t in _read_tasks(team_dir)
+        t for t in all_tasks
         if _task_card_relevant(t, now=now)
     ]
+    child_rows_by_parent: dict[str, list[dict]] = {}
+    for task in all_tasks:
+        parent = str(task.get("parent_task_id") or "").strip()
+        if not parent:
+            continue
+        child_rows_by_parent.setdefault(parent, []).append(task)
     rows: list[dict] = []
     for task in sorted(tasks, key=_task_card_sort_key)[:30]:
         tid = str(task.get("id") or "").strip()
@@ -1391,7 +3148,12 @@ def build_task_rows(team_dir: Path, *, now: datetime | None = None,
         artifact_visibility, artifact_upload_path = _artifact_visibility(team_dir, artifact)
         boss_artifact = _boss_artifact_cell(artifact, artifact_visibility)
         boss_focus = _task_boss_focus(task)
-        unclosed = _task_unclosed_reason(task)
+        child_rows = child_rows_by_parent.get(tid, [])
+        open_child_count = sum(
+            1 for child in child_rows
+            if str(child.get("status") or "") not in _TERMINAL
+        )
+        unclosed = _task_unclosed_reason(task, open_child_count=open_child_count)
         next_action = _task_boss_next_action(task)
         updated_at = int(task.get("updated_at") or task.get("created_at") or 0)
         row = {
@@ -1399,7 +3161,14 @@ def build_task_rows(team_dir: Path, *, now: datetime | None = None,
             "任务号": tid,
             "任务名": _clip(title, 120),
             "负责人": assignee,
+            "父任务": str(task.get("parent_task_id") or "").strip(),
+            "子任务数": len(child_rows),
+            "未完成子任务数": open_child_count,
             "状态": status,
+            "问题类型": _clip(_first_task_text(task, "issue_class", "issue-class", "问题类型") or "待团队回写", 120),
+            "当前段位": _clip(_first_task_text(task, "current_segment", "current-segment", "segment", "当前段位") or "待团队回写", 120),
+            "下一自然窗口": _clip(_first_task_text(task, "next_natural_window", "next-window", "自然窗口", "下一自然窗口") or "待团队回写", 120),
+            "需上收基座": _clip(_first_task_text(task, "base_absorb_needed", "base-absorb-needed", "需上收基座") or "待判断", 120),
             "老板看点": _clip(boss_focus, 240),
             "未收口原因": unclosed,
             "老板处理分类": _task_boss_lane(task),
@@ -1655,6 +3424,7 @@ def upload_task_artifacts(task_rows: list[dict], *, base_token: str,
 
 
 def _emit_text(rows: list[dict], *, write: bool, sync_result: dict | None,
+               remote_pull_result: dict | None = None,
                agent_rows: list[dict] | None = None,
                agent_sync_result: dict | None = None,
                task_rows: list[dict] | None = None,
@@ -1662,6 +3432,20 @@ def _emit_text(rows: list[dict], *, write: bool, sync_result: dict | None,
                artifact_upload_result: dict | None = None) -> None:
     mode = "write" if write else "dry-run"
     print(f"cockpit-sync: {len(rows)} row(s) ({mode})")
+    if remote_pull_result is not None:
+        print(
+            "remote pull: "
+            f"attempted={remote_pull_result['attempted']} "
+            f"succeeded={remote_pull_result['succeeded']} "
+            f"failed={remote_pull_result['failed']}"
+        )
+        for run in remote_pull_result.get("runs", []):
+            if run.get("ok"):
+                continue
+            label = str(run.get("label") or run.get("team_dir") or "remote")
+            stderr = str(run.get("stderr") or run.get("stdout") or "").strip()
+            detail = f": {stderr}" if stderr else ""
+            print(f"  ⚠️ {label} pull failed rc={run.get('returncode')}{detail}")
     for row in rows:
         print(
             f"- {row['战场']} | {row['当前状态']} | "
@@ -1717,6 +3501,7 @@ def main(argv: list[str]) -> int:
         return 0
     as_json = pop_bool_flag(rest, "--json")
     write = pop_bool_flag(rest, "--write")
+    pull_remote = pop_bool_flag(rest, "--pull-remote")
     upload_artifacts = pop_bool_flag(rest, "--upload-artifacts")
     # Accepted for readability in scripts; dry-run is already default.
     pop_bool_flag(rest, "--dry-run")
@@ -1761,6 +3546,14 @@ def main(argv: list[str]) -> int:
     else:
         root = Path(root_arg).expanduser().resolve() if root_arg else Path.cwd()
 
+    remote_pull_result = None
+    if pull_remote:
+        remote_pull_result = _pull_remote_snapshots(
+            root,
+            team_dirs,
+            explicit_team_dirs=explicit_team_dirs,
+        )
+
     now = datetime.now(_CST)
     rows = [build_row(path, now=now) for path in team_dirs]
     registry_active = include_registry and (not explicit_team_dirs or registry_script_arg)
@@ -1777,11 +3570,11 @@ def main(argv: list[str]) -> int:
         for source in registry_sources
         if str(source.get("key") or "") and str(source.get("label") or "")
     }
-    remote_state_dir = (
-        Path(remote_state_dir_arg).expanduser().resolve()
-        if remote_state_dir_arg else _default_remote_state_dir(root)
+    remote_state_dirs = (
+        [Path(remote_state_dir_arg).expanduser().resolve()]
+        if remote_state_dir_arg else _default_remote_state_dirs(root, team_dirs)
     )
-    remote_dirs = _remote_snapshot_dirs(remote_state_dir)
+    remote_dirs = _remote_snapshot_dirs(remote_state_dirs)
     remote_labels = {
         path: _remote_label(path, registry_labels=registry_labels)
         for path in remote_dirs
@@ -1794,7 +3587,7 @@ def main(argv: list[str]) -> int:
             label=remote_labels[path],
             health=_snapshot_health(path, now=now),
             source_label="云上",
-            fact_source=_remote_fact_source(path),
+            fact_source=_remote_fact_source(path, now=now),
         ))
     if registry_active:
         rows.extend(_registry_rows(root, team_dirs,
@@ -1845,7 +3638,11 @@ def main(argv: list[str]) -> int:
             "table_id": table_id,
             "agent_table_id": agent_table_id,
             "task_table_id": task_table_id,
-            "remote_state_dir": str(remote_state_dir) if remote_state_dir else "",
+            "remote_state_dir": (
+                str(remote_state_dirs[0]) if len(remote_state_dirs) == 1 else ""
+            ),
+            "remote_state_dirs": [str(path) for path in remote_state_dirs],
+            "remote_pull": remote_pull_result,
             "rows": rows,
             "agent_rows": agent_rows,
             "task_rows": _public_rows(task_rows),
@@ -1856,6 +3653,7 @@ def main(argv: list[str]) -> int:
         })
     else:
         _emit_text(rows, write=write, sync_result=sync_result,
+                   remote_pull_result=remote_pull_result,
                    agent_rows=agent_rows if agent_table_id or as_json else None,
                    agent_sync_result=agent_sync_result,
                    task_rows=task_rows if task_table_id or as_json else None,
@@ -1863,6 +3661,7 @@ def main(argv: list[str]) -> int:
                    artifact_upload_result=artifact_upload_result)
     failed = (
         (sync_result is not None and not sync_result.get("ok"))
+        or (remote_pull_result is not None and not remote_pull_result.get("ok"))
         or (agent_sync_result is not None and not agent_sync_result.get("ok"))
         or (task_sync_result is not None and not task_sync_result.get("ok"))
         or (artifact_upload_result is not None

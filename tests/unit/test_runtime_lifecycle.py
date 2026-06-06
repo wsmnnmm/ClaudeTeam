@@ -317,6 +317,51 @@ def test_claude_agent_spawn_cmd_runtime_agent_override_beats_team_config_preset(
     assert "cheap.example" not in script
 
 
+def test_agent_spawn_cmd_clears_tmux_env_before_lane_specific_env():
+    team = {
+        "agents": {
+            "worker_translate": {
+                "cli": "claude-code",
+                "model": "sonnet",
+                "provider_preset": "cheap-translate",
+            }
+        }
+    }
+    with isolated_env(team=team) as tmp, env_patch(
+            ANTHROPIC_BASE_URL="https://stale-anthropic.example/v1",
+            OPENAI_BASE_URL="https://stale-openai.example/v1",
+            FEISHU_APP_ID="cli_NEW",
+            FEISHU_APP_SECRET="newSecret123",
+            LARKSUITE_CLI_APP_ID="cli_NEW",
+            LARKSUITE_CLI_APP_SECRET="newSecret123"):
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "provider-presets.json").write_text(
+            '{"presets":{"cheap-translate":{"ANTHROPIC_BASE_URL":"https://cheap.example/v1",'
+            '"ANTHROPIC_AUTH_TOKEN":"sk-cheap","ANTHROPIC_DEFAULT_SONNET_MODEL":"cheap-sonnet"}}}',
+            encoding="utf-8",
+        )
+        cmd = lifecycle._agent_spawn_cmd(
+            "worker_translate", get_adapter("claude-code"), "cheap-sonnet")
+        script = _spawn_script_text(cmd)
+        expected_cfg = shlex.quote(str(tmp / "claudeteam.toml"))
+    assert "-u CLAUDETEAM_CONFIG_FILE" in script
+    assert "-u ANTHROPIC_BASE_URL" in script
+    assert "-u OPENAI_BASE_URL" in script
+    assert "-u FEISHU_APP_ID" in script
+    assert script.index("-u CLAUDETEAM_CONFIG_FILE") < script.index(
+        f"CLAUDETEAM_CONFIG_FILE={expected_cfg}"
+    )
+    assert script.index("-u ANTHROPIC_BASE_URL") < script.index(
+        "ANTHROPIC_BASE_URL=https://cheap.example/v1"
+    )
+    assert f"CLAUDETEAM_CONFIG_FILE={expected_cfg}" in script
+    assert "ANTHROPIC_BASE_URL=https://cheap.example/v1" in script
+    assert "FEISHU_APP_ID=cli_NEW" in script
+    assert "stale-anthropic.example" not in script
+    assert "stale-openai.example" not in script
+
+
 def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     """shlex.quote should wrap any value containing whitespace; otherwise
     `eval $(...)` in a downstream shell would split on the space."""
@@ -791,6 +836,106 @@ def test_merge_runtime_env_into_claude_settings_uses_agent_override_values():
     assert env["ANTHROPIC_BASE_URL"] == "https://cm.example/v1"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-cm"
     assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "minimax-m25"
+
+
+def test_ensure_claude_agent_home_keeps_host_settings_json_for_provider_state():
+    import json
+    import tempfile
+    from pathlib import Path
+    from helpers import env_patch
+
+    team = {"agents": {"manager": {"cli": "claude-code", "model": "sonnet"}}}
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "ccswitch.json").write_text(
+            json.dumps({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://opencode.ai/zen/go/v1",
+                    "ANTHROPIC_AUTH_TOKEN": "sk-go",
+                    "ANTHROPIC_MODEL": "deepseek-v4-flash",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
+                }
+            }),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as home:
+            host_home = Path(home)
+            claude_dir = host_home / ".claude"
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            (claude_dir / "settings.json").write_text(
+                json.dumps({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-host",
+                        "ANTHROPIC_MODEL": "deepseek-v4-pro",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            (claude_dir / "settings.local.json").write_text("{}", encoding="utf-8")
+            (claude_dir / "config.json").write_text('{"primaryApiKey":"any"}', encoding="utf-8")
+            (host_home / ".claude.json").write_text('{"projects":{}}', encoding="utf-8")
+            with env_patch(HOME=str(host_home)):
+                lifecycle._ensure_claude_agent_home("manager")
+                from claudeteam.agents.claude_code import agent_home
+                settings_path = Path(agent_home("manager")) / ".claude" / "settings.json"
+                data = json.loads(settings_path.read_text(encoding="utf-8"))
+        env = data["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-host"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-pro"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "deepseek-v4-pro"
+
+
+def test_ensure_claude_agent_home_prefers_project_settings_override():
+    import json
+    import tempfile
+    from pathlib import Path
+    from helpers import env_patch
+
+    team = {"agents": {"manager": {"cli": "claude-code", "model": "sonnet"}}}
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "claude-code-settings.json").write_text(
+            json.dumps({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:18327",
+                    "ANTHROPIC_AUTH_TOKEN": "local-go-proxy-key",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+                }
+            }),
+            encoding="utf-8",
+        )
+        with tempfile.TemporaryDirectory() as home:
+            host_home = Path(home)
+            claude_dir = host_home / ".claude"
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            (claude_dir / "settings.json").write_text(
+                json.dumps({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-host",
+                        "ANTHROPIC_MODEL": "deepseek-v4-pro",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            (claude_dir / "settings.local.json").write_text("{}", encoding="utf-8")
+            (claude_dir / "config.json").write_text('{"primaryApiKey":"any"}', encoding="utf-8")
+            (host_home / ".claude.json").write_text('{"projects":{}}', encoding="utf-8")
+            with env_patch(HOME=str(host_home)):
+                lifecycle._ensure_claude_agent_home("manager")
+                from claudeteam.agents.claude_code import agent_home
+                settings_path = Path(agent_home("manager")) / ".claude" / "settings.json"
+                data = json.loads(settings_path.read_text(encoding="utf-8"))
+        env = data["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18327"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "local-go-proxy-key"
+    assert env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "claude-sonnet-4-6"
 
 
 def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():

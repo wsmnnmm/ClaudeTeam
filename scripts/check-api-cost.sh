@@ -22,7 +22,7 @@ set -euo pipefail
 # Falls back to system python3 if venv not found.
 _CT_VENV_PYTHON=""
 for _candidate in \
-    "$CLAUDETEAM_VENV_PYTHON" \
+    "${CLAUDETEAM_VENV_PYTHON:-}" \
     "/Users/wsm/Project/ClaudeTeam/.venv/bin/python3" \
     "/srv/ai/ClaudeTeam/.venv/bin/python3" \
     "python3"; do

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from helpers import isolated_env
-from claudeteam.runtime import provider_failover
+from claudeteam.runtime import provider_failover, providers
 
 
 TEAM = {
@@ -194,3 +194,120 @@ def test_failover_walks_multiple_backup_presets_before_rescue():
         state = json.loads((tmp / "state" / "provider-failover.json").read_text())
         assert state["mode"] == "backup"
         assert state["active_preset"] == "onekey-backup"
+
+
+def test_apply_backup_preset_bypasses_team_service_override():
+    team = {
+        "agents": {
+            "manager": {"cli": "codex-cli", "model": "gpt-5.5"},
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "provider-presets.json").write_text(
+            json.dumps({
+                "presets": {
+                    "deepseek-primary": {
+                        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                        "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+                        "ANTHROPIC_MODEL": "deepseek-v4-pro",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        providers.save_service_state({
+            "active_service": "zyapi",
+            "source_preset": "zyapi-primary",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "ANTHROPIC_AUTH_TOKEN": "pk-zy",
+                "OPENAI_BASE_URL": "https://zyapi.tuluo.top:8888/v1",
+                "OPENAI_API_KEY": "pk-zy",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_MODEL_PROVIDER": "custom",
+                "OPENAI_WIRE_API": "responses",
+            },
+        })
+
+        assert provider_failover._apply_backup_preset("deepseek-primary", ["manager"]) == 0
+        overrides = providers.load_agent_overrides()
+        env = providers.provider_env_for_agent("manager")
+
+    assert overrides["manager"]["provider_preset"] == "deepseek-primary"
+    assert overrides["manager"]["bypass_service_override"] is True
+    assert overrides["manager"]["failover_managed"] is True
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-pro"
+
+
+def test_failover_resets_to_primary_after_cooldown_when_healthy():
+    team = {
+        "agents": {
+            "manager": {"cli": "codex-cli", "model": "gpt-5.5"},
+        }
+    }
+    with isolated_env(team=team) as tmp:
+        (tmp / "claudeteam.toml").write_text(
+            "\n".join([
+                "[provider_failover]",
+                "enabled = true",
+                'primary_preset = "flux-primary"',
+                'backup_preset = "zyapi-backup"',
+                'targets = ["manager"]',
+                'recycle_targets = ["manager"]',
+                "trigger_threshold = 1",
+                "trigger_window_s = 180",
+                "cooldown_s = 60",
+                'error_markers = ["auth_unavailable"]',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        (tmp / "state").mkdir(parents=True, exist_ok=True)
+        (tmp / "state" / "agent-provider-overrides.json").write_text(
+            json.dumps({
+                "agents": {
+                    "manager": {
+                        "provider_preset": "zyapi-backup",
+                        "bypass_service_override": True,
+                        "failover_managed": True,
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        (tmp / "state" / "provider-failover.json").write_text(
+            json.dumps({
+                "mode": "backup",
+                "active_preset": "zyapi-backup",
+                "cooldown_until": 1000.0,
+                "recent_incidents": [],
+                "last_failed_agents": ["manager"],
+                "last_markers": {"manager": "auth_unavailable"},
+                "last_action": "promoted_backup",
+                "last_action_at": 900.0,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = provider_failover.sweep(
+            now=lambda: 1001.0,
+            capture=lambda target, lines=160: "all good",
+            has_window=lambda target: True,
+            apply_preset=lambda name, agents: (_ for _ in ()).throw(
+                AssertionError("should not switch again")),
+            recycle_agents=lambda agents: (_ for _ in ()).throw(
+                AssertionError("should not recycle during reset")),
+            notify_rescue=lambda agent, message: (_ for _ in ()).throw(
+                AssertionError("should not wake rescue during reset")),
+            log=lambda *a, **kw: None,
+        )
+        overrides = providers.load_agent_overrides()
+        state = json.loads((tmp / "state" / "provider-failover.json").read_text())
+
+    assert result["action"] == "reset_to_primary"
+    assert result["preset"] == "flux-primary"
+    assert "manager" not in overrides
+    assert state["mode"] == "primary"
+    assert state["active_preset"] == "flux-primary"
+    assert state["last_action"] == "reset_to_primary"

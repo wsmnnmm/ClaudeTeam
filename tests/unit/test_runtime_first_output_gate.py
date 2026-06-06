@@ -86,6 +86,21 @@ def test_existing_relative_artifact_is_valid():
     assert result.valid
 
 
+def test_embedded_evidence_dir_sentence_is_valid_first_output():
+    with isolated_env(team={"agents": {"manager": {}}}) as tmp:
+        evidence_dir = tmp / "artifacts" / "builder-daily" / "2026-06-02"
+        evidence_dir.mkdir(parents=True)
+        result = first_output_gate.check(_task("请生成今天的 Builder Daily。"), {
+            "content": (
+                f"raw 证据目录 {evidence_dir} 已落盘，"
+                "当前缺最终 docs/receipt，继续生成中。"
+            ),
+            "artifact": "",
+        })
+
+    assert result.valid
+
+
 def test_unusable_url_is_rejected():
     with attr_patch(
         first_output_gate,

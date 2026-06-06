@@ -873,7 +873,7 @@ def test_say_no_card_flag_is_a_no_op_post_R169():
     change behaviour. Boss-flagged convention: no plain-text agent
     chat in test_a deploy."""
     with _isolated(), _fake_send_card() as st:
-        rc, _, _ = run_cli(["say", "manager", "收到", "--no-card"])
+        rc, _, _ = run_cli(["say", "manager", "状态已同步", "--no-card"])
     assert rc == 0
     # All sends now go through send_card path; send_text is dead
     assert len(st["card_calls"]) == 1
@@ -991,6 +991,52 @@ def test_say_worker_real_blocker_can_report_directly():
         rc, _, _ = run_cli(["say", "worker_cc", msg, "--to", "user"])
     assert rc == 0
     assert len(send["calls"]) == 1
+
+
+def test_say_manager_structured_progress_card_passes_strict_visible_guards():
+    msg = (
+        "结论：全员报道已逐个派发给 8 个成员，不是群里代喊；signal 和 strategy 已回报，其他成员在返回中。\n"
+        "证据：我刚对账了 T-5/T-12 和 health；router 正常、manager ready，但 watchdog 当前未运行，worker_visual 心跳陈旧。\n"
+        "下一步：我继续收其他 6 个成员的报道，并让 rescue 只做只读判断。\n"
+        "需要老板：如果今天要继续推进，先拍板主赛道和可公开素材。"
+    )
+    with _isolated() as tmp, _fake_send() as send, \
+            env_patch(
+                CLAUDETEAM_CHAT_VISIBLE_QUALITY_GUARD_REJECT_INTERNAL_TOKENS="true",
+                CLAUDETEAM_CHAT_VISIBLE_QUALITY_GUARD_REQUIRE_REALTIME_STATUS_CARD="true",
+                CLAUDETEAM_CHAT_VISIBLE_QUALITY_GUARD_REQUIRE_VISUAL_STATUS_IMAGE="true",
+            ):
+        rc, _, err = run_cli(["say", "manager", msg, "--to", "user"])
+    assert rc == 0, err
+    assert len(send["calls"]) == 1
+
+
+def test_say_manager_structured_progress_card_still_blocks_gate_jargon():
+    msg = (
+        "结论：T-5 三棒门禁已对齐，当前还不适合对老板报完成。\n"
+        "证据：manager 已对账 gate 结果和 worker_visual 回执。\n"
+        "下一步：我先把内部门禁术语翻成人话，再发老板卡。\n"
+        "需要老板：暂无。"
+    )
+    with _isolated() as tmp, _fake_send() as send, \
+            env_patch(CLAUDETEAM_CHAT_VISIBLE_QUALITY_GUARD_REJECT_INTERNAL_TOKENS="true"):
+        rc, _, err = run_cli(["say", "manager", msg, "--to", "user"])
+        rows = local_facts.list_logs("manager")
+    assert rc == 1
+    assert "internal execution jargon" in err
+    assert send["calls"] == []
+    assert rows[0]["type"] == "say_blocked"
+
+
+def test_say_manager_plain_ack_to_user_is_silenced():
+    with _isolated() as tmp, _fake_send() as send:
+        rc, out, _ = run_cli(["say", "manager", "收到", "--to", "user"])
+        rows = local_facts.list_logs("manager")
+    assert rc == 0
+    assert send["calls"] == []
+    assert "silenced" in out
+    assert rows[0]["type"] == "say_silenced"
+    assert rows[0]["ref"] == "chat.publish.manager_progress"
 
 
 def test_say_publish_live_edit_takes_effect_without_restart():

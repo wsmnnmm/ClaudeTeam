@@ -95,7 +95,14 @@ def test_make_alert_fn_uses_lark_profile_from_runtime_config():
     assert captured == ["team_alpha"]
 
 
-def test_make_manager_watch_alert_fn_sends_orange_card():
+def test_make_manager_watch_alert_fn_returns_none_by_default():
+    with isolated_env(team={"agents": {"manager": {}}},
+                      runtime_config={"chat_id": "oc_x",
+                                       "lark_profile": "p"}):
+        assert cmd_watchdog._make_manager_watch_alert_fn() is None
+
+
+def test_make_manager_watch_alert_fn_sends_orange_card_when_public_enabled():
     cards_sent = []
 
     def fake_send_card(chat_id, card, **kw):
@@ -112,8 +119,12 @@ def test_make_manager_watch_alert_fn_sends_orange_card():
     )
     with isolated_env(team={"agents": {"manager": {}}},
                       runtime_config={"chat_id": "oc_x",
-                                       "lark_profile": "p"}), \
+                                       "lark_profile": "p"}) as tmp, \
             attr_patch(feishu_chat, send_card=fake_send_card):
+        (tmp / "claudeteam.toml").write_text(
+            "[manager_watch]\npublic_chat_alert = true\n",
+            encoding="utf-8",
+        )
         alert = cmd_watchdog._make_manager_watch_alert_fn()
         assert alert is not None
         alert(notice)
@@ -144,8 +155,12 @@ def test_make_manager_watch_alert_fn_skips_private_notice():
     )
     with isolated_env(team={"agents": {"manager": {}}},
                       runtime_config={"chat_id": "oc_x",
-                                       "lark_profile": "p"}), \
+                                       "lark_profile": "p"}) as tmp, \
             attr_patch(feishu_chat, send_card=fake_send_card):
+        (tmp / "claudeteam.toml").write_text(
+            "[manager_watch]\npublic_chat_alert = true\n",
+            encoding="utf-8",
+        )
         alert = cmd_watchdog._make_manager_watch_alert_fn()
         assert alert is not None
         alert(notice)
@@ -157,7 +172,7 @@ def test_make_manager_watch_alert_fn_respects_chat_alert_false():
     with isolated_env(team={"agents": {"manager": {}}},
                       runtime_config={"chat_id": "oc_x"}) as tmp:
         (tmp / "claudeteam.toml").write_text(
-            "[manager_watch]\nchat_alert = false\n",
+            "[manager_watch]\npublic_chat_alert = false\n",
             encoding="utf-8",
         )
         assert cmd_watchdog._make_manager_watch_alert_fn() is None

@@ -153,6 +153,10 @@ Chat with the team in your Feishu group. Manager handles dispatch.
 For detailed setup, Docker, multi-team isolation, and troubleshooting
 see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
+Optional: if you want to use ECC inside ClaudeTeam, prefer the
+worker-lane rollout in **[docs/ecc-minimal-integration.md](docs/ecc-minimal-integration.md)**
+instead of installing ECC into your real global `~/.codex` or `~/.claude`.
+
 ---
 
 ## Multi-CLI adapter
@@ -183,6 +187,10 @@ role = "数据分析员工"
 cli = "kimi-code"
 role = "策划员工"
 ```
+
+If you want stronger review, docs-research, or verification workflows,
+keep `manager` lean and add ECC only to specialist workers. See
+**[docs/ecc-minimal-integration.md](docs/ecc-minimal-integration.md)**.
 
 ---
 

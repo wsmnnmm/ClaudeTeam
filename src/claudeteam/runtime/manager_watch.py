@@ -6,7 +6,7 @@ if a manager-created worker task has no recorded worker signal for the
 configured window, notify manager's inbox/pane and optionally the chat.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +28,7 @@ class OverdueNotice:
     body: str
     public_title: str = ""
     public_body: str = ""
+    public_key: str = ""
 
 
 def _state_file() -> Path:
@@ -65,6 +66,17 @@ def _standby_or_no_output_task(task: dict) -> bool:
 
 def _managed_worker_task(task: dict) -> bool:
     assignee = str(task.get("assignee") or "")
+    status = str(task.get("status") or "")
+    artifact_path = str(task.get("artifact_path") or "").strip()
+    if status == "待验收" and artifact_path:
+        if not assignee:
+            return False
+        if assignee == "manager":
+            return True
+        try:
+            return assignee in set(config.agent_names())
+        except Exception:
+            return False
     if not assignee or assignee == "manager":
         return False
     try:
@@ -72,7 +84,7 @@ def _managed_worker_task(task: dict) -> bool:
             return False
     except Exception:
         return False
-    if task.get("status") not in {tasks.DEFAULT_STATUS, "进行中"}:
+    if status not in {tasks.DEFAULT_STATUS, "进行中"}:
         return False
     if _standby_or_no_output_task(task):
         return False
@@ -115,14 +127,17 @@ def _latest_worker_signal_ms(task: dict) -> int:
             continue
         if _task_ms(msg, "created_at") <= created:
             continue
-        msg_task_id = str(msg.get("task_id") or "")
-        if msg_task_id and msg_task_id != task_id:
+        if not _message_matches_task(task, msg):
             continue
         latest = max(latest, _task_ms(msg, "created_at"))
 
     for row in local_facts.list_logs(assignee, limit=200):
-        if _task_ms(row, "created_at") > created:
-            latest = max(latest, _task_ms(row, "created_at"))
+        created_at = _task_ms(row, "created_at")
+        if created_at <= created:
+            continue
+        if not _log_matches_task(task, row):
+            continue
+        latest = max(latest, created_at)
 
     return latest
 
@@ -154,8 +169,7 @@ def _latest_worker_output(task: dict) -> tuple[int, str]:
         created_at = _task_ms(msg, "created_at")
         if created_at <= created:
             continue
-        msg_task_id = str(msg.get("task_id") or "")
-        if msg_task_id and msg_task_id != task_id:
+        if not _message_matches_task(task, msg):
             continue
         check = first_output_gate.check(task, msg)
         if check.valid:
@@ -167,6 +181,8 @@ def _latest_worker_output(task: dict) -> tuple[int, str]:
     for row in local_facts.list_logs(assignee, limit=200):
         created_at = _task_ms(row, "created_at")
         if created_at <= created:
+            continue
+        if not _log_matches_task(task, row):
             continue
         check = first_output_gate.check(task, {
             "content": row.get("content") or "",
@@ -193,6 +209,48 @@ def _unread_task_message_count(task: dict) -> int:
         if str(msg.get("task_id") or "") == task_id:
             count += 1
     return count
+
+
+def _managed_open_tasks_for_assignee(assignee: str) -> list[dict]:
+    return [
+        row for row in tasks.list_tasks()
+        if str(row.get("assignee") or "") == assignee and _managed_worker_task(row)
+    ]
+
+
+def _task_text_matches(task: dict, text: str) -> bool:
+    hay = " ".join(str(text or "").split())
+    if not hay:
+        return False
+    task_id = str(task.get("id") or "").strip()
+    if task_id and task_id in hay:
+        return True
+    title = " ".join(str(task.get("title") or "").split())
+    if title and len(title) >= 6 and title in hay:
+        return True
+    return False
+
+
+def _message_matches_task(task: dict, msg: dict) -> bool:
+    task_id = str(task.get("id") or "")
+    msg_task_id = str(msg.get("task_id") or "")
+    if msg_task_id:
+        return msg_task_id == task_id
+    if _task_text_matches(task, msg.get("content") or ""):
+        return True
+    assignee = str(task.get("assignee") or "")
+    return len(_managed_open_tasks_for_assignee(assignee)) <= 1
+
+
+def _log_matches_task(task: dict, row: dict) -> bool:
+    task_id = str(task.get("id") or "")
+    ref = str(row.get("ref") or "")
+    if ref:
+        return ref == task_id
+    if _task_text_matches(task, row.get("content") or ""):
+        return True
+    assignee = str(task.get("assignee") or "")
+    return len(_managed_open_tasks_for_assignee(assignee)) <= 1
 
 
 def _pane_state(agent: str) -> str:
@@ -329,15 +387,12 @@ def _worker_evidence_after(task: dict, since_ms: int, pane_state: str, now: int)
             continue
         if not _after_window(_msg_ms(msg, "created_at"), since_ms=since_ms, now=now):
             continue
-        msg_task_id = str(msg.get("task_id") or "")
-        if not msg_task_id or msg_task_id == task_id:
+        if _message_matches_task(task, msg):
             return True
     for row in local_facts.list_logs(assignee, limit=300):
         if not _after_window(_msg_ms(row, "created_at"), since_ms=since_ms, now=now):
             continue
-        if str(row.get("ref") or "") == task_id:
-            return True
-        if task_id and task_id in str(row.get("content") or ""):
+        if _log_matches_task(task, row):
             return True
     return False
 
@@ -433,15 +488,30 @@ def _build_public_body(task: dict, age_ms: int, pane_state: str,
     )
 
 
+def _suppress_duplicate_public_notice(notice: OverdueNotice,
+                                      prev: dict) -> OverdueNotice:
+    if not notice.public_key:
+        return notice
+    if str(prev.get("public_key") or "") != notice.public_key:
+        return notice
+    if not (notice.public_title or notice.public_body):
+        return notice
+    return replace(notice, public_title="", public_body="")
+
+
 def _build_notice(task: dict, now: int, signal_ms: int,
                   pane_state_fn: Callable[[str], str],
                   public_enabled: bool,
                   public_grace_applied: bool,
                   public_since_ms: int = 0) -> OverdueNotice:
+    if str(task.get("status") or "") == "待验收":
+        return _build_review_notice(task, now, signal_ms)
     ct = team_command.safe_cli_cmd(ensure=True)
     task_id = str(task.get("id") or "?")
     assignee = str(task.get("assignee") or "?")
     title = str(task.get("title") or "").strip() or "untitled task"
+    status = str(task.get("status") or "")
+    has_artifact = bool(str(task.get("artifact_path") or "").strip())
     age_ms = max(0, now - signal_ms)
     unread_count = _unread_task_message_count(task)
     pane_state = pane_state_fn(assignee)
@@ -482,6 +552,43 @@ def _build_notice(task: dict, now: int, signal_ms: int,
         public_title=(f"需要主管确认：{task_id} 长时间未收口"
                       if public_body else ""),
         public_body=public_body,
+        public_key=(
+            f"task:{task_id}|state:{status}|artifact:{int(has_artifact)}|"
+            f"pane:{pane_state}|grace:{int(public_grace_applied)}"
+            if public_body else ""
+        ),
+    )
+
+
+def _build_review_notice(task: dict, now: int, signal_ms: int) -> OverdueNotice:
+    ct = team_command.safe_cli_cmd(ensure=True)
+    task_id = str(task.get("id") or "?")
+    assignee = str(task.get("assignee") or "?")
+    title = str(task.get("title") or "").strip() or "untitled task"
+    artifact = str(task.get("artifact_path") or "").strip()
+    age_ms = max(0, now - signal_ms)
+    review_since = signal_ms or _task_ms(task, "updated_at") or _task_ms(task, "created_at")
+    worker_hint = assignee if assignee and assignee != "manager" else "<原执行同学>"
+    body = (
+        f"⏱ manager_watch 发现待验收超时：{task_id}\n"
+        f"任务：{title}\n"
+        f"状态：待验收；进入待验收：{fmt_time_ms(review_since)}\n"
+        f"产物：{artifact or '<缺失>'}\n"
+        f"原因：超过 {_format_age(age_ms)} 仍未完成主管验收和收口。\n\n"
+        "manager 固定三选一动作：\n"
+        f"1. 验收通过：`{ct} task done {task_id} --artifact {artifact or '<path>'} --by manager`。\n"
+        f"2. 打回重做：`{ct} task update {task_id} --status 进行中`，再用 "
+        f"`{ct} send {worker_hint} manager \"退回 {task_id}：缺口/修改要求/下次产物时间\" 高 --task-id {task_id}`。\n"
+        "3. 标记阻塞：如果卡在授权/登录/预算/方向取舍，立即补一条真实 blocker，并给老板回“卡住原因 / 已尝试 / 需要谁 / 下次回报时间”。\n\n"
+        "这不是继续催 worker 的问题，而是主管验收/收口责任还没完成。"
+    )
+    return OverdueNotice(
+        task_id=task_id,
+        assignee=assignee,
+        title=f"⏱ {task_id} 待验收超时",
+        body=body,
+        public_title="",
+        public_body="",
     )
 
 
@@ -546,6 +653,11 @@ def _build_first_output_notice(task: dict, now: int,
         body=body,
         public_title=public_title,
         public_body=public_body,
+        public_key=(
+            f"first_output:{task_id}|pane:{pane_state}|reason:{failure_reason}|"
+            f"grace:{int(public_grace_applied)}"
+            if public_body else ""
+        ),
     )
 
 
@@ -638,6 +750,10 @@ def _build_boss_inbox_notice(msg: dict, now: int,
         body=body,
         public_title=public_title,
         public_body=public_body,
+        public_key=(
+            f"boss_inbox:{local_id}|pane:{pane_state}"
+            if public_body else ""
+        ),
     )
 
 
@@ -683,6 +799,7 @@ def _build_c4_escalation_notice(rows: list[dict], now: int,
             f"建议：`claudeteam health` 检查 manager 状态，必要时 "
             f"`claudeteam restart manager` 或 `claudeteam down && claudeteam up`。"
         ),
+        public_key=f"c4:{count}|pane:{pane_state or 'unknown'}",
     )
 
 
@@ -741,8 +858,13 @@ def sweep_boss_inbox(*, now_ms_fn: Callable[[], int] = now_ms,
             last_c4_at = int(prev_c4.get("last_alert_at") or 0)
             if now - last_c4_at >= repeat_ms:
                 notice = _build_c4_escalation_notice(rows, now, pane_state_fn("manager"))
-                alerts["__c4__"] = {"last_alert_at": now, "count": len(rows)}
-                notices.append(notice)
+                if str(prev_c4.get("public_key") or "") != notice.public_key:
+                    notices.append(notice)
+                alerts["__c4__"] = {
+                    "last_alert_at": now,
+                    "count": len(rows),
+                    "public_key": notice.public_key,
+                }
         else:
             for msg in rows:
                 local_id = str(msg.get("local_id") or "")
@@ -765,10 +887,12 @@ def sweep_boss_inbox(*, now_ms_fn: Callable[[], int] = now_ms,
                 notice = _build_boss_inbox_notice(
                     msg, now, public_overdue_ms, pane_state_fn("manager"),
                     public_since_ms=last_alert_at or created)
+                notice = _suppress_duplicate_public_notice(notice, prev)
                 alerts[local_id] = {
                     "fingerprint": fp,
                     "last_alert_at": now,
                     "count": int(prev.get("count") or 0) + 1,
+                    "public_key": notice.public_key or str(prev.get("public_key") or ""),
                 }
                 notices.append(notice)
 
@@ -903,12 +1027,14 @@ def sweep(*, now_ms_fn: Callable[[], int] = now_ms,
                 public_grace_applied=public_after_alert_ms > 0,
                 public_since_ms=first_alert_at or seeded_first_alert_at,
             )
+            notice = _suppress_duplicate_public_notice(notice, prev)
             count = int(prev.get("count") or 0) + 1
             alerts[task_id] = {
                 "fingerprint": fp,
                 "last_alert_at": now,
                 "first_alert_at": seeded_first_alert_at,
                 "count": count,
+                "public_key": notice.public_key or str(prev.get("public_key") or ""),
             }
             notices.append(notice)
 
@@ -1010,11 +1136,13 @@ def sweep_first_output(*,
                 public_grace_applied=public_after_alert_ms > 0,
                 failure_reason=failure_reason,
                 public_since_ms=first_alert_at or seeded_first_alert_at)
+            notice = _suppress_duplicate_public_notice(notice, prev)
             alerts[task_id] = {
                 "fingerprint": fp,
                 "last_alert_at": now,
                 "first_alert_at": seeded_first_alert_at,
                 "count": int(prev.get("count") or 0) + 1,
+                "public_key": notice.public_key or str(prev.get("public_key") or ""),
             }
             notices.append(notice)
             # L5 self-evolution: capture first_output failure as an incident

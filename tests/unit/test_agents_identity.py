@@ -337,9 +337,12 @@ def test_identity_requires_to_explicit():
 
 
 def test_render_includes_boss_first_flagship_protocol():
-    """Boss-flagged 2026-05-19: every role needs the boss-first
-    protocol so outputs stay boss-facing, discussion summaries stay
-    useful, and sensitive assets stay out of plain memory/chat."""
+    """Base identity keeps the generic boss-first protocol only.
+
+    Business/team-specific overlays (mentor routing, Product Lab examples,
+    TODO002 handoff details, Feishu permission specifics) must not leak into
+    the base ClaudeTeam prompt by default.
+    """
     mgr = identity.render("manager", role="r", cli="c", model="m")
     wkr = identity.render("worker_cc", role="r", cli="c", model="m")
     for text in (mgr, wkr):
@@ -349,21 +352,38 @@ def test_render_includes_boss_first_flagship_protocol():
         assert "Founder OS 阶段闸门" in text
         assert "当前阶段、阶段出口证据、今天最小证据动作、不做什么" in text
         assert "只记“存在性 + 检索路径 + 使用协议”" in text
-        assert "Product Lab 看产品与收钱" in text
         assert "跨团队协作：cross-track 协议" in text
         assert "cross-track 协议" in text
         assert "claudeteam cross-track" in text
-        assert "claudeteam mentor-request" in text
-        assert "mentor-score-loop" in text
-        assert "交接确认" in text
-        assert "--image-caption" in text
         assert "claudeteam correction-cases" in text
         assert "claudeteam boss-experience-audit" in text
         assert "claudeteam evolution-health" in text
-        assert "刘小排协作式排障三步" in text
         assert "先给证据" in text
         assert "可证伪原因" in text
         assert "evidence-first-debugging" in text
+        assert "Product Lab 看产品与收钱" not in text
+        assert "claudeteam mentor-request" not in text
+        assert "mentor-score-loop" not in text
+        assert "交接确认" not in text
+        assert "--image-caption" not in text
+        assert "刘小排协作式排障三步" not in text
+
+
+def test_render_can_opt_into_flagship_overlay():
+    team = {"agents": {"manager": {
+        "cli": "claude-code",
+        "model": "opus",
+        "role": "主管",
+        "identity_overlay": "flagship",
+    }}}
+    with isolated_env(team=team):
+        text = identity.render("manager")
+    assert "claudeteam mentor-request" in text
+    assert "mentor-score-loop" in text
+    assert "交接确认" in text
+    assert "--image-caption" in text
+    assert "Product Lab 看产品与收钱" in text
+    assert "刘小排协作式排障三步" in text
 
 
 def test_write_overwrites_existing_file():
@@ -503,7 +523,6 @@ def test_init_prompt_manager_repeats_boss_first_gate():
     assert "只记存在性/检索路径/使用协议" in prompt
     assert "最终作战表" in prompt
     assert "截图附件证据" in prompt
-    assert "禅道上有图，现在啥都没有了？" in prompt
     assert "旧结论立即标 stale" in prompt
     assert "同一事实不要换包装重复回传" in prompt
     assert "短回执" in prompt
@@ -518,13 +537,32 @@ def test_init_prompt_manager_repeats_boss_first_gate():
     assert "阶段出口证据" in prompt
     assert "manager 决策必须留痕" in prompt
     assert "claudeteam log manager decision" in prompt
-    assert "AI 导师双入口" in prompt
-    assert "AI 刘小排和 AI 亦仁分开提问" in prompt
     assert "规则有生命周期" in prompt
     assert "归档详细规则" in prompt
+    assert "proof package" in prompt
+    assert "AI 导师双入口" not in prompt
+    assert "AI 刘小排和 AI 亦仁分开提问" not in prompt
+    assert "刘小排协作式排障三步" not in prompt
+    assert "不许愿式改代码" not in prompt
+    assert "禅道上有图，现在啥都没有了？" not in prompt
+    assert "给老板新建飞书云文档时默认直接开编辑权限" not in prompt
+
+
+def test_init_prompt_manager_flagship_overlay_restores_business_redlines():
+    team = {"agents": {"manager": {
+        "cli": "claude-code",
+        "model": "opus",
+        "role": "主管",
+        "identity_overlay": "flagship",
+    }}}
+    with isolated_env(team=team):
+        prompt = identity.init_prompt("manager")
+    assert "AI 导师双入口" in prompt
+    assert "AI 刘小排和 AI 亦仁分开提问" in prompt
     assert "刘小排协作式排障三步" in prompt
     assert "不许愿式改代码" in prompt
-    assert "proof package" in prompt
+    assert "禅道上有图，现在啥都没有了？" in prompt
+    assert "给老板新建飞书云文档时默认直接开编辑权限" in prompt
 
 
 def test_init_prompt_manager_slim_profile_uses_short_redlines():

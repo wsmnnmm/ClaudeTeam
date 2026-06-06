@@ -14,6 +14,7 @@ Layout:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from claudeteam.util import env_path
@@ -32,13 +33,27 @@ def state_dir() -> Path:
     if env:
         return env
     try:
+        import tomllib
+        candidates: list[Path] = []
+        explicit = env_path("CLAUDETEAM_CONFIG_FILE")
+        if explicit and explicit.exists():
+            candidates.append(explicit)
         cwd_toml = Path("claudeteam.toml")
         if cwd_toml.exists():
-            import tomllib
-            data = tomllib.loads(cwd_toml.read_text(encoding="utf-8"))
+            candidates.append(cwd_toml)
+        seen: set[Path] = set()
+        for cfg in candidates:
+            if cfg in seen:
+                continue
+            seen.add(cfg)
+            resolved_cfg = cfg.resolve()
+            data = tomllib.loads(resolved_cfg.read_text(encoding="utf-8"))
             configured = data.get("state_dir")
             if configured:
-                return Path(str(configured)).expanduser()
+                path = Path(os.path.expandvars(str(configured))).expanduser()
+                if not path.is_absolute():
+                    path = resolved_cfg.parent / path
+                return path
     except Exception:
         pass
     return Path.home() / ".claudeteam"

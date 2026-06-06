@@ -1,11 +1,14 @@
 """Tests for `claudeteam install-hooks` — Claude Code slash-command markdowns."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
 
-from helpers import isolated_env, run_cli, tmux_patch
+from claudeteam.commands import install_hooks
+
+from helpers import attr_patch, isolated_env, run_cli, tmux_patch
 
 
 # ── happy path ──────────────────────────────────────────────────
@@ -104,7 +107,7 @@ def test_install_hooks_idempotent_overwrites_existing_files():
 
         rc, out, _ = run_cli(["install-hooks", tmp])
         assert rc == 0
-        assert "overwritten" in out
+        assert "updated" in out
         assert "STALE" not in team_path.read_text(encoding="utf-8")
 
 
@@ -128,6 +131,73 @@ def test_install_hooks_say_md_mentions_chat():
         assert "claudeteam say" in say_md
 
 
+def test_install_hooks_normalizes_cost_guard_hook_to_single_current_command():
+    with tempfile.TemporaryDirectory() as tmp:
+        claude_dir = Path(tmp) / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = claude_dir / "settings.json"
+        settings_path.write_text(json.dumps({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "bash /Users/wsm/Project/ClaudeTeam/scripts/check-api-cost.sh",
+                        }],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "bash /srv/ai/ClaudeTeam/scripts/check-api-cost.sh",
+                        }],
+                    },
+                    {
+                        "matcher": "Edit",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "echo keep-me",
+                        }],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "bash /srv/ai/ClaudeTeam/scripts/check-api-cost.sh",
+                        }],
+                    },
+                ]
+            }
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        with attr_patch(
+            install_hooks,
+            _find_hook_script=lambda: "/srv/ai/ClaudeTeam/scripts/check-api-cost.sh",
+        ):
+            rc, out, err = run_cli(["install-hooks", tmp])
+            assert rc == 0
+            assert err == ""
+            assert "API cost guard hook" in out
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        pretool = settings["hooks"]["PreToolUse"]
+        bash_cost_entries = [
+            entry for entry in pretool
+            if entry.get("matcher") == "Bash"
+            and any(
+                "check-api-cost.sh" in str(hook.get("command", ""))
+                for hook in entry.get("hooks", [])
+                if isinstance(hook, dict)
+            )
+        ]
+        assert len(bash_cost_entries) == 1
+        command = bash_cost_entries[0]["hooks"][0]["command"]
+        assert command.endswith("scripts/check-api-cost.sh")
+        assert "/Users/wsm/Project/ClaudeTeam/scripts/check-api-cost.sh" not in command
+        assert any(entry.get("matcher") == "Edit" for entry in pretool)
+
+
 # ── parsing ──────────────────────────────────────────────────────
 
 
@@ -148,17 +218,33 @@ def test_install_hooks_help():
 
 def test_install_hooks_warns_when_session_already_running():
     """REGRESSION: round 5 smoke G15b — running install-hooks AFTER
-    \`claudeteam up\` is the wrong order; existing claude-code panes
+    `claudeteam up` is the wrong order; existing claude-code panes
     have already cached their slash commands and won't pick up the
     new files. install-hooks should warn loudly."""
     team = {"session": "ClaudeTeam", "agents": {"manager": {}}}
     with isolated_env(team=team) as tmp, \
             tmux_patch(has_session=lambda s: s == "ClaudeTeam"):
+        run_cli(["install-hooks", str(tmp)])
+        team_path = Path(tmp) / ".claude" / "commands" / "team.md"
+        team_path.write_text("STALE", encoding="utf-8")
         rc, _, err = run_cli(["install-hooks", str(tmp)])
         assert rc == 0
         # warning lands on stderr (via util.warn)
         assert "tmux session 'ClaudeTeam' is already running" in err
         assert "claudeteam down && claudeteam up" in err
+
+
+def test_install_hooks_does_not_warn_when_session_running_but_files_unchanged():
+    team = {"session": "ClaudeTeam", "agents": {"manager": {}}}
+    with isolated_env(team=team) as tmp, \
+            tmux_patch(has_session=lambda s: s == "ClaudeTeam"):
+        first_rc, _, _ = run_cli(["install-hooks", str(tmp)])
+        assert first_rc == 0
+        rc, out, err = run_cli(["install-hooks", str(tmp)])
+        assert rc == 0
+        assert "updated" not in out
+        assert "unchanged" in out
+        assert "already running" not in err
 
 
 def test_install_hooks_silent_when_no_session():

@@ -119,7 +119,7 @@ def _state_file() -> Path:
 
 def _load_state() -> dict:
     path = _state_file()
-    default = {"incidents": {}, "learnings": []}
+    default = {"incidents": {}, "learnings": [], "task_links": {}}
     if not path.exists():
         return dict(default)
     try:
@@ -132,6 +132,8 @@ def _load_state() -> dict:
             out["incidents"] = {}
         if not isinstance(out.get("learnings"), list):
             out["learnings"] = []
+        if not isinstance(out.get("task_links"), dict):
+            out["task_links"] = {}
         return out
     except (OSError, json.JSONDecodeError):
         return dict(default)
@@ -186,6 +188,96 @@ def _find_similar_learning(incident: Incident) -> LearningRecord | None:
             lr.source_incidents = entry.get("source_incidents", [])
             return lr
     return None
+
+
+def _learning_entry_by_id(state: dict, learning_id: str) -> dict | None:
+    for entry in state.get("learnings", []):
+        if entry.get("learning_id") == learning_id:
+            return entry
+    return None
+
+
+def get_learning(learning_id: str) -> dict | None:
+    """Fetch one persisted learning by id."""
+    state = _load_state()
+    entry = _learning_entry_by_id(state, learning_id)
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def register_task_context(task_id: str, *,
+                          task_title: str = "",
+                          task_description: str = "",
+                          assignee: str = "",
+                          limit: int = 3) -> list[dict]:
+    """Attach currently relevant learnings to a task's runtime context.
+
+    This is the "learning gets used in real work" bridge: once a task is
+    created, we snapshot the most relevant learnings so later success can
+    count as `applied` and same-task relapse can count as `recurred`.
+    """
+    if not task_id:
+        return []
+    rows = find_relevant(
+        task_title=task_title,
+        task_description=task_description,
+        assignee=assignee,
+        limit=limit,
+    )
+    if not rows:
+        return []
+    learning_ids = [
+        str(row.get("learning_id") or "").strip()
+        for row in rows
+        if str(row.get("learning_id") or "").strip()
+    ]
+    if not learning_ids:
+        return []
+    state = _load_state()
+    links = state.setdefault("task_links", {})
+    existing = dict(links.get(task_id) or {})
+    merged_ids: list[str] = []
+    for lid in list(existing.get("learning_ids", [])) + learning_ids:
+        if lid and lid not in merged_ids:
+            merged_ids.append(lid)
+    links[task_id] = {
+        "learning_ids": merged_ids,
+        "applied_ids": list(existing.get("applied_ids", [])),
+        "recurred_ids": list(existing.get("recurred_ids", [])),
+        "task_title": task_title,
+        "assignee": assignee,
+    }
+    _save_state(state)
+    return rows
+
+
+def _mark_linked_task_recurrence(incident: Incident) -> list[str]:
+    if not incident.task_id:
+        return []
+    state = _load_state()
+    links = state.get("task_links", {})
+    link = dict(links.get(incident.task_id) or {})
+    learning_ids = list(link.get("learning_ids", []))
+    if not learning_ids:
+        return []
+    recurred_ids = list(link.get("recurred_ids", []))
+    matched: list[str] = []
+    for learning_id in learning_ids:
+        if learning_id in recurred_ids:
+            continue
+        entry = _learning_entry_by_id(state, learning_id)
+        if not entry:
+            continue
+        if entry.get("category") != incident.incident_type:
+            continue
+        entry["failed_count"] = int(entry.get("failed_count", 0)) + 1
+        recurred_ids.append(learning_id)
+        matched.append(learning_id)
+    if not matched:
+        return []
+    link["recurred_ids"] = recurred_ids
+    links[incident.task_id] = link
+    _save_state(state)
+    return matched
 
 
 def _incident_count_for_pattern(incident_type: str, pattern: str) -> int:
@@ -312,6 +404,7 @@ def capture(incident: Incident, *,
     if _is_duplicate_incident(fp, now):
         return None
     _record_incident(fp, now)
+    _mark_linked_task_recurrence(incident)
 
     total = _incident_count_for_pattern(incident.incident_type, incident.pattern) + 1
     lesson = _render_lesson(incident)
@@ -350,6 +443,36 @@ def mark_recurred(learning_id: str, *,
             _save_state(state)
             return True
     return False
+
+
+def mark_task_applied(task_id: str, *,
+                      now_ms_fn: Callable[[], int] | None = None) -> list[str]:
+    """Mark all learnings linked to a task as successfully applied once."""
+    now = now_ms_fn() if now_ms_fn else int(time.time() * 1000)
+    state = _load_state()
+    links = state.get("task_links", {})
+    link = dict(links.get(task_id) or {})
+    learning_ids = list(link.get("learning_ids", []))
+    if not learning_ids:
+        return []
+    applied_ids = list(link.get("applied_ids", []))
+    newly_applied: list[str] = []
+    for learning_id in learning_ids:
+        if learning_id in applied_ids:
+            continue
+        entry = _learning_entry_by_id(state, learning_id)
+        if not entry:
+            continue
+        entry["prevented_count"] = int(entry.get("prevented_count", 0)) + 1
+        applied_ids.append(learning_id)
+        newly_applied.append(learning_id)
+    if not newly_applied:
+        return []
+    link["applied_ids"] = applied_ids
+    link["last_applied_at"] = now
+    links[task_id] = link
+    _save_state(state)
+    return newly_applied
 
 
 # ── relevance matching ─────────────────────────────────────────────────
@@ -573,4 +696,28 @@ def render_for_prompt(*, limit: int = 5, agent: str = "") -> str:
         eff = f"出现{seen}次, 预防{prevented}次, 复发{failed}次"
         lines.append(f"{i}. [{cat}] {lesson}  ({eff})")
     lines.append("")
+    return "\n".join(lines)
+
+
+def render_task_context(task_id: str, *, limit: int = 3) -> str:
+    """Short task-scoped reminder of relevant historical learnings."""
+    if not task_id:
+        return ""
+    state = _load_state()
+    link = dict(state.get("task_links", {}).get(task_id) or {})
+    learning_ids = list(link.get("learning_ids", []))
+    if not learning_ids:
+        return ""
+    rows: list[dict] = []
+    for learning_id in learning_ids:
+        entry = _learning_entry_by_id(state, learning_id)
+        if entry:
+            rows.append(entry)
+    if not rows:
+        return ""
+    lines = ["历史相关教训（执行前先过一遍）："]
+    for i, row in enumerate(rows[:limit], 1):
+        lines.append(
+            f"{i}. [{row.get('category', '?')}] {row.get('lesson', '')}"
+        )
     return "\n".join(lines)

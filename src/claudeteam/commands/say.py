@@ -158,6 +158,28 @@ _PROGRESS_FALLBACK_ALLOWED_REASONS = (
     "boss-visible UI/visual confirmation must include a clickable http(s) preview URL",
     "Feishu image send failed",
 )
+_DEFAULT_MANAGER_PROGRESS_FORBIDDEN_EXACT = (
+    "收到", "对齐", "待命", "继续监控", "继续观察", "已知晓", "明白",
+    "ready", "ok", "OK",
+)
+_DEFAULT_MANAGER_PROGRESS_FORBIDDEN_CONTAINS = (
+    "无新事实",
+)
+_DEFAULT_MANAGER_PROGRESS_MUST_SEND_CONTAINS = (
+    "已派发", "已分派", "已回报", "自然窗口", "receipt", "sync",
+    "watchdog", "心跳", "blocker", "阻塞", "卡点",
+)
+_DEFAULT_MANAGER_PROGRESS_OPTIONAL_CONTAINS = (
+    "处理中", "继续跟进", "等待回报", "收集中", "汇总中", "核对中", "观察中", "等待中",
+)
+_MANAGER_PROGRESS_STRUCTURED_MARKERS = (
+    "结论：", "证据：", "下一步：", "需要老板：",
+)
+_MANAGER_PROGRESS_ALLOWED_INTERNAL_TOKEN_LEAKS = {
+    "internal task id",
+    "internal worker name",
+    "internal manager slug",
+}
 _RESPONSE_CONTRACT_MARKERS = {
     "quick_answer": (),
     "research": (
@@ -311,7 +333,79 @@ def _internal_worker_ack_reason(sender: str, to_target: str,
     return ""
 
 
-def _boss_visible_quality_error(to_target: str, message: str, *,
+def _normalize_gate_token(value: object) -> str:
+    return " ".join(str(value or "").split()).strip().casefold()
+
+
+def _progress_policy_tokens(path: str,
+                            default: tuple[str, ...]) -> tuple[str, ...]:
+    from claudeteam.runtime import tunables
+    raw = tunables.tunable(path, list(default))
+    if isinstance(raw, (list, tuple)):
+        values = raw
+    elif raw is None:
+        values = []
+    else:
+        values = [raw]
+    normalized = [_normalize_gate_token(value) for value in values]
+    return tuple(token for token in normalized if token)
+
+
+def _looks_like_manager_progress_card(text: str) -> bool:
+    compact = str(text or "").strip()
+    if not compact:
+        return False
+    hits = sum(1 for marker in _MANAGER_PROGRESS_STRUCTURED_MARKERS if marker in compact)
+    return hits >= 3 and "下一步：" in compact and "证据：" in compact
+
+
+def _manager_progress_class(sender: str, to_target: str, message: str) -> str:
+    if sender != "manager" or _role_of(to_target) != "user":
+        return ""
+    compact = " ".join(str(message or "").split()).strip()
+    if not compact:
+        return ""
+    normalized = compact.casefold()
+    forbidden_exact = _progress_policy_tokens(
+        "chat.publish.manager_progress.forbidden_exact",
+        _DEFAULT_MANAGER_PROGRESS_FORBIDDEN_EXACT,
+    )
+    if normalized in forbidden_exact:
+        return "forbidden"
+    forbidden_contains = _progress_policy_tokens(
+        "chat.publish.manager_progress.forbidden_contains",
+        _DEFAULT_MANAGER_PROGRESS_FORBIDDEN_CONTAINS,
+    )
+    if any(token in normalized for token in forbidden_contains):
+        return "forbidden"
+    if _looks_like_manager_progress_card(compact):
+        return "must_send"
+    must_send_contains = _progress_policy_tokens(
+        "chat.publish.manager_progress.must_send_contains",
+        _DEFAULT_MANAGER_PROGRESS_MUST_SEND_CONTAINS,
+    )
+    if any(token in normalized for token in must_send_contains):
+        return "must_send"
+    optional_contains = _progress_policy_tokens(
+        "chat.publish.manager_progress.optional_contains",
+        _DEFAULT_MANAGER_PROGRESS_OPTIONAL_CONTAINS,
+    )
+    if any(token in normalized for token in optional_contains):
+        return "optional"
+    return ""
+
+
+def _internal_manager_progress_reason(sender: str, to_target: str,
+                                      message: str) -> str:
+    if _manager_progress_class(sender, to_target, message) != "forbidden":
+        return ""
+    return (
+        "manager low-signal public update was silenced; send a real progress card "
+        "with conclusion, evidence, next step, and boss action when there is a new fact"
+    )
+
+
+def _boss_visible_quality_error(sender: str, to_target: str, message: str, *,
                                 image: str = "") -> str:
     """Catch malformed public cards before they reach the boss.
 
@@ -325,6 +419,7 @@ def _boss_visible_quality_error(to_target: str, message: str, *,
     text = str(message or "")
     if not text.strip():
         return ""
+    manager_progress_class = _manager_progress_class(sender, to_target, text)
     if _cli_flag_only_delivery(text):
         return (
             "boss-visible message only contains CLI flags; write a human "
@@ -332,6 +427,7 @@ def _boss_visible_quality_error(to_target: str, message: str, *,
             "action instead"
         )
     if (_require_visual_status_image_enabled()
+            and manager_progress_class != "must_send"
             and _looks_like_status_answer(text)
             and not image):
         return (
@@ -339,6 +435,7 @@ def _boss_visible_quality_error(to_target: str, message: str, *,
             "generate the team's visual status artifact and send it with --image"
         )
     if (_require_realtime_status_enabled()
+            and manager_progress_class != "must_send"
             and _looks_like_status_answer(text)
             and not image):
         missing = [marker for marker in _REALTIME_STATUS_REQUIRED if marker not in text]
@@ -350,6 +447,11 @@ def _boss_visible_quality_error(to_target: str, message: str, *,
             )
     if _reject_internal_tokens_enabled():
         leaks = _boss_visible_internal_token_leaks(text)
+        if manager_progress_class == "must_send":
+            leaks = [
+                leak for leak in leaks
+                if leak not in _MANAGER_PROGRESS_ALLOWED_INTERNAL_TOKEN_LEAKS
+            ]
         if leaks:
             return (
                 "boss-visible message leaks internal execution jargon "
@@ -1047,6 +1149,16 @@ def main(argv: list[str]) -> int:
             )
         print(f"📝 {args.agent} → silenced: {internal_ack_reason}; logged only")
         return 0
+    manager_progress_reason = _internal_manager_progress_reason(
+        args.agent, args.to, message)
+    if manager_progress_reason:
+        if args.local:
+            _append_log_best_effort(
+                args.agent, "say_silenced", _audit_content(message, args.image),
+                ref="chat.publish.manager_progress",
+            )
+        print(f"📝 {args.agent} → silenced: {manager_progress_reason}; logged only")
+        return 0
 
     if not _publish_allowed(args.agent, args.to):
         from claudeteam.runtime import tunables
@@ -1063,7 +1175,8 @@ def main(argv: list[str]) -> int:
 
     message, contract_check = _apply_response_contract_guard(args, message)
 
-    quality_error = _boss_visible_quality_error(args.to, message, image=args.image)
+    quality_error = _boss_visible_quality_error(
+        args.agent, args.to, message, image=args.image)
     if quality_error:
         # L5 self-evolution: capture quality guard block as an incident
         try:
@@ -1075,7 +1188,7 @@ def main(argv: list[str]) -> int:
         if _can_send_progress_fallback(args.agent, args.to, quality_error):
             fallback = _natural_progress_fallback(quality_error, image=args.image)
             fallback_error = _boss_visible_quality_error(
-                args.to, fallback, image="")
+                args.agent, args.to, fallback, image="")
             if fallback_error:
                 return error_exit(
                     f"❌ {quality_error}; generated progress fallback was invalid: "

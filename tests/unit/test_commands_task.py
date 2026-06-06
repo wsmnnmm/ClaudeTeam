@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 
 from helpers import isolated_env, run_cli
 from claudeteam.store import tasks
@@ -82,6 +83,35 @@ def test_task_create_with_founder_os_fields():
         assert t["stage_exit_evidence"] == "1 real user returns tomorrow"
         assert t["evidence_action"] == "observe the core workflow today"
         assert t["non_goal"] == "do not add settings"
+
+
+def test_task_create_with_truth_surface_fields():
+    with isolated_env():
+        rc, out, err = run_cli([
+            "task", "create", "worker", "修 Product Lab receipt 断点",
+            "--issue-class", "local-business",
+            "--segment", "receipt",
+            "--next-window", "2026-06-03 08:45 CST",
+            "--base-absorb-needed", "no",
+        ])
+        assert rc == 0, err
+        t = tasks.list_tasks()[0]
+        assert t["issue_class"] == "local-business"
+        assert t["current_segment"] == "receipt"
+        assert t["next_natural_window"] == "2026-06-03 08:45 CST"
+        assert t["base_absorb_needed"] == "no"
+
+
+def test_task_create_with_parent_task():
+    with isolated_env():
+        parent = tasks.create("manager", "parent battle")
+        rc, out, err = run_cli([
+            "task", "create", "worker", "child unit",
+            "--parent", parent,
+        ])
+        assert rc == 0, err
+        child = tasks.list_tasks()[-1]
+        assert child["parent_task_id"] == parent
 
 
 def test_task_create_rejects_unknown_founder_stage():
@@ -185,6 +215,36 @@ def test_task_update_can_add_founder_os_fields():
         assert t["non_goal"] == "do not redesign cockpit"
 
 
+def test_task_update_can_add_truth_surface_fields():
+    with isolated_env():
+        tasks.create("w1", "old")
+        rc, out, err = run_cli([
+            "task", "update", "T-1",
+            "--issue-class", "cross-team",
+            "--segment", "boss_view",
+            "--next-window", "明早 10:00 CST",
+            "--base-absorb-needed", "yes",
+        ])
+        assert rc == 0, err
+        t = tasks.get("T-1")
+        assert t["issue_class"] == "cross-team"
+        assert t["current_segment"] == "boss_view"
+        assert t["next_natural_window"] == "明早 10:00 CST"
+        assert t["base_absorb_needed"] == "yes"
+
+
+def test_task_update_can_attach_parent_task():
+    with isolated_env():
+        parent = tasks.create("manager", "parent battle")
+        tasks.create("w1", "old")
+        rc, out, err = run_cli([
+            "task", "update", "T-2",
+            "--parent", parent,
+        ])
+        assert rc == 0, err
+        assert tasks.get("T-2")["parent_task_id"] == parent
+
+
 # ── done shortcut ────────────────────────────────────────────────
 
 
@@ -270,6 +330,7 @@ def test_task_done_accepts_ui_task_with_screenshot_and_preview():
         assert rc == 0, err
         assert "updated T-1" in out
         assert tasks.get("T-1")["status"] == "已完成"
+        assert tasks.get("T-1")["reviewed_by"] == "manager"
 
 
 def test_task_done_uses_existing_artifact_when_present():
@@ -282,6 +343,33 @@ def test_task_done_uses_existing_artifact_when_present():
         assert t["status"] == "已完成"
         assert t["completed_at"] is not None
         assert t["artifact_path"] == "artifacts/T-1/out.md"
+        assert t["reviewed_by"] == "manager"
+
+
+def test_task_update_complete_requires_explicit_reviewer():
+    with isolated_env() as tmp:
+        tasks.create("w", "x")
+        _write_artifact(tmp, "artifacts/T-1/out.md")
+        rc, _, err = run_cli([
+            "task", "update", "T-1",
+            "--status", "已完成",
+            "--artifact", "artifacts/T-1/out.md",
+        ])
+        assert rc == 1
+        assert "requires reviewed_by" in err
+
+
+def test_task_done_rejects_parent_with_open_child_tasks():
+    with isolated_env() as tmp:
+        parent = tasks.create("manager", "parent")
+        tasks.create("worker", "child", parent_task_id=parent)
+        _write_artifact(tmp, "artifacts/T-1/out.md")
+        rc, _, err = run_cli([
+            "task", "done", parent,
+            "--artifact", "artifacts/T-1/out.md",
+        ])
+        assert rc == 1
+        assert "open child tasks" in err
 
 
 # ── list / get ────────────────────────────────────────────────────
@@ -334,6 +422,20 @@ def test_task_list_filter_by_topic():
         assert "topic: #TeamOps" in out
 
 
+def test_task_list_filter_by_parent():
+    with isolated_env():
+        parent = tasks.create("manager", "parent")
+        tasks.create("alice", "child-a", parent_task_id=parent)
+        tasks.create("alice", "child-b", parent_task_id=parent)
+        tasks.create("alice", "standalone")
+
+        rc, out, _ = run_cli(["task", "list", "--parent", parent])
+        assert rc == 0
+        assert "child-a" in out
+        assert "child-b" in out
+        assert "standalone" not in out
+
+
 def test_task_list_active_excludes_terminal_tasks():
     """Agents use --active in prompts so old completed/cancelled backlog
     does not bloat every inbox-processing turn."""
@@ -362,7 +464,11 @@ def test_task_get_existing_renders_full_card():
             founder_stage="idea",
             stage_exit_evidence="human pain evidence",
             evidence_action="talk to one buyer",
-            non_goal="no demo")
+            non_goal="no demo",
+            issue_class="base-common",
+            current_segment="sync",
+            next_natural_window="2026-06-03 18:00 CST",
+            base_absorb_needed="yes")
         tasks.update("T-1", reviewed_by="manager")
         rc, out, _ = run_cli(["task", "get", "T-1"])
         assert rc == 0
@@ -373,7 +479,21 @@ def test_task_get_existing_renders_full_card():
         assert "evidence: human pain evidence" in out
         assert "evidence_action: talk to one buyer" in out
         assert "non_goal: no demo" in out
+        assert "issue_class: base-common" in out
+        assert "current_segment: sync" in out
+        assert "next_natural_window: 2026-06-03 18:00 CST" in out
+        assert "base_absorb_needed: yes" in out
         assert "reviewed_by: manager" in out
+
+
+def test_task_get_shows_parent_and_child_rollup():
+    with isolated_env():
+        parent = tasks.create("manager", "parent battle")
+        tasks.create("worker", "child one", parent_task_id=parent)
+        tasks.create("worker", "child two", parent_task_id=parent)
+        rc, out, _ = run_cli(["task", "get", parent])
+        assert rc == 0
+        assert "child_tasks: 2 total / 2 open" in out
 
 
 def test_task_get_unknown_id_returns_one():
@@ -381,6 +501,64 @@ def test_task_get_unknown_id_returns_one():
         rc, _, err = run_cli(["task", "get", "T-99"])
         assert rc == 1
         assert "no such task" in err
+
+
+def test_task_audit_reports_missing_truth_surface_fields():
+    with isolated_env():
+        tasks.create("worker", "broken active task")
+        rc, out, err = run_cli(["task", "audit"])
+        assert rc == 1
+        assert err == ""
+        assert "task audit failed" in out
+        assert "missing truth-surface fields" in out
+        assert "T-1" in out
+
+
+def test_task_audit_json_dumps_machine_readable_findings():
+    with isolated_env():
+        parent = tasks.create(
+            "manager", "parent battle",
+            issue_class="local-business",
+            current_segment="receipt",
+            next_natural_window="2026-06-03 08:45 CST",
+            base_absorb_needed="no")
+        tasks.create(
+            "worker", "child unit",
+            parent_task_id=parent,
+            issue_class="base-common",
+            current_segment="artifact",
+            next_natural_window="2026-06-03 08:46 CST",
+            base_absorb_needed="no")
+        rc, out, err = run_cli(["task", "audit", "--json"])
+        assert rc == 1
+        assert err == ""
+        data = json.loads(out)
+        assert data["ok"] is False
+        assert any(
+            row["finding_code"] == "parent_issue_class_mismatch"
+            for row in data["findings"]
+        )
+
+
+def test_task_audit_passes_when_active_tasks_are_aligned():
+    with isolated_env():
+        parent = tasks.create(
+            "manager", "parent battle",
+            issue_class="local-business",
+            current_segment="receipt",
+            next_natural_window="2026-06-03 08:45 CST",
+            base_absorb_needed="no")
+        tasks.create(
+            "worker", "child unit",
+            parent_task_id=parent,
+            issue_class="local-business",
+            current_segment="artifact",
+            next_natural_window="2026-06-03 08:46 CST",
+            base_absorb_needed="no")
+        rc, out, err = run_cli(["task", "audit"])
+        assert rc == 0, err
+        assert "task audit passed" in out
+        assert "findings=0" in out
 
 
 # ── dispatcher ───────────────────────────────────────────────────

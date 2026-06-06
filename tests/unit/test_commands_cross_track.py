@@ -70,6 +70,32 @@ def test_dispatch_creates_outbound_track_and_prints_track_id():
         assert t["target_agent"] == "manager"
 
 
+def test_dispatch_can_bind_local_task_id():
+    from claudeteam.store import tasks
+
+    with isolated_env(), _dispatch_stubs(), _noack_stubs():
+        tid = tasks.create("manager", "parent battle")
+        rc, out, err = _run([
+            "dispatch", "todo002_cloud", "manager",
+            "product_lab_manager", "strategy package",
+            "--task-id", tid,
+        ])
+        assert rc == 0, err
+        track = ct.list_tracks(direction="outbound")[0]
+        assert track["local_task_id"] == tid
+
+
+def test_dispatch_rejects_unknown_local_task_id():
+    with isolated_env(), _dispatch_stubs(), _noack_stubs():
+        rc, out, err = _run([
+            "dispatch", "todo002_cloud", "manager",
+            "product_lab_manager", "strategy package",
+            "--task-id", "T-99",
+        ])
+        assert rc != 0
+        assert "no such task" in err
+
+
 def test_dispatch_fails_with_insufficient_args():
     with isolated_env(), _dispatch_stubs(), _noack_stubs():
         rc, out, err = _run(["dispatch", "team"])
@@ -307,10 +333,16 @@ def test_unknown_action_returns_usage_error():
 def test_apply_remote_action_accept_creates_inbound():
     with isolated_env():
         tid = "XT-1234000000-remote"
-        cmd._apply_remote_action(tid, "accept", "Got it")
+        cmd._apply_remote_action(
+            tid, "accept", "Got it",
+            source_team="todo002_cloud",
+            source_label="TODO002 Cloud",
+        )
         t = ct.get(tid)
         assert t is not None
         assert t["status"] == "accepted"
+        assert t["partner_team"] == "todo002_cloud"
+        assert t["partner_label"] == "TODO002 Cloud"
 
 
 def test_apply_remote_action_progress_transitions():

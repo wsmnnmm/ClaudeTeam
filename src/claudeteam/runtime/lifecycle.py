@@ -92,6 +92,22 @@ _FEISHU_APP_ENV = {
     "LARKSUITE_CLI_APP_ID",
     "LARKSUITE_CLI_APP_SECRET",
 }
+_SPAWN_ENV_CLEAR = (
+    "CLAUDETEAM_STATE_DIR",
+    "CLAUDETEAM_CONFIG_FILE",
+    "CLAUDETEAM_TEAM_FILE",
+    "CLAUDETEAM_RUNTIME_CONFIG",
+    "CLAUDETEAM_DEFAULT_MODEL",
+    "LARK_CLI_PROFILE",
+    "LARK_CLI_NO_PROXY",
+    "CLAUDETEAM_LARK_SEND_AS",
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "LARKSUITE_CLI_APP_ID",
+    "LARKSUITE_CLI_APP_SECRET",
+    *providers.PROVIDER_ENV_KEYS,
+)
+_CLAUDE_SETTINGS_OVERRIDE = "claude-code-settings.json"
 
 
 def _feishu_env_matches_profile(configured_lark_profile: str) -> bool:
@@ -321,17 +337,36 @@ def _ensure_claude_agent_home(agent: str) -> None:
                 dst.write_bytes(src.read_bytes())
             except OSError:
                 pass
-    # Prefer the operator's real settings.json over the tiny default
-    # stub above when it exists. This carries through provider env,
+    # Prefer a project-scoped Claude settings override when present.
+    # This keeps team-local routing isolated from the operator's personal
+    # ~/.claude/settings.json so reviving one team cannot silently mutate the
+    # rest of the machine.
+    project_settings = paths.state_file(_CLAUDE_SETTINGS_OVERRIDE)
+    if _path_readable(project_settings):
+        try:
+            settings.write_bytes(project_settings.read_bytes())
+        except OSError:
+            pass
+    # Otherwise fall back to the operator's real settings.json over the tiny
+    # default stub above when it exists. This carries through provider env,
     # enabled MCP servers, and other local toggles needed for the same
     # auth/provider behavior the operator gets in their normal HOME.
     user_settings = Path.home() / ".claude" / "settings.json"
-    if _path_readable(user_settings):
+    if not _path_readable(project_settings) and _path_readable(user_settings):
         try:
             settings.write_bytes(user_settings.read_bytes())
         except OSError:
             pass
-    _merge_runtime_env_into_claude_settings(settings, providers.provider_env_for_agent(agent))
+    # 2026-06-03 runtime incident:
+    # injecting third-party provider env into per-agent ~/.claude/settings.json
+    # can make Claude Code's interactive agent-home runtime reject otherwise
+    # valid custom models/providers ("selected model ... may not exist"),
+    # even though the same provider works via direct CLI env injection.
+    #
+    # Keep the operator's global settings.json intact inside agent homes and
+    # pass project/provider routing only through the pane spawn environment.
+    # That preserves ccSwitch-style live routing without poisoning the
+    # interactive Claude runtime state on disk.
     managed_mcp = Path(managed_mcp_config(agent))
     try:
         managed_mcp.write_text(
@@ -747,6 +782,21 @@ def pane_env_prefix(agent: str | None = None) -> str:
     return " ".join(parts)
 
 
+def _spawn_env_wrapper(command: str) -> str:
+    """Run a pane spawn command after clearing tmux-inherited env poison.
+
+    tmux server global env survives across sessions/windows. If an earlier lane
+    exported OPENAI_*/ANTHROPIC_* or another team's CLAUDETEAM_* vars into the
+    tmux server, a freshly recycled pane can silently inherit and override the
+    lane-specific config we just rendered into CODEX_HOME / Claude settings.
+
+    We therefore clear the cross-team-sensitive keys first, then layer the
+    current lane's explicit env prefix on top.
+    """
+    clear = " ".join(f"-u {shlex.quote(key)}" for key in _SPAWN_ENV_CLEAR)
+    return f"env {clear} {command}"
+
+
 def _team_root_dir() -> Path:
     """Directory an agent CLI should run in.
 
@@ -771,7 +821,8 @@ def _write_spawn_script(agent: str, command: str) -> Path:
 
 def _agent_spawn_cmd(agent: str, adapter, model: str) -> str:
     root = shlex.quote(str(_team_root_dir()))
-    command = f"cd {root} && {pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    lane_cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    command = f"cd {root} && {_spawn_env_wrapper(lane_cmd)}"
     return f"bash {shlex.quote(str(_write_spawn_script(agent, command)))}"
 
 

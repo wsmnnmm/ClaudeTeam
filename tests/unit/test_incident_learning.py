@@ -202,6 +202,71 @@ def test_mark_recurred_unknown_id_returns_false():
         assert not il.mark_recurred("nonexistent_id")
 
 
+def test_register_task_context_links_relevant_learning_ids():
+    with isolated_env():
+        il.capture(il.Incident(
+            "first_output_failure", "worker_cc", "空话",
+            "artifact evidence URL screenshot",
+        ), now_ms_fn=lambda: 1_000_000)
+
+        rows = il.register_task_context(
+            "T-9",
+            task_title="artifact evidence verification",
+            assignee="worker_cc",
+        )
+
+        assert len(rows) == 1
+        state = il._load_state()
+        assert state["task_links"]["T-9"]["learning_ids"] == [rows[0]["learning_id"]]
+
+
+def test_mark_task_applied_marks_linked_learning_once():
+    with isolated_env():
+        lr = il.capture(il.Incident(
+            "first_output_failure", "worker_cc", "空话",
+            "artifact evidence URL screenshot",
+        ), now_ms_fn=lambda: 1_000_000)
+        assert lr is not None
+
+        il.register_task_context(
+            "T-9",
+            task_title="artifact evidence verification",
+            assignee="worker_cc",
+        )
+
+        applied = il.mark_task_applied("T-9", now_ms_fn=lambda: 2_000_000)
+        assert applied == [lr.learning_id]
+        assert il.mark_task_applied("T-9", now_ms_fn=lambda: 3_000_000) == []
+
+        rows = il.list_learnings()
+        row = next(r for r in rows if r["learning_id"] == lr.learning_id)
+        assert row["prevented_count"] == 1
+
+
+def test_capture_marks_recurred_for_linked_task_learning():
+    with isolated_env():
+        lr = il.capture(il.Incident(
+            "first_output_failure", "worker_cc", "空话",
+            "artifact evidence URL screenshot",
+        ), now_ms_fn=lambda: 1_000_000)
+        assert lr is not None
+
+        il.register_task_context(
+            "T-9",
+            task_title="artifact evidence verification",
+            assignee="worker_cc",
+        )
+
+        il.capture(il.Incident(
+            "first_output_failure", "worker_cc", "无证据",
+            "still no evidence", task_id="T-9",
+        ), now_ms_fn=lambda: 2_000_000)
+
+        rows = il.list_learnings()
+        row = next(r for r in rows if r["learning_id"] == lr.learning_id)
+        assert row["failed_count"] == 1
+
+
 # ── stats ───────────────────────────────────────────────────────────
 
 
