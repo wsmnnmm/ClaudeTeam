@@ -56,3 +56,7 @@ AGENTS.md
 /post-reddit.png
 /post-wechat.png
 /post-xiaohongshu.png
+
+# Runtime artifacts — chain-audit JSON/MD logs, budget snapshots, feishu docs
+/artifacts/
+/api_budget.json
