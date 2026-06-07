@@ -790,7 +790,7 @@ def test_sweep_boss_inbox_reinjects_stale_unread_boss_message():
             public_overdue_s=300,
         )
         manager_inbox = local_facts.list_messages("manager", unread_only=False)
-        unread_manager_inbox = local_facts.list_messages("manager", unread_only=True)
+        manager_logs = local_facts.list_logs("manager_watch", limit=20)
 
     assert len(notices) == 1
     notice = notices[0]
@@ -807,13 +807,13 @@ def test_sweep_boss_inbox_reinjects_stale_unread_boss_message():
     assert "已自动重投给 manager" in notice.public_body
     assert injected and local_id in injected[0]
     assert alerts == [notice]
+    assert not any(m["from"] == "manager_watch" for m in manager_inbox)
     assert any(
-        m["from"] == "manager_watch"
-        and m["task_id"] == local_id
-        and m["read"] is True
-        for m in manager_inbox
+        row["agent"] == "manager_watch"
+        and row["ref"] == local_id
+        and "boss_inbox_watch" in row["content"]
+        for row in manager_logs
     )
-    assert not any(m["from"] == "manager_watch" for m in unread_manager_inbox)
 
 
 def test_sweep_boss_inbox_public_alert_mentions_thinking_state():
