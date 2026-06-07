@@ -797,10 +797,12 @@ def test_sweep_boss_inbox_reinjects_stale_unread_boss_message():
     assert "老板消息未收口" in notice.title
     assert "先处理这条老板消息" in notice.body
     assert "Stripe 注册了" in notice.body
-    assert "bin/ct say manager - --to user" in notice.body
-    assert "stdin 安全模式" in notice.body
     assert "<给老板的回复>" not in notice.body
-    assert "不要复制本通知里的任何占位文字" in notice.body
+    assert "ct say" not in notice.body
+    assert "/srv" not in notice.body
+    assert "stdin" not in notice.body
+    assert "pane" not in notice.body
+    assert "不要复制本通知文字" in notice.body
     assert "已自动重投给 manager" in notice.public_body
     assert injected and local_id in injected[0]
     assert alerts == [notice]
@@ -828,7 +830,8 @@ def test_sweep_boss_inbox_public_alert_mentions_thinking_state():
         )
 
     assert len(notices) == 1
-    assert "当前 pane 状态：thinking" in notices[0].body
+    assert "主管还在处理，但没有形成老板可读结论" in notices[0].body
+    assert "pane" not in notices[0].body
     assert alerts[0].public_body == ""
 
 
@@ -852,8 +855,42 @@ def test_sweep_boss_inbox_public_alert_mentions_provider_error_state():
         )
 
     assert len(notices) == 1
-    assert "当前 pane 状态：provider/api error" in notices[0].body
-    assert "主管现场状态异常：provider/api error" in alerts[0].public_body
+    assert "主管回复通道不稳定" in notices[0].body
+    assert "provider/api error" not in notices[0].body
+    assert "主管回复通道不稳定" in alerts[0].public_body
+    assert "provider/api error" not in alerts[0].public_body
+
+
+def test_sweep_boss_inbox_c4_public_alert_hides_runtime_commands():
+    alerts = []
+    with isolated_env(team=_team()):
+        for text in ("第一条还没回", "第二条也没回", "第三条继续没回"):
+            local_id = local_facts.append_message(
+                "manager", "user", text, priority="高")
+            _age_inbox_message_to_epoch(local_id)
+        notices = manager_watch.sweep_boss_inbox(
+            now_ms_fn=lambda: 601_000,
+            pane_state_fn=lambda agent: "provider/api error",
+            inject_manager_fn=lambda body: None,
+            alert_fn=lambda notice: alerts.append(notice),
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+
+    assert len(notices) == 1
+    notice = notices[0]
+    assert "C4" in notice.title
+    assert "主管回复通道不稳定" in notice.body
+    assert "主管回复通道不稳定" in notice.public_body
+    assert "主管回复通道不稳定" in notice.public_key
+    for forbidden in (
+        "provider/api error", "provider", "api", "pane", "ct ", "claudeteam",
+        "/srv", "stdin", "down &&", "restart manager",
+    ):
+        assert forbidden not in notice.body
+        assert forbidden not in notice.public_body
+        assert forbidden not in notice.public_key
 
 
 def test_sweep_boss_inbox_suppresses_duplicate_until_repeat_window():

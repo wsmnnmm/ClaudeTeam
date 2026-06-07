@@ -700,29 +700,41 @@ def _is_unread_boss_message(msg: dict) -> bool:
     return bool(str(msg.get("content") or "").strip())
 
 
+def _boss_safe_runtime_state(pane_state: str) -> str:
+    """Human-readable runtime state that is safe if accidentally quoted."""
+    raw = str(pane_state or "").strip()
+    if not raw or raw == "ready":
+        return ""
+    lowered = raw.lower()
+    if "thinking" in lowered:
+        return "主管还在处理，但没有形成老板可读结论"
+    if "provider" in lowered or "api" in lowered or "rate" in lowered:
+        return "主管回复通道不稳定"
+    if "missing" in lowered or "not at ready" in lowered or "failed" in lowered:
+        return "主管前台状态异常"
+    return "主管前台状态异常"
+
+
 def _build_boss_inbox_notice(msg: dict, now: int,
                              public_overdue_ms: int,
                              pane_state: str,
                              public_since_ms: int = 0) -> OverdueNotice:
-    ct = team_command.safe_cli_cmd(ensure=True)
     local_id = str(msg.get("local_id") or "?")
     age_ms = max(0, now - _msg_ms(msg, "created_at"))
     snippet = _clip(str(msg.get("content") or ""), 180)
-    pane_line = f"当前 pane 状态：{pane_state}\n" if pane_state and pane_state != "ready" else ""
+    runtime_state = _boss_safe_runtime_state(pane_state)
+    runtime_line = f"当前状态：{runtime_state}\n" if runtime_state else ""
 
     body = (
         f"⏱ boss_inbox_watch 发现老板消息未收口：{local_id}\n"
         f"已经过去：{_format_age(age_ms)}\n"
         f"老板原话：{snippet}\n\n"
-        f"{pane_line}"
+        f"{runtime_line}"
         "manager 现在要做：\n"
         "1. 先处理这条老板消息，不要被旧 worker 回执或内部任务抢占。\n"
-        "2. 如果输入区已经有这条消息但没有开始执行，先按 Enter 或重新注入后立刻执行。\n"
-        "3. 先做一个最小真实动作：查证、跑命令、看产物、派给明确 owner，或给出真实 blocker。\n"
-        "4. 回群必须用 stdin 安全模式，避免反引号/引号/URL 被 shell 改写；"
-        f"命令是 `{ct} say manager - --to user`，正文必须是你现场写出的真实进展、结果或 blocker，"
-        "不要复制本通知里的任何占位文字。\n"
-        f"然后再执行 `{ct} read {local_id}`。\n"
+        "2. 先做一个最小真实动作：查证、看产物、派给明确 owner，或给出真实 blocker。\n"
+        "3. 回群正文必须是现场写出的真实进展、结果或 blocker；不要复制本通知文字。\n"
+        "4. 回复后标记原消息已读。\n"
         "5. 禁止只说“收到/稍后汇总”就销账。"
     )
     public_title = ""
@@ -734,7 +746,7 @@ def _build_boss_inbox_notice(msg: dict, now: int,
         elif pane_state == "ready":
             current = "主管看起来空闲，但还没有把结论回到群里。"
         else:
-            current = f"主管现场状态异常：{pane_state}。"
+            current = f"{runtime_state or '主管前台状态异常'}。"
         public_title = "需要主管确认：老板消息长时间未收口"
         public_body = (
             f"系统发现你的一条消息超过 {_format_age(age_ms)} 还没有形成主管后续。\n"
@@ -765,25 +777,24 @@ def _build_c4_escalation_notice(rows: list[dict], now: int,
     directly to the boss with recovery instructions instead of injecting the
     manager pane yet again.
     """
-    ct = team_command.safe_cli_cmd(ensure=True)
     count = len(rows)
     oldest = min((_msg_ms(m, "created_at") for m in rows), default=now)
     oldest_age_ms = max(0, now - oldest)
     snippet = _clip(str(rows[0].get("content") or ""), 180)
-    pane_line = f"当前 pane 状态：{pane_state}\n" if pane_state and pane_state != "ready" else ""
+    runtime_state = _boss_safe_runtime_state(pane_state) or "主管前台状态异常"
 
     body = (
         f"⏱ C4 唤醒升级：manager 已积累 {count} 条未读老板消息\n"
         f"最早一条已过去：{_format_age(oldest_age_ms)}\n"
         f"最新老板消息：{snippet}\n\n"
-        f"{pane_line}"
-        "⚠️ manager 可能已宕机/卡死/被限流，继续注入 pane 无意义。\n\n"
+        f"当前状态：{runtime_state}\n"
+        "⚠️ manager 可能已宕机/卡死/被限流，继续重复唤醒无意义。\n\n"
         "建议恢复动作（按顺序尝试）：\n"
-        f"1. `{ct} health` 查看 manager pane 状态\n"
-        f"2. 如果 pane 丢失或卡死：`{ct} restart manager`\n"
-        f"3. 如果有 rate-limit 标记：等待冷却后 `{ct} recycle manager`\n"
-        f"4. 如果以上都无效：`{ct} down && {ct} up` 全队重启\n"
-        "5. 恢复后先处理最早的老板消息，不要被 worker 回执抢占"
+        "1. 检查主管是否还在运行并能接收输入。\n"
+        "2. 如果主管丢失或卡死，先恢复主管入口。\n"
+        "3. 如果回复通道不稳定，等待冷却或切换可用通道。\n"
+        "4. 如果以上都无效，再做全队重启。\n"
+        "5. 恢复后先处理最早的老板消息，不要被 worker 回执抢占。"
     )
     return OverdueNotice(
         task_id=f"C4-{count}",
@@ -793,12 +804,11 @@ def _build_c4_escalation_notice(rows: list[dict], now: int,
         public_title=f"⚠️ manager 可能已宕机：{count} 条老板消息未收口",
         public_body=(
             f"系统发现 manager 已积累 {count} 条未读老板消息（最早 "
-            f"{_format_age(oldest_age_ms)}），pane 状态：{pane_state or '未知'}。\n"
-            "已停止重复注入，等待操作员手动恢复。\n\n"
-            f"建议：`claudeteam health` 检查 manager 状态，必要时 "
-            f"`claudeteam restart manager` 或 `claudeteam down && claudeteam up`。"
+            f"{_format_age(oldest_age_ms)}）。\n"
+            f"当前状态：{runtime_state}。已停止重复唤醒，等待操作员恢复主管入口。\n"
+            "恢复后会先处理最早的老板消息，并给出真实进展、结果或 blocker。"
         ),
-        public_key=f"c4:{count}|pane:{pane_state or 'unknown'}",
+        public_key=f"c4:{count}|state:{runtime_state}",
     )
 
 
