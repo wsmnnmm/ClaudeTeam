@@ -45,6 +45,7 @@ class DeliveryReport:
     written: list[str] = field(default_factory=list)        # inbox row landed
     injected: list[str] = field(default_factory=list)       # pane received text
     failed_inject: list[str] = field(default_factory=list)
+    skipped_inject: list[str] = field(default_factory=list) # inbox kept, pane intentionally skipped
     rate_limited: list[str] = field(default_factory=list)   # inbox kept, inject skipped
     skipped: bool = False                                    # True iff decision was DROP
     slash_reply: str = ""                                    # set when action=SLASH
@@ -107,6 +108,22 @@ def _write_inbox(agent: str, sender: str, decision: Decision,
         return ""
     report.written.append(agent)
     return local_id or ""
+
+
+def _should_skip_pane_inject(agent: str, decision: Decision) -> bool:
+    """Return True when config says the inbox row is consumed out-of-pane.
+
+    Entries in `[router].skip_pane_inject_targets` may be either a bare
+    target (`manager`) or a sender-target pair (`user:manager`). The latter
+    lets a project keep worker->manager pane delivery while a separate
+    frontdesk bridge consumes boss user->manager rows.
+    """
+    raw = tunables.tunable("router.skip_pane_inject_targets", [])
+    if not isinstance(raw, list):
+        return False
+    sender = (decision.sender or "user").strip() or "user"
+    specs = {str(item).strip() for item in raw if str(item).strip()}
+    return agent in specs or f"{sender}:{agent}" in specs
 
 
 def _message_content_for_agent(decision: Decision) -> str:
@@ -608,6 +625,9 @@ def _inject_to_pane(agent: str, decision: Decision,
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
     'rate_limited'.
     """
+    if _should_skip_pane_inject(agent, decision):
+        print(f"  ⏭  {agent} pane inject skipped by router config; inbox row kept")
+        return "skipped_inject"
     target = tmux.Target(deps.session, agent)
     try:
         adapter = deps.adapter_for_agent(agent)

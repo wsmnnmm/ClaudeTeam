@@ -95,6 +95,35 @@ def test_route_uses_user_as_sender_when_decision_sender_blank():
         assert rows[0]["from"] == "user"
 
 
+def test_route_can_write_inbox_without_waking_configured_target():
+    """Project frontdesk bridges may consume inbox rows themselves.
+
+    DeepSeaStudyTeam uses this to let the Kimi first responder read
+    user->manager inbox rows without waking an incompatible Claude Code pane.
+    """
+    decision = Decision(action=Action.ROUTE, targets=["manager"], text="hi", msg_id="om_2")
+    inject_calls = []
+    wake_calls = []
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_SKIP_PANE_INJECT_TARGETS="user:manager"):
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda *a, **kw: inject_calls.append((a, kw)) or True,
+            wake_fn=lambda *a, **kw: wake_calls.append((a, kw)) or True,
+            session="S",
+        )
+        rows = local_facts.list_messages("manager")
+
+    assert len(rows) == 1
+    assert rows[0]["from"] == "user"
+    assert report.written == ["manager"]
+    assert report.injected == []
+    assert report.failed_inject == []
+    assert report.skipped_inject == ["manager"]
+    assert inject_calls == []
+    assert wake_calls == []
+
+
 def test_route_passes_decision_text_into_inbox():
     decision = Decision(action=Action.ROUTE, targets=["worker"], text="hello world", msg_id="om")
     with isolated_env():
