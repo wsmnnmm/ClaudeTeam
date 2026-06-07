@@ -799,6 +799,8 @@ def test_sweep_boss_inbox_reinjects_stale_unread_boss_message():
     assert "Stripe 注册了" in notice.body
     assert "bin/ct say manager - --to user" in notice.body
     assert "stdin 安全模式" in notice.body
+    assert "<给老板的回复>" not in notice.body
+    assert "不要复制本通知里的任何占位文字" in notice.body
     assert "已自动重投给 manager" in notice.public_body
     assert injected and local_id in injected[0]
     assert alerts == [notice]

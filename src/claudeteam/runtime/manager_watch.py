@@ -719,10 +719,9 @@ def _build_boss_inbox_notice(msg: dict, now: int,
         "1. 先处理这条老板消息，不要被旧 worker 回执或内部任务抢占。\n"
         "2. 如果输入区已经有这条消息但没有开始执行，先按 Enter 或重新注入后立刻执行。\n"
         "3. 先做一个最小真实动作：查证、跑命令、看产物、派给明确 owner，或给出真实 blocker。\n"
-        "4. 回群用 stdin 安全模式，避免反引号/引号/URL 被 shell 改写：\n"
-        f"cat <<'EOF' | {ct} say manager - --to user\n"
-        "<给老板的回复>\n"
-        "EOF\n"
+        "4. 回群必须用 stdin 安全模式，避免反引号/引号/URL 被 shell 改写；"
+        f"命令是 `{ct} say manager - --to user`，正文必须是你现场写出的真实进展、结果或 blocker，"
+        "不要复制本通知里的任何占位文字。\n"
         f"然后再执行 `{ct} read {local_id}`。\n"
         "5. 禁止只说“收到/稍后汇总”就销账。"
     )
