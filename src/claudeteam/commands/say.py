@@ -312,7 +312,7 @@ def _internal_worker_ack_reason(sender: str, to_target: str,
         "commit", "diff", "已提交", "已落盘", "已创建", "已修复", "已验证",
         "复现", "根因", "blocker", "Blocker", "阻塞", "卡点", "失败",
         "报错", "需要老板", "请老板", "授权", "扫码", "确认", "补材料",
-        "P0", "P1",
+        "P0", "P1", "复盘", "讨论过程", "直接发出来", "承诺", "验收",
     )
     if any(marker in text for marker in public_markers):
         return ""

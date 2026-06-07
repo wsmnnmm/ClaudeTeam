@@ -1012,6 +1012,16 @@ def test_say_worker_real_blocker_can_report_directly():
     assert len(send["calls"]) == 1
 
 
+def test_say_worker_retro_discussion_can_report_directly():
+    """Visible team retrospectives are not standby chatter."""
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, worker_to_user=True)
+        msg = "我是图谱。内部复盘要把讨论过程直接发出来，先对齐时间承诺为什么没兑现。"
+        rc, _, _ = run_cli(["say", "worker_cc", msg, "--to", "user"])
+    assert rc == 0
+    assert len(send["calls"]) == 1
+
+
 def test_say_manager_structured_progress_card_passes_strict_visible_guards():
     msg = (
         "结论：全员报道已逐个派发给 8 个成员，不是群里代喊；signal 和 strategy 已回报，其他成员在返回中。\n"
