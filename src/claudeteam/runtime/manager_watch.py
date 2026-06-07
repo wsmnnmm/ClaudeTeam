@@ -673,11 +673,19 @@ def _inject_manager(body: str) -> None:
 
 
 def _notify_manager(notice: OverdueNotice,
-                    inject_manager_fn: Callable[[str], None] | None) -> None:
+                    inject_manager_fn: Callable[[str], None] | None,
+                    *,
+                    leave_unread: bool = True) -> None:
     local_id = local_facts.append_message(
         "manager", "manager_watch", notice.body,
         priority="高", task_id=notice.task_id,
     )
+    if not leave_unread:
+        # boss_inbox_watch is an internal front-desk backstop. The pane
+        # injection below is the delivery path; the inbox row is only audit
+        # evidence and must not remain as unread work for the front desk to
+        # chase.
+        local_facts.mark_read(local_id)
     kind = "first_output_watch" if "first_output_watch" in notice.body else "overdue_task"
     local_facts.append_log("manager_watch", kind, notice.body, ref=local_id)
     (inject_manager_fn or _inject_manager)(notice.body)
@@ -920,7 +928,7 @@ def sweep_boss_inbox(*, now_ms_fn: Callable[[], int] = now_ms,
             if alert_fn is not None:
                 alert_fn(notice)
         else:
-            _notify_manager(notice, inject_manager_fn)
+            _notify_manager(notice, inject_manager_fn, leave_unread=False)
             if alert_fn is not None:
                 alert_fn(notice)
     return notices
