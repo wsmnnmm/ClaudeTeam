@@ -205,7 +205,8 @@ _RESPONSE_CONTRACT_MARKERS = {
 
 # Default emoji per agent name. Used when claudeteam.toml doesn't
 # provide an explicit `emoji` field. The card sender header
-# (`{emoji} {agent} · {role}`) signals who's talking at a glance.
+# (`{emoji} {callsign} · {role}` or `{emoji} {role}`) signals who's
+# talking at a glance without exposing internal agent ids.
 _DEFAULT_AGENT_EMOJI = {
     "manager": "🎯",
     "worker_cc": "💎",
@@ -722,14 +723,14 @@ def _agent_card_title(agent: str, cfg: dict) -> str:
     """Return the boss-visible sender title for a Feishu card.
 
     Prefer the human callsign so the boss sees a named teammate first,
-    while keeping the stable agent id in parentheses for router attribution.
+    and never expose internal agent ids in boss-visible card headers.
     """
     emoji = _emoji_for(agent, cfg.get("emoji"))
     role = cfg.get("role") or "系统"
     callsign = str(cfg.get("callsign") or "").strip()
     if callsign:
-        return f"{emoji} {callsign} · {role}（{agent}）"
-    return f"{emoji} {agent} · {role}"
+        return f"{emoji} {callsign} · {role}"
+    return f"{emoji} {role}"
 
 
 def _escape_card_body(text: str) -> str:
@@ -1122,7 +1123,7 @@ def main(argv: list[str]) -> int:
     local_facts.touch_heartbeat(args.agent)
 
     # Resolve agent's role + emoji + color from claudeteam.toml. Used
-    # for the card title (`{emoji} {agent} · {role}`) and for color
+    # for the card title and color
     # override. Missing config falls back to the per-agent default
     # tables defined at the top of this file.
     try:

@@ -13,16 +13,14 @@ from claudeteam.store import local_facts
 
 
 def _isolated(chat_id: str = "oc_test", profile: str = ""):
-    # R169: team config now carries role + emoji + color so the card
-    # title renders as `{emoji} {agent} · {role}` (mirrors main's
-    # `_agent_card_title`). Tests pin the new shape; older fixtures
-    # had bare `{}` configs which now fall through to default emoji
-    # + role="系统" — covered by a separate test.
+    # Boss-visible card titles must use human-facing names, not internal
+    # agent ids such as manager/worker_*.
     return isolated_env(
         team={"agents": {
-            "manager": {"role": "团队主管", "emoji": "🎯", "color": "blue"},
-            "worker_cc": {"role": "Claude Code 员工", "emoji": "💎",
-                          "color": "purple"},
+            "manager": {"callsign": "领航", "role": "团队主管",
+                        "emoji": "🎯", "color": "blue"},
+            "worker_cc": {"callsign": "蓝鲸", "role": "Claude Code 员工",
+                          "emoji": "💎", "color": "purple"},
         }},
         runtime_config={"chat_id": chat_id, "lark_profile": profile},
     )
@@ -56,15 +54,20 @@ def _fake_send():
             body = card["body"]["elements"][0]["content"]
         except (KeyError, IndexError, TypeError):
             pass
-        # Synthesised legacy shape: `[<agent>] <body>`. Title format
-        # is `{emoji} {callsign} · {role}（{agent}）` so we extract
-        # the parenthesized agent slug first, then fall back to the
-        # older `{emoji} {agent} · {role}` shape.
+        # Synthesised legacy shape for old assertions only. Production
+        # routing must not depend on boss-visible card title.
         agent_slug = ""
-        if "（" in title and "）" in title:
-            agent_slug = title.rsplit("（", 1)[1].split("）", 1)[0]
-        elif "(" in title and ")" in title:
-            agent_slug = title.rsplit("(", 1)[1].split(")", 1)[0]
+        visible_to_agent = {
+            "领航": "manager",
+            "蓝鲸": "worker_cc",
+            "图谱": "worker_mapper",
+            "归档": "worker_memory",
+            "教练": "worker_reviewer",
+        }
+        for visible, slug in visible_to_agent.items():
+            if visible in title:
+                agent_slug = slug
+                break
         for tok in title.split():
             if agent_slug:
                 break
@@ -98,14 +101,14 @@ def _fake_send():
         yield state
 
 
-def test_card_title_prefers_callsign_and_keeps_agent_id_for_routing():
+def test_card_title_prefers_callsign_and_hides_agent_id():
     title = say_cmd._agent_card_title(
         "manager",
         {"callsign": "领航", "role": "学习知识图谱主管", "emoji": "🎯"},
     )
 
-    assert title == "🎯 领航 · 学习知识图谱主管（manager）"
-    assert "🎯 manager ·" not in title
+    assert title == "🎯 领航 · 学习知识图谱主管"
+    assert "manager" not in title
 
 
 
@@ -429,15 +432,14 @@ def _fake_send_card():
 
 def test_say_card_flag_sends_card_not_text():
     """`--card` routes through send_card; send_text isn't touched.
-    R169: title now `{emoji} {agent} · {role}` (no more bare `[agent]`)."""
+    Card title shows a human-facing callsign, not the internal agent id."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "重要决策已落地", "--card"])
     assert rc == 0
     assert len(st["card_calls"]) == 1
     assert st["text_calls"] == []
     card = st["card_calls"][0]["card"]
-    # R169: title is "{emoji} {agent} · {role}" pulled from team.json
-    assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
+    assert card["header"]["title"]["content"] == "🎯 领航 · 团队主管"
     body = card["body"]["elements"][0]["content"]
     assert "重要决策已落地" in body
     # team.json `color: blue` → blue template
@@ -475,7 +477,7 @@ def test_say_card_for_worker_uses_team_json_color_after_R169():
         run_cli(["say", "worker_cc", "step 1 done", "--card"])
     card = st["card_calls"][0]["card"]
     assert card["header"]["template"] == "purple"
-    assert card["header"]["title"]["content"] == "💎 worker_cc · Claude Code 员工"
+    assert card["header"]["title"]["content"] == "💎 蓝鲸 · Claude Code 员工"
 
 
 def test_say_card_escapes_angle_bracket_placeholders_in_body():
@@ -853,14 +855,14 @@ def test_say_default_now_sends_card_after_R168():
     structured updates in chat, not raw text. Plain text path opts
     in via the new `--no-card` flag (test below).
 
-    R169: title format updated to `{emoji} {agent} · {role}`."""
+    Card title shows a human-facing callsign, not the internal agent id."""
     with _isolated(), _fake_send_card() as st:
         rc, _, _ = run_cli(["say", "manager", "plain text msg"])
     assert rc == 0
     assert len(st["card_calls"]) == 1
     assert st["text_calls"] == []
     card = st["card_calls"][0]["card"]
-    assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
+    assert card["header"]["title"]["content"] == "🎯 领航 · 团队主管"
     body = card["body"]["elements"][0]["content"]
     assert "plain text msg" in body
 
@@ -876,14 +878,14 @@ def test_say_card_falls_back_to_default_emoji_when_team_json_missing_emoji():
     )
     with bare, _fake_send_card() as st:
         run_cli(["say", "manager", "x"])
-        # manager has a default-table emoji
+        # manager has a default-table emoji, but no raw agent id in title.
         assert st["card_calls"][0]["card"]["header"]["title"]["content"] == \
-            "🎯 manager · 管理"
+            "🎯 管理"
         st["card_calls"].clear()
         run_cli(["say", "worker_unknown", "x"])
         # not in default table → ⚙️ system glyph
         assert st["card_calls"][0]["card"]["header"]["title"]["content"] == \
-            "⚙️ worker_unknown · 未知员工"
+            "⚙️ 未知员工"
 
 
 def test_say_no_card_flag_is_a_no_op_post_R169():
@@ -898,7 +900,7 @@ def test_say_no_card_flag_is_a_no_op_post_R169():
     assert len(st["card_calls"]) == 1
     assert st["text_calls"] == []
     title = st["card_calls"][0]["card"]["header"]["title"]["content"]
-    assert title == "🎯 manager · 团队主管"
+    assert title == "🎯 领航 · 团队主管"
 
 
 def test_say_audit_log_failure_does_not_block_chat_send():
