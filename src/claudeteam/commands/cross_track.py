@@ -44,13 +44,7 @@ USAGE = (
 )
 
 SUCCESS_EMOJI = "✅"
-FAIL_EMOJI = "❌"
-
-
-def _team_name() -> str:
-    """Short team key derived from state dir name."""
-    d = Path(config.state_dir())
-    return d.parent.name if d.name == "state" else d.name
+FAIL_EMOJI = "❂"
 
 
 def _dispatch(argv: list[str]) -> int:

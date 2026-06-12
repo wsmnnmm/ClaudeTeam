@@ -651,12 +651,6 @@ def _has_ui_visual_context(text: str) -> bool:
     return any(marker in compact for marker in ("UI验收", "ui验收", "视觉验收", "页面验收"))
 
 
-def _has_ui_ok_claim(text: str) -> bool:
-    if any(marker in text for marker in _UI_DIRECT_OK_MARKERS):
-        return True
-    return _UI_VISUAL_COMPLETION_RE.search(text) is not None
-
-
 def _has_ui_verification_claim(text: str) -> bool:
     """True when the text claims UI *verification*, not just a casual 'OK'.
     '页面没问题' is a progress update; 'UI验收通过' is a verification claim.

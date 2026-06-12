@@ -48,12 +48,6 @@ def _clean_ref(ref: str) -> str:
     return str(ref or "").strip().strip("`'\"<>").rstrip(".,，。；;")
 
 
-def _is_image_path(value: str) -> bool:
-    parsed = urlparse(_clean_ref(value))
-    suffix = Path(parsed.path or value).suffix.lower()
-    return suffix in _IMAGE_EXTS
-
-
 def _is_image_url(url: str) -> bool:
     parsed = urlparse(_clean_ref(url))
     return Path(parsed.path).suffix.lower() in _IMAGE_EXTS

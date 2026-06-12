@@ -242,39 +242,6 @@ def _write_cost_guard_hook(claude_dir: Path) -> bool:
     return True
 
 
-def _remove_cost_guard_hook(claude_dir: Path) -> bool:
-    """Remove the API cost guard from .claude/settings.json. Returns True if removed."""
-    settings_path = claude_dir / "settings.json"
-    if not settings_path.exists():
-        return False
-    try:
-        existing = json.loads(settings_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return False
-
-    hooks = existing.get("hooks", {})
-    if not isinstance(hooks, dict):
-        return False
-    pretool = hooks.get("PreToolUse", [])
-    if not isinstance(pretool, list):
-        return False
-    new_pretool = [
-        e for e in pretool
-        if not _pretool_entry_contains_cost_guard(e)
-    ]
-    if len(new_pretool) == len(pretool):
-        return False
-
-    hooks["PreToolUse"] = new_pretool
-    if not new_pretool:
-        del hooks["PreToolUse"]
-    if not hooks:
-        del existing["hooks"]
-
-    settings_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n")
-    return True
-
-
 def main(argv: list[str]) -> int:
     rest = list(argv)
     if maybe_print_help(rest, USAGE):

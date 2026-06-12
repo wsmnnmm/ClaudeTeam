@@ -217,13 +217,6 @@ def _write_ccswitch(env: dict[str, str], effort: str) -> None:
     write_json(path, data)
 
 
-def _effective_model(requested: str, env: dict[str, str]) -> str:
-    key = _ALIAS_ENV_KEY.get((requested or "").strip().lower())
-    if key and env.get(key):
-        return env[key]
-    return requested
-
-
 def _load_presets() -> dict[str, dict[str, str]]:
     path = _presets_path()
     try:

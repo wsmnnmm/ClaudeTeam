@@ -169,27 +169,6 @@ def _record_incident(fp: str, now: int) -> None:
     _save_state(state)
 
 
-def _find_similar_learning(incident: Incident) -> LearningRecord | None:
-    """Check if a learning for this pattern already exists."""
-    state = _load_state()
-    for entry in state.get("learnings", []):
-        if entry.get("category") == incident.incident_type and entry.get("pattern") == incident.pattern:
-            lr = LearningRecord(
-                learning_id=entry.get("learning_id", ""),
-                lesson=entry.get("lesson", ""),
-                category=entry.get("category", ""),
-                source_incidents=entry.get("source_incidents", []),
-                created_at=entry.get("created_at", 0),
-                last_seen_at=entry.get("last_seen_at", 0),
-                seen_count=entry.get("seen_count", 0),
-                prevented_count=entry.get("prevented_count", 0),
-                failed_count=entry.get("failed_count", 0),
-            )
-            lr.source_incidents = entry.get("source_incidents", [])
-            return lr
-    return None
-
-
 def _learning_entry_by_id(state: dict, learning_id: str) -> dict | None:
     for entry in state.get("learnings", []):
         if entry.get("learning_id") == learning_id:

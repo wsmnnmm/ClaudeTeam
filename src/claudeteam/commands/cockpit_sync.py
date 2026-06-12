@@ -3269,10 +3269,6 @@ def _existing_by_field(payload: dict | None, field_name: str) -> dict[str, str]:
     return out
 
 
-def _existing_by_battle(payload: dict | None) -> dict[str, str]:
-    return _existing_by_field(payload, "战场")
-
-
 def _has_more(payload: dict | None) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -3309,12 +3305,6 @@ def _list_existing_by_field(*, base_token: str, table_id: str, key_field: str,
             return existing
         offset += len(items)
 
-
-def _list_existing_by_battle(*, base_token: str, table_id: str,
-                             profile: str, lark_call: Callable) -> dict[str, str] | None:
-    return _list_existing_by_field(
-        base_token=base_token, table_id=table_id, key_field="战场",
-        profile=profile, lark_call=lark_call)
 
 
 def _public_row(row: dict) -> dict:

@@ -182,17 +182,6 @@ def _query_cc_usage(home: Path | None = None,
 
 
 # Back-compat: keep _run_ccusage as a no-op that signals deprecation,
-# in case anyone still imports it. Real CC usage now goes via
-# `_query_cc_usage` above.
-def _run_ccusage(view: str, days: str = "",
-                 *, runner: Callable | None = None) -> tuple[int, str]:
-    """DEPRECATED. ccusage only returns cumulative cost ('Total: $X'),
-    which is wrong data for quota planning. Real quota % comes from
-    `_query_cc_usage` (Anthropic OAuth API). Kept so older callers
-    get a clear deprecation note rather than a NameError."""
-    return 1, "(ccusage replaced by _query_cc_usage / api.anthropic.com)"
-
-
 _CODEX_USAGE_RE = re.compile(
     r"(?P<label>[\w \-()]+?)\s+(?P<pct>\d+(?:\.\d+)?)%\s+resets\s+(?P<reset>\S+)",
     re.IGNORECASE,
