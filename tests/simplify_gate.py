@@ -250,18 +250,29 @@ def _resolve_tests_root(src_root: Path) -> Path | None:
     return None
 
 
-# ─── DEAD_PRIVATE: private def with no callers anywhere ──────────
+# ─── DEAD_PRIVATE: private def referenced only by its own file ────
 def _dead_private(src_root: Path) -> list[Finding]:
     out: list[Finding] = []
     # CLAUDE.md: "If `grep -rn '\\b_fn\\b'` shows only the definition,
     # remove it."  The mechanical proxy: walk every AST and collect
-    # (1) the set of private defs, (2) the set of call names.  A
-    # private def is dead iff its name is not in the call-name set.
+    # (1) the set of private defs, (2) the set of *referenced* names
+    # anywhere in the project.  A private def is dead iff its name is
+    # not in the reference set.
+    #
+    # "Referenced" means ANY use other than its own definition:
+    #   - called: `_foo()` / `self._foo()` / `(x or _foo)()`
+    #   - stored: `dict["/help"] = _foo` / `_DISPATCH = [_foo, ...]`
+    #   - default: `def f(cb=_foo): ...`
+    #   - assigned: `bar = _foo`
+    #   - compared: `if _foo:` / `name == "_foo"`
+    #   - decorated: `@_foo`
+    #   - re-exported: `__all__ = ["_foo"]`
     # Tests count — a private helper exercised by tests is load-bearing.
     private_defs: dict[Path, list[tuple[str, int]]] = {}
-    # call_names: set of simple names that are *called* (`foo(`) anywhere
-    # in the project, including via attribute (`self.foo()`).
-    call_names: set[str] = set()
+    # ref_names: simple names referenced anywhere
+    ref_names: set[str] = set()
+    # ref_attrs: attribute names accessed anywhere (`self._foo` → "_foo")
+    ref_attrs: set[str] = set()
 
     tests_root = _resolve_tests_root(src_root)
     roots_to_scan = [src_root]
@@ -275,21 +286,43 @@ def _dead_private(src_root: Path) -> list[Finding]:
             tree = ast.parse(_read(path))
         except SyntaxError:
             continue
+        # Identify docstring regions to exclude
+        docstring_ranges: list[tuple[int, int]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    docstring_ranges.append(
+                        (node.body[0].lineno, getattr(node.body[0], "end_lineno", node.body[0].lineno))
+                    )
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name.startswith("_") and not node.name.startswith("__"):
                     private_defs.setdefault(path, []).append(
                         (node.name, node.lineno)
                     )
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name):
-                    call_names.add(func.id)
-                elif isinstance(func, ast.Attribute):
-                    call_names.add(func.attr)
+            # Collect all Name and Attribute references
+            for child in ast.walk(node):
+                # Skip names inside docstrings
+                if isinstance(child, ast.Name) and _in_docstring(child.lineno, docstring_ranges):
+                    continue
+                if isinstance(child, ast.Name):
+                    # Exclude the function/class name in its own def
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                            and child is node.name and isinstance(child, ast.Name):
+                        continue
+                    # Exclude import targets
+                    if isinstance(node, (ast.Import, ast.ImportFrom, ast.alias)) and child is node:
+                        continue
+                    ref_names.add(child.id)
+                elif isinstance(child, ast.Attribute):
+                    if _in_docstring(child.lineno, docstring_ranges):
+                        continue
+                    ref_attrs.add(child.attr)
     for path, defs in private_defs.items():
         for name, lineno in defs:
-            if name in call_names:
+            if name in ref_names or name in ref_attrs:
                 continue
             # Don't flag private defs that live OUTSIDE the scan root
             # (those are project-internal dead code, not the caller's
@@ -299,10 +332,17 @@ def _dead_private(src_root: Path) -> list[Finding]:
             out.append(Finding(
                 "DEAD_PRIVATE", "warn",
                 _rel(path), lineno,
-                f"private `{name}` has 0 call sites in src/ or tests/; "
+                f"private `{name}` has 0 references in src/ or tests/; "
                 f"delete or move to a one-off script",
             ))
     return out
+
+
+def _in_docstring(lineno: int, ranges: list[tuple[int, int]]) -> bool:
+    for lo, hi in ranges:
+        if lo <= lineno <= hi:
+            return True
+    return False
 
 
 def _is_under(path: Path, root: Path) -> bool:
