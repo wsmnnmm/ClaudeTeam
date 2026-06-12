@@ -214,10 +214,17 @@ def _worker_progress_broadcast_class(*, message: str, artifact: str,
     return "optional"
 
 
+def _worker_progress_auto_broadcast_enabled() -> bool:
+    return bool(tunables.tunable(
+        "chat.publish.worker_progress.auto_broadcast_enabled", True))
+
+
 def _should_auto_broadcast_worker_progress(*, message: str, artifact: str,
                                            done: bool,
                                            task_id: str = "",
                                            worker: str = "") -> bool:
+    if not _worker_progress_auto_broadcast_enabled():
+        return False
     progress_class = _worker_progress_broadcast_class(
         message=message,
         artifact=artifact,
@@ -241,6 +248,13 @@ def _should_auto_broadcast_worker_progress(*, message: str, artifact: str,
 
 
 def _worker_progress_gate_hint() -> str:
+    if not _worker_progress_auto_broadcast_enabled():
+        return (
+            "群自动进度播报已关闭：worker 内部回执只进 manager inbox。"
+            "真实交付/真实 blocker/需要老板动作/老板点名时，必须由 worker 自己 "
+            "`say --to user`，不要等 manager 代转。公开直报必须写清做完了什么、"
+            "证据在哪、不确定什么、下一步要谁拍板；禁止只写“数量 + 产物路径”。"
+        )
     return (
         "群播报三分类：一定发（真实交付/真实 blocker/需要老板动作，或带 "
         "artifact/--done，会自动播报）；可发可不发（如已接手/排查中/复现中，"

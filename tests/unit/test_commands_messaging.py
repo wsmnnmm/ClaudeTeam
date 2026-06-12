@@ -39,6 +39,7 @@ def _write_ui_report(tmp, rel: str, *, preview: bool = True,
 def _write_worker_progress_policy(
     tmp,
     *,
+    auto_broadcast_enabled: bool | None = None,
     must_send_contains: list[str] | None = None,
     optional_contains: list[str] | None = None,
     forbidden_exact: list[str] | None = None,
@@ -47,6 +48,9 @@ def _write_worker_progress_policy(
     from claudeteam.runtime import tunables
 
     lines = ["[chat.publish.worker_progress]"]
+    if auto_broadcast_enabled is not None:
+        value = "true" if auto_broadcast_enabled else "false"
+        lines.append(f"auto_broadcast_enabled = {value}")
     if must_send_contains is not None:
         lines.append(
             "must_send_contains = "
@@ -393,6 +397,27 @@ def test_worker_must_send_progress_falls_back_to_manager_when_worker_lane_silenc
             assert rc == 0, err
             assert "status=待验收" in out
             assert [call[0] for call in broadcast_calls] == ["worker_cc", "manager"]
+
+
+def test_worker_progress_auto_broadcast_can_be_disabled_for_team():
+    broadcast_calls = []
+
+    def fake_say(argv):
+        broadcast_calls.append(list(argv))
+        return 0
+
+    with patch.object(say_cmd, "main", fake_say):
+        with isolated_env() as tmp:
+            _write_worker_progress_policy(tmp, auto_broadcast_enabled=False)
+            tasks.create("worker_cc", "existing", creator="manager")
+            _write_artifact(tmp, "artifacts/T-1/result.md")
+            rc, out, err = run_cli([
+                "send", "manager", "worker_cc", "fix ready",
+                "--done", "--artifact", "artifacts/T-1/result.md",
+            ])
+            assert rc == 0, err
+            assert "status=待验收" in out
+            assert broadcast_calls == []
 
 
 def test_worker_can_handoff_manager_owned_delegated_task():
