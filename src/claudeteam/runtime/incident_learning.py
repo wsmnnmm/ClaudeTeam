@@ -322,7 +322,7 @@ def _render_lesson(incident: Incident) -> str:
     if incident.incident_type == "api_cost_block":
         return (
             f"[{agent_label}] API 预算耗尽: 付费调用已被拦截。"
-            f"如需继续执行，运行 `claudeteam api-budget reset --limit N`。"
+            f"如需继续执行,联系 operator 提高 $CLAUDETEAM_API_BUDGET_USD 或修改 claudeteam.toml 限额。"
         )
     return f"[{agent_label}] {incident.incident_type}: {incident.detail}"
 

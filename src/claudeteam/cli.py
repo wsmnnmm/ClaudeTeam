@@ -11,12 +11,11 @@ import sys
 from typing import Callable
 
 from claudeteam.commands import (
-    api_budget, init, send, cross_send, cross_track, cross_learnings,
-    inbox, learnings, read, status, log, team, workspace,
+    init, send, cross_send, cross_track, cross_learnings,
+    inbox, read, status, log, team, workspace,
     start, hire, fire, recycle, up, down, reset, reidentify, switch,
-    say, router, watchdog, task, topic, remember, recall, forget, peek,
+    say, router, watchdog, task, topic, remember, recall, forget,
     health, fleet_health, cockpit_sync, cockpit_brief, founder_os,
-    boss_experience_audit, correction_cases, evolution_health,
     mentor_request, traffic_brief, usage, install_hooks, version,
 )
 from claudeteam.runtime.envfile import load_dotenv
@@ -46,7 +45,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
         ("log", log.main),
         ("team", team.main),
         ("workspace", workspace.main),
-        ("peek", peek.main),
     ]),
     ("team lifecycle", [
         ("start", start.main),
@@ -65,8 +63,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
     ]),
     ("supervision", [
         ("watchdog", watchdog.main),
-        ("api-budget", api_budget.main),
-        ("learnings", learnings.main),
     ]),
     ("task tracking", [
         ("task", task.main),
@@ -83,9 +79,6 @@ _COMMAND_GROUPS: list[tuple[str, list[tuple[str, CommandHandler]]]] = [
         ("cockpit-sync", cockpit_sync.main),
         ("cockpit-brief", cockpit_brief.main),
         ("founder-os", founder_os.main),
-        ("boss-experience-audit", boss_experience_audit.main),
-        ("correction-cases", correction_cases.main),
-        ("evolution-health", evolution_health.main),
         ("mentor-request", mentor_request.main),
         ("traffic-brief", traffic_brief.main),
         ("usage", usage.main),
