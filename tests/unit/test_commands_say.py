@@ -152,6 +152,79 @@ def test_manager_say_to_user_closes_manager_action_guard():
     assert records[0]["closed_by"] == "manager->user"
 
 
+def test_manager_say_to_user_blocks_self_execution_for_worker_routed_task():
+    with _isolated(), _fake_send() as send:
+        boss_msg = local_facts.append_message(
+            "manager", "user", "第 4 张图重做得更正式")
+        run_cli(["read", boss_msg])
+
+        rc, _, err = run_cli([
+            "say", "manager",
+            "我已亲自用 sharp 把主图裁了一版，正在继续部署。",
+            "--to", "user",
+        ])
+        rows = local_facts.list_logs("manager")
+        records = manager_action_guard.list_records()
+
+    assert rc == 1
+    assert "manager self-execution" in err
+    assert send["calls"] == []
+    assert rows[0]["type"] == "say_blocked"
+    assert rows[0]["ref"] == "chat.publish.manager_self_execution"
+    assert records[0]["closed_at"] is None
+
+
+def test_say_dedupes_identical_progress_fallback_before_group_send():
+    with _isolated(), _fake_send() as send:
+        send["image_result"] = None
+
+        rc1, out1, err1 = run_cli([
+            "say", "manager",
+            "第一版正式结论：刚才只发结论卡片没贴原文+截图，现在补完整截图报告。",
+            "--to", "user",
+            "--image", "artifacts/report-a.png",
+        ])
+        rc2, out2, err2 = run_cli([
+            "say", "manager",
+            "第二版正式结论：桌面端主界面和共享号历史截图都在，我再补一版完整报告。",
+            "--to", "user",
+            "--image", "artifacts/report-b.png",
+        ])
+        rows = local_facts.list_logs("manager", limit=10)
+
+    assert rc1 == 0, err1
+    assert rc2 == 0, err2
+    assert len(send["calls"]) == 1
+    assert "progress_update_id" in out1
+    assert "deduped" in out2
+    assert any(row["type"] == "say_progress_fallback" for row in rows)
+    assert any(row["type"] == "say_deduped" for row in rows)
+
+
+def test_manager_progress_fallback_dedupes_when_image_reply_repeats():
+    with _isolated(), _fake_send() as send:
+        send["image_result"] = None
+        run_cli([
+            "say", "manager",
+            "我先给你发图，等我补截图版本。",
+            "--to", "user",
+            "--image", "artifacts/report-a.png",
+        ])
+        first_logs = local_facts.list_logs("manager")
+        rc2, _, err2 = run_cli([
+            "say", "manager",
+            "我先给你发图，等我补截图版本。",
+            "--to", "user",
+            "--image", "artifacts/report-b.png",
+        ])
+        rows = local_facts.list_logs("manager", limit=20)
+
+    assert rc2 == 0, err2
+    assert len(send["calls"]) == 1
+    assert any(row["type"] == "say_progress_fallback" for row in first_logs)
+    assert any(row["type"] == "say_deduped" for row in rows)
+
+
 def test_manager_say_marks_matching_response_contract_fulfilled():
     with _isolated(), _fake_send() as send:
         boss_msg = local_facts.append_message(

@@ -120,6 +120,28 @@ def test_claude_code_spawn_reads_project_local_ccswitch_settings():
     assert "--effort max" in cmd
 
 
+def test_claude_code_spawn_merges_agent_home_settings_env_for_network_proxy():
+    team = {
+        "default_thinking": "medium",
+        "agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}},
+    }
+    with isolated_env(team=team) as tmp:
+        settings = tmp / "state" / "claude-code-settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"env":{"HTTP_PROXY":"http://127.0.0.1:7897",'
+            '"HTTPS_PROXY":"http://127.0.0.1:7897",'
+            '"ALL_PROXY":"http://127.0.0.1:7897",'
+            '"NO_PROXY":"localhost,127.0.0.1,::1"}}',
+            encoding="utf-8",
+        )
+        cmd = ClaudeCodeAdapter().spawn_cmd("worker_cc", "sonnet")
+    assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
+    assert "HTTPS_PROXY=http://127.0.0.1:7897" in cmd
+    assert "ALL_PROXY=http://127.0.0.1:7897" in cmd
+    assert "NO_PROXY=localhost,127.0.0.1,::1" in cmd
+
+
 def test_claude_code_spawn_skips_oauth_when_third_party_token_present():
     team = {"agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet"}}}
     with isolated_env(team=team) as tmp:

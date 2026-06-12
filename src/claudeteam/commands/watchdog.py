@@ -95,13 +95,13 @@ def _make_alert_fn():
     profile = config.lark_profile()
 
     def alert(name: str, failed_at: int, cooldown_secs: int) -> None:
-        title = f"🚨 watchdog: {name} entered cooldown"
+        title = f"🚨 团队守护进程异常：{name} 暂停重试"
         body = (
-            f"daemon **{name}** entered **{cooldown_secs}s cooldown** "
-            f"after **{failed_at}** failed respawns.\n\n"
-            f"- `claudeteam health` for current state\n"
-            f"- check daemon log for root cause\n"
-            f"- after fix: `claudeteam down && claudeteam up`"
+            f"系统发现 **{name}** 连续 **{failed_at}** 次恢复失败，"
+            f"已进入 **{cooldown_secs}s** 冷却，避免继续刷屏。\n\n"
+            "当前影响：团队消息接收或后台守护可能不稳定。\n"
+            "系统动作：已保留现场日志，等待操作员恢复。\n"
+            "老板动作：先不用处理内部命令；如果需要你授权、登录或方向取舍，团队会单独说清楚。"
         )
         from claudeteam.runtime import tunables
         alarm_color = str(tunables.tunable("router.alarm_card_color", "red"))
@@ -114,8 +114,8 @@ def _make_alert_fn():
             # fails the supervise outer try/except logs it.
             print(f"  ⚠️ watchdog: card alert send failed ({e}); falling back to text")
             _chat.send_text(chat_id,
-                            f"🚨 watchdog: {name} entered {cooldown_secs}s cooldown "
-                            f"after {failed_at} failed respawns",
+                            f"🚨 团队守护进程异常：{name} 连续 {failed_at} 次恢复失败，"
+                            f"已进入 {cooldown_secs}s 冷却，等待操作员恢复。",
                             profile=profile, as_user=False)
 
     return alert

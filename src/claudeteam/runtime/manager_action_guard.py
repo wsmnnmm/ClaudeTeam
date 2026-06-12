@@ -49,6 +49,36 @@ _RESEARCH_MARKERS = (
     "研究", "调研", "分析", "复盘", "整理", "对比", "策略",
     "导师", "刘小排", "亦仁", "资料", "课程",
 )
+_SELF_EXECUTION_ROUTES = {"visual", "design", "browser", "code", "research"}
+# Two-tier markers. High-confidence phrases unambiguously describe manager
+# self-execution ("I personally did X"). Low-confidence single verbs are
+# too easy to false-positive ("I ran a test", "I checked git log") so they
+# only count when paired with a tool/exec cue that confirms the manager
+# took over a worker-routed task.
+_SELF_EXECUTION_MARKERS_HIGH = (
+    "我已亲自",
+    "我亲自",
+    "我用sharp",
+    "我用 sharp",
+    "我直接拉",
+    "我图省事",
+    "我没走浏览器截图",
+)
+_SELF_EXECUTION_MARKERS_LOW = (
+    "我部署",
+    "我重启",
+    "我跑",
+    "我裁",
+    "我看后台",
+)
+# Co-cues that lift a low-confidence marker to high-confidence territory.
+# These are worker-routed exec actions (deploy, image edit, server ops)
+# — NOT generic dev commands like "git log" / "看了后台配置" which the
+# manager does as part of normal work and shouldn't false-positive.
+_SELF_EXECUTION_COCUES = (
+    "部署", "上线", "回滚", "重启", "服务",
+    "裁切", "裁图", "截图", "ssh", "scp",
+)
 
 
 def _state_file() -> Path:
@@ -129,6 +159,36 @@ def _ms(row: dict, key: str) -> int:
 def _clip(text: str, limit: int = 180) -> str:
     compact = " ".join(str(text or "").split())
     return compact if len(compact) <= limit else compact[:limit - 1].rstrip() + "…"
+
+
+def _compact(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def _looks_like_manager_self_execution(message: str) -> bool:
+    compact = _compact(message)
+    if any(marker in compact for marker in _SELF_EXECUTION_MARKERS_HIGH):
+        return True
+    # Low-confidence markers only escalate when a co-cue confirms the
+    # manager actually took over a worker-routed action (e.g. "我跑了一下
+    # git grep" alone is fine, "我跑了一下部署脚本" is a takeover).
+    if any(marker in compact for marker in _SELF_EXECUTION_MARKERS_LOW):
+        return any(cue in compact for cue in _SELF_EXECUTION_COCUES)
+    return False
+
+
+def _manager_self_execution_error_for_record(record: dict, message: str) -> str:
+    route_hint = str(record.get("route_hint") or "general")
+    if route_hint not in _SELF_EXECUTION_ROUTES:
+        return ""
+    if not _looks_like_manager_self_execution(message):
+        return ""
+    expected_owner = str(record.get("expected_owner") or "")
+    owner_text = expected_owner or "对应专岗"
+    return (
+        "manager self-execution is forbidden after boss read; "
+        f"this route must be delegated to {owner_text} before any boss-visible closure"
+    )
 
 
 def _format_age(ms: int) -> str:
@@ -212,6 +272,9 @@ def _compensating_action(record: dict) -> tuple[str, str, str] | None:
             continue
         kind = str(row.get("type") or "")
         if kind == "say":
+            if _manager_self_execution_error_for_record(
+                    record, str(row.get("content") or "")):
+                continue
             return "boss_say_compensated", "compensated manager boss-visible say", str(row.get("local_id") or "")
     return None
 
@@ -315,12 +378,31 @@ def mark_delegate(to_agent: str, message: str, *, task_id: str = "",
 
 def mark_boss_say(message: str, *, image: str = "", ref: str = "",
                   now_ms_fn: Callable[[], int] = now_ms) -> dict | None:
+    with _locked():
+        data = _load_state()
+        rows = _open_records(data)
+        target = _pick_open_record(rows)
+    if target is not None:
+        if _manager_self_execution_error_for_record(target, message):
+            return None
     detail = _clip(message or "", 140)
     if image:
         detail = f"{detail} [image={image}]" if detail else f"[image={image}]"
     return close_latest(
         "boss_say", detail, closed_by="manager->user",
         ref=ref, now_ms_fn=now_ms_fn)
+
+
+def boss_reply_self_execution_error(message: str) -> str:
+    if not enabled():
+        return ""
+    with _locked():
+        data = _load_state()
+        rows = _open_records(data)
+        target = _pick_open_record(rows)
+    if target is None:
+        return ""
+    return _manager_self_execution_error_for_record(target, message)
 
 
 def observe_public_manager_reply(message: str, *, ref: str = "",

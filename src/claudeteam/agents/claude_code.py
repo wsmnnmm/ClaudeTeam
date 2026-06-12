@@ -76,24 +76,35 @@ def _data_writable() -> bool:
 
 
 _EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+_AGENT_HOME_SETTINGS_OVERRIDE = "claude-code-settings.json"
 
 
 def _settings() -> dict:
     return config.load_claude_code_settings()
 
 
-def _third_party_env() -> dict[str, str]:
-    raw = _settings().get("env", {})
-    if not isinstance(raw, dict):
+def _agent_home_settings() -> dict:
+    path = paths.state_file(_AGENT_HOME_SETTINGS_OVERRIDE)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _third_party_env() -> dict[str, str]:
     envs: dict[str, str] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str):
+    for source in (_agent_home_settings(), _settings()):
+        raw = source.get("env", {})
+        if not isinstance(raw, dict):
             continue
-        name = key.strip()
-        if not name or value is None:
-            continue
-        envs[name] = str(value)
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            name = key.strip()
+            if not name or value is None:
+                continue
+            envs[name] = str(value)
     return envs
 
 

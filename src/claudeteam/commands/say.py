@@ -1092,6 +1092,13 @@ def _is_duplicate_message(agent: str, message: str,
     return False
 
 
+def _log_dedup(agent: str, message: str, image: str = "") -> None:
+    _append_log_best_effort(
+        agent, "say_deduped", _audit_content(message, image),
+        ref="say.dedup",
+    )
+
+
 def main(argv: list[str]) -> int:
     args = _parse(argv)
     if args is None:
@@ -1107,10 +1114,7 @@ def main(argv: list[str]) -> int:
 
     if _is_duplicate_message(args.agent, message):
         if args.local:
-            _append_log_best_effort(
-                args.agent, "say_deduped", _audit_content(message, args.image),
-                ref="say.dedup",
-            )
+            _log_dedup(args.agent, message, args.image)
         print(f"📝 {args.agent} → deduped (near-identical message sent recently)")
         return 0
 
@@ -1180,6 +1184,19 @@ def main(argv: list[str]) -> int:
 
     message, contract_check = _apply_response_contract_guard(args, message)
 
+    manager_self_exec_error = ""
+    if args.agent == "manager" and _role_of(args.to) == "user":
+        manager_self_exec_error = manager_action_guard.boss_reply_self_execution_error(
+            message
+        )
+    if manager_self_exec_error:
+        if args.local:
+            _append_log_best_effort(
+                args.agent, "say_blocked", _audit_content(message, args.image),
+                ref="chat.publish.manager_self_execution",
+            )
+        return error_exit(f"❌ {manager_self_exec_error}")
+
     quality_error = _boss_visible_quality_error(
         args.agent, args.to, message, image=args.image)
     if quality_error:
@@ -1199,6 +1216,11 @@ def main(argv: list[str]) -> int:
                     f"❌ {quality_error}; generated progress fallback was invalid: "
                     f"{fallback_error}"
                 )
+            if _is_duplicate_message(args.agent, fallback):
+                if args.local:
+                    _log_dedup(args.agent, fallback)
+                print(f"📝 {args.agent} → deduped (near-identical message sent recently)")
+                return 0
             result = _send_visible_card_or_text(args, fallback, chat, profile, agent_cfg)
             if result is None:
                 _record_send_failure(
@@ -1240,6 +1262,11 @@ def main(argv: list[str]) -> int:
             reason = f"Feishu image send failed for {args.agent}"
             if _can_send_progress_fallback(args.agent, args.to, reason):
                 fallback = _natural_progress_fallback(reason, image=args.image)
+                if _is_duplicate_message(args.agent, fallback):
+                    if args.local:
+                        _log_dedup(args.agent, fallback)
+                    print(f"📝 {args.agent} → deduped (near-identical message sent recently)")
+                    return 0
                 result = _send_visible_card_or_text(
                     args, fallback, chat, profile, agent_cfg)
                 if result is not None:

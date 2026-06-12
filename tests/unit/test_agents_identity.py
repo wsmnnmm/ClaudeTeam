@@ -53,6 +53,39 @@ def test_render_manager_slim_identity_profile_keeps_core_rules_shorter():
     assert "老板今天该做什么" not in slim
 
 
+def test_render_manager_slim_identity_uses_natural_boss_visible_examples():
+    team = {"agents": {"manager": {
+        "cli": "claude-code",
+        "model": "opus",
+        "role": "团队主管",
+        "identity_profile": "slim",
+    }}}
+    with isolated_env(team=team):
+        slim = identity.render("manager")
+    assert "cat <<'EOF' | bin/ct say manager - --to user\n结论：" not in slim
+    assert "结论：\n证据：\n下一步：\n需要老板：" not in slim
+    assert "默认 4 行骨架" not in slim
+    assert "不要把它们写成 `结论：`、`证据：`、`下一步：`、`需要老板：` 这种字段名发给老板" in slim
+    assert "我先接住这件事" in slim
+
+
+def test_render_manager_slim_identity_includes_process_anchor_for_multi_stage_work():
+    team = {"agents": {"manager": {
+        "cli": "claude-code",
+        "model": "opus",
+        "role": "团队主管",
+        "identity_profile": "slim",
+    }}}
+    with isolated_env(team=team):
+        slim = identity.render("manager")
+    assert "Xiaoqi-Process-Anchor" not in slim
+    assert "process_anchor" in slim
+    assert "current_phase" in slim
+    assert "artifact_purpose" in slim
+    assert "last_boss_correction_id" in slim
+    assert "discard_previous_plan" in slim
+
+
 def test_render_worker_slim_identity_profile_uses_skill_index_not_full_protocol():
     full = identity.render("worker_cc", role="frontend",
                            cli="claude-code", model="sonnet")
@@ -303,7 +336,7 @@ def test_manager_identity_dispatch_step_uses_to_user():
         text = identity.render("manager")
     # 派活流程 step 3 例子要带 --to user，并走 stdin 安全路径
     assert "bin/ct say manager - --to user" in text
-    assert "已派给 N 位" in text
+    assert "各自回报后我来收口" in text
     assert "stdin" in text
 
 

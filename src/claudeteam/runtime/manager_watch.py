@@ -793,34 +793,34 @@ def _build_c4_escalation_notice(rows: list[dict], now: int,
     oldest = min((_msg_ms(m, "created_at") for m in rows), default=now)
     oldest_age_ms = max(0, now - oldest)
     snippet = _clip(str(rows[0].get("content") or ""), 180)
-    runtime_state = _boss_safe_runtime_state(pane_state) or "主管前台状态异常"
+    runtime_state = _boss_safe_runtime_state(pane_state) or "团队响应通道异常"
 
     body = (
-        f"⏱ C4 唤醒升级：manager 已积累 {count} 条未读老板消息\n"
+        f"⏱ C4 唤醒升级：主管已积累 {count} 条未读老板消息\n"
         f"最早一条已过去：{_format_age(oldest_age_ms)}\n"
         f"最新老板消息：{snippet}\n\n"
         f"当前状态：{runtime_state}\n"
-        "⚠️ manager 可能已宕机/卡死/被限流，继续重复唤醒无意义。\n\n"
+        "⚠️ 主管可能已卡死或被限流，继续重复唤醒无意义。\n\n"
         "建议恢复动作（按顺序尝试）：\n"
         "1. 检查主管是否还在运行并能接收输入。\n"
         "2. 如果主管丢失或卡死，先恢复主管入口。\n"
         "3. 如果回复通道不稳定，等待冷却或切换可用通道。\n"
         "4. 如果以上都无效，再做全队重启。\n"
-        "5. 恢复后先处理最早的老板消息，不要被 worker 回执抢占。"
+        "5. 恢复后先处理最早的老板消息，不要被内部回执抢占。"
     )
     return OverdueNotice(
-        task_id=f"C4-{count}",
+        task_id="C4-boss-inbox-pileup",
         assignee="manager",
-        title=f"⏱ C4 唤醒升级：manager {count} 条老板消息未读",
+        title=f"⏱ C4 唤醒升级：主管 {count} 条老板消息未读",
         body=body,
-        public_title=f"⚠️ manager 可能已宕机：{count} 条老板消息未收口",
+        public_title="⚠️ 团队响应通道异常：老板消息未收口",
         public_body=(
-            f"系统发现 manager 已积累 {count} 条未读老板消息（最早 "
+            f"系统发现团队已积累 {count} 条老板消息未收口（最早 "
             f"{_format_age(oldest_age_ms)}）。\n"
-            f"当前状态：{runtime_state}。已停止重复唤醒，等待操作员恢复主管入口。\n"
-            "恢复后会先处理最早的老板消息，并给出真实进展、结果或 blocker。"
+            f"当前判断：{runtime_state}。系统已停止继续刷重复提醒，等待恢复后统一补收口。\n"
+            "你不用反复催同一件事；恢复后团队必须先补最早消息的真实进展、结果或卡点。"
         ),
-        public_key=f"c4:{count}|state:{runtime_state}",
+        public_key="c4:boss-inbox-pileup",
     )
 
 

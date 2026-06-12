@@ -446,6 +446,34 @@ def test_subprocess_env_keeps_proxy_when_no_proxy_unset():
     assert env.get("HTTPS_PROXY") == "http://x"
 
 
+def test_subprocess_env_injects_configured_proxy_url():
+    from claudeteam.runtime import tunables
+    tunables.reset_cache()
+    with env_patch(CLAUDETEAM_FEISHU_PROXY_URL="http://127.0.0.1:7897",
+                   HTTPS_PROXY=None, HTTP_PROXY=None, ALL_PROXY=None,
+                   LARK_CLI_NO_PROXY=None,
+                   CLAUDETEAM_CONFIG_FILE="/nonexistent/claudeteam.toml"):
+        env = lark.subprocess_env()
+    assert env.get("HTTPS_PROXY") == "http://127.0.0.1:7897"
+    assert env.get("HTTP_PROXY") == "http://127.0.0.1:7897"
+    assert env.get("ALL_PROXY") == "http://127.0.0.1:7897"
+
+
+def test_subprocess_env_configured_proxy_overrides_no_proxy():
+    from claudeteam.runtime import tunables
+    tunables.reset_cache()
+    with env_patch(CLAUDETEAM_FEISHU_PROXY_URL="http://127.0.0.1:7897",
+                   HTTPS_PROXY="http://old-proxy:7890",
+                   HTTP_PROXY="http://old-proxy:7890",
+                   ALL_PROXY="socks5://old-proxy:7897",
+                   LARK_CLI_NO_PROXY="1",
+                   CLAUDETEAM_CONFIG_FILE="/nonexistent/claudeteam.toml"):
+        env = lark.subprocess_env()
+    assert env.get("HTTPS_PROXY") == "http://127.0.0.1:7897"
+    assert env.get("HTTP_PROXY") == "http://127.0.0.1:7897"
+    assert env.get("ALL_PROXY") == "http://127.0.0.1:7897"
+
+
 def test_subprocess_env_pins_home_to_pw_dir():
     """Claude panes spawn with HOME=<state_dir>/agent-home/<agent> for
     ~/.claude.json isolation. When an agent inside such a pane runs
@@ -461,22 +489,47 @@ def test_subprocess_env_pins_home_to_pw_dir():
     assert env["HOME"] != "/data/agent-home/manager"
 
 
-def test_subprocess_env_strips_mismatched_profile_app_credentials():
+def test_subprocess_env_replaces_mismatched_creds_with_profile_creds():
     """If a pane inherited another team's Feishu app creds but is sending
-    through this team's lark profile, drop the inherited creds so lark-cli
-    uses the profile/keychain identity instead of the wrong bot."""
-    with attr_patch(lark, _profile_app_id=lambda profile, home=None: "cli_expected"), \
-            env_patch(FEISHU_APP_ID="cli_other",
-                      FEISHU_APP_SECRET="other-secret",
-                      LARKSUITE_CLI_APP_ID="cli_other",
-                      LARKSUITE_CLI_APP_SECRET="other-secret",
-                      LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-other"):
-        env = lark.subprocess_env(profile="work-assistant")
+    through this team's lark profile, drop the inherited creds and re-bind
+    to the profile's own app_id+app_secret so lark-cli auths as the right
+    bot. (Behavior tightened in 2026-06: the profile's own creds are now
+    injected back instead of leaving the env bare, so lark-cli doesn't
+    fall through to keychain in scenarios where we already have the
+    profile's secrets.)
+
+    Cache is pre-seeded so the bootstrap path uses it instead of
+    hitting the real Feishu API — keeps the test hermetic."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        base_cache = _cache_path(td)
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache), \
+                attr_patch(lark, _profile_app_id=lambda profile, home=None: "cli_expected"), \
+                attr_patch(lark, _profile_app_credentials=lambda profile, home=None: ("cli_expected", "expected-secret")), \
+                env_patch(FEISHU_APP_ID="cli_other",
+                          FEISHU_APP_SECRET="other-secret",
+                          LARKSUITE_CLI_APP_ID="cli_other",
+                          LARKSUITE_CLI_APP_SECRET="other-secret",
+                          LARKSUITE_CLI_TENANT_ACCESS_TOKEN="t-other"):
+            cache = lark._tenant_token_cache_path("cli_expected")
+            with open(cache, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "app_id": "cli_expected",
+                    "token": "t-expected",
+                    "expire_at": 9999999999,
+                }))
+            env = lark.subprocess_env(profile="work-assistant")
+    # inherited FEISHU_* are always stripped
     assert "FEISHU_APP_ID" not in env
     assert "FEISHU_APP_SECRET" not in env
-    assert "LARKSUITE_CLI_APP_ID" not in env
-    assert "LARKSUITE_CLI_APP_SECRET" not in env
-    assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env
+    # inherited LARKSUITE_CLI_APP_ID/SECRET are replaced with the profile's
+    # own values, not left bare (so lark-cli auths as the right bot even
+    # before token bootstrap finishes)
+    assert env.get("LARKSUITE_CLI_APP_ID") == "cli_expected"
+    assert env.get("LARKSUITE_CLI_APP_SECRET") == "expected-secret"
+    # the inherited token must never survive a cred swap
+    assert env.get("LARKSUITE_CLI_TENANT_ACCESS_TOKEN") != "t-other"
 
 
 # ── _resolve_timeout (env-driven default override) ────────────────
@@ -621,6 +674,37 @@ class _FetchRec:
     def __call__(self, *args, **kwargs):
         self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
         return self.result
+
+
+def test_fetch_tenant_token_retries_transient_network_errors():
+    import urllib.error
+    import urllib.request
+    from helpers import attr_patch
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"tenant_access_token":"tok_retry","expire":7200}'
+
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=0):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.URLError("temporary dns failure")
+        return _Resp()
+
+    with attr_patch(urllib.request, urlopen=fake_urlopen):
+        result = lark._fetch_tenant_token("cli_retry", "secret")
+
+    assert calls["n"] == 3
+    assert result is not None
+    assert result["token"] == "tok_retry"
 
 
 def test_ensure_tenant_token_returns_existing_env_unchanged():
@@ -793,6 +877,51 @@ def test_ensure_tenant_token_returns_none_when_fetch_fails():
         assert not os.path.exists(cache)
 
 
+def test_ensure_tenant_token_does_not_use_cache_beyond_stale_grace():
+    """The 5-minute stale-cache fallback must NOT extend forever — once
+    the cache has been expired past the grace window, return None instead
+    of a token that has likely been revoked server-side. Boundary check
+    for the 2026-06 robustness refactor."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "app_id": "cli_x",
+                "token": "t-too-stale",
+                "expire_at": 100,
+            }))
+        fetch = _FetchRec(result=None)
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            # 100s + 300s grace = 400. now=401 → past grace → None.
+            token = lark._ensure_tenant_token(fetch=fetch, now=lambda: 401,
+                                              cache_path=cache)
+        assert token is None
+
+
+def test_ensure_tenant_token_uses_recent_stale_cache_when_refresh_fails():
+    """If refresh fails but the cache only just crossed the refresh window,
+    keep using the cached token as a stability fallback."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "app_id": "cli_x",
+                "token": "t-stale-but-usable",
+                "expire_at": 180,
+            }))
+        fetch = _FetchRec(result=None)
+        with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_x", FEISHU_APP_SECRET="s"):
+            token = lark._ensure_tenant_token(fetch=fetch, now=lambda: 200,
+                                              cache_path=cache)
+        assert token == "t-stale-but-usable"
+
+
 def test_subprocess_env_injects_token_when_available():
     """End-to-end: subprocess_env feeds the token into the lark-cli env
     so every `call()` and the long-running subscribe both pick it up
@@ -888,3 +1017,30 @@ def test_subprocess_env_skips_token_when_no_app_id_resolvable():
             env = lark.subprocess_env()
         assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env
         assert "LARKSUITE_CLI_APP_ID" not in env
+
+
+def test_subprocess_env_uses_profile_credentials_when_env_missing():
+    """Host teams often rely on lark-cli profile storage instead of shell env.
+    subprocess_env should still bootstrap a tenant token from the selected
+    profile so router/catchup don't force lark-cli to auth live on every call."""
+    import json
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        base_cache = _cache_path(td)
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=base_cache), \
+             attr_patch(lark, _profile_app_credentials=lambda profile, home=None: ("cli_profile", "s-profile")), \
+             env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                       LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
+            cache = lark._tenant_token_cache_path("cli_profile")
+            with open(cache, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "app_id": "cli_profile",
+                    "token": "t-profile",
+                    "expire_at": 9999999999,
+                }))
+            env = lark.subprocess_env(profile="website-chuhai")
+        assert env.get("LARKSUITE_CLI_TENANT_ACCESS_TOKEN") == "t-profile"
+        assert env.get("LARKSUITE_CLI_APP_ID") == "cli_profile"
+        assert env.get("LARKSUITE_CLI_APP_SECRET") == "s-profile"

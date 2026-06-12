@@ -548,8 +548,11 @@ def _watch_catchup_heartbeat(chat: str, profile: str, loop_kwargs: dict,
     if interval_s <= 0:
         return
     failures = 0
+    consecutive_miss_hits = 0
     failure_reconnect_count = int(tunables.tunable(
         "router.catchup_failure_reconnect_count", 3))
+    miss_reconnect_count = int(tunables.tunable(
+        "router.catchup_miss_reconnect_count", 1))
     restart_on_miss = bool(tunables.tunable(
         "router.restart_on_catchup_miss", True))
     miss_grace_s = float(tunables.tunable(
@@ -561,6 +564,11 @@ def _watch_catchup_heartbeat(chat: str, profile: str, loop_kwargs: dict,
                                   label="catchup heartbeat")
         if stats is None:
             failures += 1
+            # Transport failure: don't credit a "miss" to the subscribe
+            # fast path. The miss counter only tracks real catchup hits;
+            # transport-level issues have their own failure_reconnect
+            # escalation path above.
+            consecutive_miss_hits = 0
             if (failure_reconnect_count > 0
                     and failures >= failure_reconnect_count):
                 print(
@@ -573,11 +581,20 @@ def _watch_catchup_heartbeat(chat: str, profile: str, loop_kwargs: dict,
         failures = 0
         last_transport_ok_at[0] = time.monotonic()
         if stats.handled <= 0:
+            # No missed messages this tick → reset the counter. A heartbeat
+            # that simply had nothing to catch up is a healthy read, not
+            # a sustained subscribe fast-path lag. The threshold
+            # miss_reconnect_count only escalates when the fast path
+            # *actually* missed messages for K consecutive heartbeats.
+            consecutive_miss_hits = 0
             continue
+        consecutive_miss_hits += 1
         print(
             "  ⚠️ catchup heartbeat handled "
             f"{stats.handled} missed message(s); subscribe fast path lagged")
-        if restart_on_miss and idle_before >= miss_grace_s:
+        if (restart_on_miss
+                and idle_before >= miss_grace_s
+                and consecutive_miss_hits >= max(1, miss_reconnect_count)):
             print("  🔁 restarting router to reconnect subscribe fast path")
             os.kill(os.getpid(), signal.SIGTERM)
             return

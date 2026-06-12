@@ -44,12 +44,14 @@ def test_make_alert_fn_sends_red_card_on_cooldown():
     card = sent["card"]
     assert card["header"]["template"] == "red"
     title = card["header"]["title"]["content"]
-    assert "router" in title and "cooldown" in title
+    assert "router" in title and "暂停重试" in title
     body = card["body"]["elements"][0]["content"]
     assert "router" in body
     assert "600s" in body
     assert "3" in body
-    assert "claudeteam health" in body
+    assert "老板动作：先不用处理内部命令" in body
+    assert "claudeteam" not in body
+    assert "down &&" not in body
 
 
 def test_make_alert_fn_falls_back_to_text_when_card_send_fails():
@@ -74,6 +76,7 @@ def test_make_alert_fn_falls_back_to_text_when_card_send_fails():
     assert len(text_sent) == 1
     assert "router" in text_sent[0]["text"]
     assert "300s" in text_sent[0]["text"]
+    assert "claudeteam" not in text_sent[0]["text"]
 
 
 def test_make_alert_fn_uses_lark_profile_from_runtime_config():

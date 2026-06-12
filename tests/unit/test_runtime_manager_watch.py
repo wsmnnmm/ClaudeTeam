@@ -889,14 +889,48 @@ def test_sweep_boss_inbox_c4_public_alert_hides_runtime_commands():
     assert "C4" in notice.title
     assert "主管回复通道不稳定" in notice.body
     assert "主管回复通道不稳定" in notice.public_body
-    assert "主管回复通道不稳定" in notice.public_key
+    assert notice.public_key == "c4:boss-inbox-pileup"
     for forbidden in (
         "provider/api error", "provider", "api", "pane", "ct ", "claudeteam",
-        "/srv", "stdin", "down &&", "restart manager",
+        "/srv", "stdin", "down &&", "restart manager", "manager", "worker",
     ):
         assert forbidden not in notice.body
         assert forbidden not in notice.public_body
         assert forbidden not in notice.public_key
+
+
+def test_sweep_boss_inbox_c4_public_alert_only_once_when_count_or_state_changes():
+    alerts = []
+    with isolated_env(team=_team()):
+        for text in ("第一条还没回", "第二条也没回", "第三条继续没回"):
+            local_id = local_facts.append_message(
+                "manager", "user", text, priority="高")
+            _age_inbox_message_to_epoch(local_id)
+        first = manager_watch.sweep_boss_inbox(
+            now_ms_fn=lambda: 601_000,
+            pane_state_fn=lambda agent: "provider/api error",
+            inject_manager_fn=lambda body: None,
+            alert_fn=lambda notice: alerts.append(notice),
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+        local_id = local_facts.append_message(
+            "manager", "user", "第四条也没回", priority="高")
+        _age_inbox_message_to_epoch(local_id)
+        second = manager_watch.sweep_boss_inbox(
+            now_ms_fn=lambda: 902_000,
+            pane_state_fn=lambda agent: "ready",
+            inject_manager_fn=lambda body: None,
+            alert_fn=lambda notice: alerts.append(notice),
+            overdue_s=300,
+            repeat_s=300,
+            public_overdue_s=300,
+        )
+
+    assert len(first) == 1
+    assert len(second) == 0
+    assert len(alerts) == 1
 
 
 def test_sweep_boss_inbox_suppresses_duplicate_until_repeat_window():

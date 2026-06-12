@@ -605,7 +605,8 @@ def _user_prompt(decision: Decision, topic_event: dict | None) -> str:
         '"response_contract":{"type":"quick_answer|research|verification|dispatch|clarification|blocker",'
         '"next_step":"下一条正式回复必须兑现的动作"}}。'
         "text 要讲清你理解了什么、先怎么处理、下一条会补什么证据；不要用标题、"
-        "项目符号、字段标签；不要说收到、排队中、马上处理这种空话；不要承诺已完成/"
+        "项目符号、字段标签；不要写“结论：/证据：/下一步：/需要老板：”这种公文标签；"
+        "要像真人主管当场接话，不像客服模板。不要说收到、排队中、马上处理这种空话；不要承诺已完成/"
         "已验收；不得扩写原话里没有出现的具体任务名或对象。"
         "contract 只选一个 type；next_step 不超过 40 字，必须具体到下一步动作。"
     )

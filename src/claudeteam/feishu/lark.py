@@ -60,6 +60,9 @@ _TENANT_TOKEN_URL = (
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
 _TENANT_TOKEN_CACHE = "/tmp/claudeteam_tenant_token.json"
 _TENANT_TOKEN_REFRESH_BUFFER_S = 60   # refetch when within 60s of expiry
+_TENANT_TOKEN_FETCH_RETRIES = 3
+_TENANT_TOKEN_FETCH_RETRY_SLEEP_S = 0.2
+_TENANT_TOKEN_STALE_GRACE_S = 300
 
 
 def _tenant_token_cache_path(app_id: str | None,
@@ -88,25 +91,34 @@ def _tenant_token_cache_path(app_id: str | None,
 
 def _profile_app_id(profile: str, *, home: str | None = None) -> str:
     """Return the app id configured for a lark-cli profile, if known."""
+    app_id, _ = _profile_app_credentials(profile, home=home)
+    return app_id
+
+
+def _profile_app_credentials(profile: str, *, home: str | None = None) -> tuple[str, str]:
+    """Return `(app_id, app_secret)` for a lark-cli profile, if known."""
     profile = (profile or "").strip()
     if not profile:
-        return ""
+        return "", ""
     root = home or pwd.getpwuid(os.getuid()).pw_dir
     path = os.path.join(root, ".lark-cli", "config.json")
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.loads(fh.read())
     except (OSError, json.JSONDecodeError):
-        return ""
+        return "", ""
     apps = data.get("apps") if isinstance(data, dict) else None
     if not isinstance(apps, list):
-        return ""
+        return "", ""
     for app in apps:
         if not isinstance(app, dict):
             continue
         if str(app.get("name") or "").strip() == profile:
-            return str(app.get("appId") or "").strip()
-    return ""
+            return (
+                str(app.get("appId") or "").strip(),
+                str(app.get("appSecret") or "").strip(),
+            )
+    return "", ""
 
 
 def _strip_mismatched_profile_credentials(env: dict[str, str],
@@ -146,11 +158,15 @@ def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
     req = urllib.request.Request(
         _TENANT_TOKEN_URL, data=body,
         headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
-    except (urllib.error.URLError, OSError, _json.JSONDecodeError):
-        return None
+    for attempt in range(_TENANT_TOKEN_FETCH_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            break
+        except (urllib.error.URLError, OSError, _json.JSONDecodeError):
+            if attempt >= _TENANT_TOKEN_FETCH_RETRIES - 1:
+                return None
+            _time.sleep(_TENANT_TOKEN_FETCH_RETRY_SLEEP_S * (attempt + 1))
     token = data.get("tenant_access_token")
     expire = int(data.get("expire", 0) or 0)
     if not token:
@@ -200,6 +216,7 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     cache_path = _tenant_token_cache_path(app_id, cache_path)
     now_fn = now or _time.time
     now_t = int(now_fn())
+    cached = None
     try:
         with open(cache_path, "r", encoding="utf-8") as fh:
             cached = _json.loads(fh.read())
@@ -214,6 +231,17 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
         return None
     fresh = (fetch or _fetch_tenant_token)(app_id, app_secret)
     if not fresh or not fresh.get("token"):
+        cached_token = ""
+        cached_expire_at = 0
+        cached_app_id = ""
+        if isinstance(cached, dict):
+            cached_token = str(cached.get("token") or "")
+            cached_expire_at = int(cached.get("expire_at", 0) or 0)
+            cached_app_id = str(cached.get("app_id") or "")
+        if (cached_token
+                and cached_app_id == app_id
+                and now_t - cached_expire_at <= _TENANT_TOKEN_STALE_GRACE_S):
+            return cached_token
         return None
     fresh = dict(fresh)
     fresh["app_id"] = app_id
@@ -245,6 +273,8 @@ def subprocess_env(profile: str | None = None) -> dict[str, str]:
     so the override is robust against env tampering by the caller.
     """
     env = os.environ.copy()
+    from claudeteam.runtime import tunables
+    proxy_url = str(tunables.tunable("feishu.proxy_url", "") or "").strip()
     # `feishu.no_proxy` cascade: legacy env LARK_CLI_NO_PROXY first
     # (predates tunables), then tunable lookup. Truthy => strip proxies.
     legacy = env_str("LARK_CLI_NO_PROXY").lower()
@@ -253,14 +283,26 @@ def subprocess_env(profile: str | None = None) -> dict[str, str]:
     elif legacy in {"0", "false", "no", "off"}:
         no_proxy = False
     else:
-        from claudeteam.runtime import tunables
         no_proxy = bool(tunables.tunable("feishu.no_proxy", False))
-    if no_proxy:
+    if proxy_url:
+        for key in _PROXY_KEYS:
+            env[key] = proxy_url
+    elif no_proxy:
         for key in _PROXY_KEYS:
             env.pop(key, None)
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     _strip_mismatched_profile_credentials(env, profile)
-    token = _ensure_tenant_token(source_env=env)
+    bootstrap_env = dict(env)
+    prof_app_id = ""
+    prof_app_secret = ""
+    if not (env.get("LARKSUITE_CLI_APP_ID") or env.get("FEISHU_APP_ID")):
+        prof = (profile or env.get("LARK_CLI_PROFILE") or "").strip()
+        prof_app_id, prof_app_secret = _profile_app_credentials(
+            prof, home=env.get("HOME"))
+        if prof_app_id and prof_app_secret:
+            bootstrap_env["LARKSUITE_CLI_APP_ID"] = prof_app_id
+            bootstrap_env["LARKSUITE_CLI_APP_SECRET"] = prof_app_secret
+    token = _ensure_tenant_token(source_env=bootstrap_env)
     if token:
         # lark-cli refuses to start if TENANT_ACCESS_TOKEN is set without a
         # matching LARKSUITE_CLI_APP_ID/SECRET pair — token alone gets
@@ -272,10 +314,10 @@ def subprocess_env(profile: str | None = None) -> dict[str, str]:
         # Propagate all three together; if app_id/secret aren't available
         # in env, skip injection and let lark-cli's profile/keychain
         # path take over.
-        app_id = (env.get("LARKSUITE_CLI_APP_ID")
-                  or env.get("FEISHU_APP_ID"))
-        app_secret = (env.get("LARKSUITE_CLI_APP_SECRET")
-                      or env.get("FEISHU_APP_SECRET"))
+        app_id = (bootstrap_env.get("LARKSUITE_CLI_APP_ID")
+                  or bootstrap_env.get("FEISHU_APP_ID"))
+        app_secret = (bootstrap_env.get("LARKSUITE_CLI_APP_SECRET")
+                      or bootstrap_env.get("FEISHU_APP_SECRET"))
         if app_id and app_secret:
             env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
             env["LARKSUITE_CLI_APP_ID"] = app_id

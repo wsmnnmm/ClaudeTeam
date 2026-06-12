@@ -70,6 +70,7 @@ def test_generate_text_uses_anthropic_alias_and_prompt_shape():
     assert captured["payload"]["model"] == "fast-model"
     assert "老板原话" in captured["payload"]["messages"][0]["content"]
     assert "不要说收到、排队中" in captured["payload"]["messages"][0]["content"]
+    assert "不要写“结论：/证据：/下一步：/需要老板：”这种公文标签" in captured["payload"]["messages"][0]["content"]
     assert result.contract["type"] == "verification"
     assert result.contract["next_step"]
 

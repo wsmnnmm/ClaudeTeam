@@ -116,6 +116,50 @@ def test_mark_boss_say_closes_open_record():
     assert rows[0]["closure_ref"] == "om_x"
 
 
+def test_mark_boss_say_does_not_close_self_execution_reply():
+    with isolated_env(team=_team()):
+        local_id = local_facts.append_message(
+            "manager", "user", "第 4 张图重做得更正式")
+        local_facts.mark_read(local_id)
+        manager_action_guard.record_boss_read(local_facts.get_message(local_id))
+
+        closed = manager_action_guard.mark_boss_say(
+            "我已亲自用 sharp 把主图裁了一版，正在继续部署。", ref="om_x")
+        rows = manager_action_guard.list_records()
+
+    assert closed is None
+    assert rows[0]["closed_at"] is None
+    assert rows[0]["closure_kind"] == ""
+
+
+def test_self_execution_detection_uses_two_tier_markers():
+    """High-confidence markers fire alone; low-confidence single-verb
+    markers need a co-cue (tool name) to count, otherwise we'd false-
+    positive on benign phrasings like '我跑了下 git log'."""
+    high = (
+        "我已亲自用 sharp 把主图裁了一版。",
+        "我亲自部署到生产。",
+        "我图省事没走浏览器截图。",
+    )
+    low_with_cue = (
+        "我跑了部署脚本，刚上线。",
+        "我重启了服务。",
+        "我裁切了原图，已经导出。",
+    )
+    benign = (
+        "我跑了一下 git log 看看最近改动。",
+        "我查了后台配置，没改。",
+        "我看后台日志了。",
+        "我跑测试通过。",
+    )
+    for msg in high:
+        assert manager_action_guard._looks_like_manager_self_execution(msg), msg
+    for msg in low_with_cue:
+        assert manager_action_guard._looks_like_manager_self_execution(msg), msg
+    for msg in benign:
+        assert not manager_action_guard._looks_like_manager_self_execution(msg), msg
+
+
 def test_observe_public_manager_reply_closes_open_record():
     with isolated_env(team=_team()):
         local_id = local_facts.append_message(
@@ -130,6 +174,32 @@ def test_observe_public_manager_reply_closes_open_record():
     assert rows[0]["closure_kind"] == "boss_say"
     assert rows[0]["closed_by"] == "manager->user"
     assert rows[0]["closure_ref"] == "om_manager_card"
+
+
+def test_sweep_does_not_compensate_self_execution_boss_reply():
+    with isolated_env(team=_team()):
+        local_id = local_facts.append_message(
+            "manager", "user", "第 4 张图重做得更正式")
+        local_facts.mark_read(local_id)
+        manager_action_guard.record_boss_read(local_facts.get_message(local_id))
+        local_facts.append_log(
+            "manager", "say",
+            "我已亲自用 sharp 把主图裁了一版，正在继续部署。",
+            ref="om_self_exec",
+        )
+        _age_record(local_id, read_at=0)
+
+        notices = manager_action_guard.sweep(
+            now_ms_fn=lambda: 181_000,
+            overdue_s=180,
+            repeat_s=300,
+            public_overdue_s=180,
+        )
+        rows = manager_action_guard.list_records()
+
+    assert len(notices) == 1
+    assert rows[0]["closed_at"] is None
+    assert rows[0]["closure_kind"] == ""
 
 
 def test_sweep_alerts_for_read_without_action_and_suppresses_duplicates():

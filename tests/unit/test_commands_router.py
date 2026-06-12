@@ -370,6 +370,48 @@ def test_catchup_heartbeat_reconnects_after_handling_missed_message():
     assert sigterms[0][1] == signal.SIGTERM
 
 
+def test_catchup_heartbeat_does_not_restart_on_single_miss_when_threshold_is_higher():
+    import threading
+    from claudeteam.commands import router as _r
+
+    applied = []
+    sigterms = []
+    line = _flat_event_line("om_catchup_once", "single late boss message")
+
+    class OneTick:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, _interval):
+            self.calls += 1
+            return self.calls > 1
+
+    with isolated_env(), \
+            env_patch(CLAUDETEAM_ROUTER_CATCHUP_POLL_INTERVAL_S="0.01",
+                      CLAUDETEAM_ROUTER_CATCHUP_MISS_RECONNECT_GRACE_S="0",
+                      CLAUDETEAM_ROUTER_CATCHUP_MISS_RECONNECT_COUNT="2"), \
+            attr_patch(_r.catchup, pending_lines=lambda *a, **kw: [line]), \
+            attr_patch(_r.os, kill=lambda pid, sig: sigterms.append((pid, sig))):
+        _watch_catchup_heartbeat(
+            "oc_x",
+            "prod",
+            {
+                "team_agents": ["manager"],
+                "chat_id": "oc_x",
+                "default_target": "manager",
+                "apply_fn": lambda decision: applied.append(decision),
+                "on_progress": lambda *a, **kw: None,
+                "seen_msg_ids": set(),
+            },
+            OneTick(),
+            [0.0],
+            [0.0],
+        )
+
+    assert len(applied) == 1
+    assert sigterms == []
+
+
 # ── help ────────────────────────────────────────────────────────
 
 
