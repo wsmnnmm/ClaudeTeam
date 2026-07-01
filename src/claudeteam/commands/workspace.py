@@ -6,13 +6,15 @@ audit log per agent.
 from __future__ import annotations
 
 from claudeteam.store import local_facts
-from claudeteam.util import fmt_time_ms, pop_flag, usage_error
+from claudeteam.util import fmt_time_ms, maybe_print_help, pop_flag, usage_error
 
 
 USAGE = "usage: claudeteam workspace <agent> [--limit N]"
 
 
 def main(argv: list[str]) -> int:
+    if maybe_print_help(argv, USAGE):
+        return 0
     if len(argv) < 1:
         return usage_error(USAGE)
     rest = list(argv)

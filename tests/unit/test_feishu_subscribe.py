@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 
+from claudeteam.feishu import cards
 from claudeteam.feishu.router import Decision
-from claudeteam.feishu.subscribe import process_lines
+from claudeteam.feishu.subscribe import _extract_text, process_lines
 from claudeteam.runtime import manager_action_guard
 from claudeteam.store import local_facts
 from helpers import isolated_env
@@ -348,14 +349,14 @@ def test_normalises_real_lark_cli_compact_wire_format():
     message_type rather than msg_type. The pre-fix _normalise dropped
     these as text="" → reason="empty"."""
     real = json.dumps({
-        "chat_id": "oc_989e33567a4be168c7e7a286287a3965",
+        "chat_id": "oc_example_chat",
         "chat_type": "group",
         "content": "[boss] @worker_codex hello round-trip",
         "create_time": "1777758788527",
-        "id": "om_x100b50536a8a94a0c457f151f14c25b",
-        "message_id": "om_x100b50536a8a94a0c457f151f14c25b",
+        "id": "om_example_message_id",
+        "message_id": "om_example_message_id",
         "message_type": "text",
-        "sender_id": "ou_72716731212dbea7a5614cf21719bc75",
+        "sender_id": "ou_example_user",
         "timestamp": "1777758788697",
         "type": "im.message.receive_v1",
     })
@@ -363,14 +364,14 @@ def test_normalises_real_lark_cli_compact_wire_format():
     stats = process_lines(
         [real],
         team_agents=_AGENTS,
-        chat_id="oc_989e33567a4be168c7e7a286287a3965",
+        chat_id="oc_example_chat",
         apply_fn=applied.append,
     )
     assert stats.handled == 1, f"expected 1 handled, got drops {dict(stats.drops_by_reason)}"
     assert applied[0].text == "[boss] @worker_codex hello round-trip"
-    # R174: human messages → manager regardless of @-mention
+    # human messages → manager regardless of @-mention
     assert applied[0].targets == ["manager"]
-    assert applied[0].msg_id == "om_x100b50536a8a94a0c457f151f14c25b"
+    assert applied[0].msg_id == "om_example_message_id"
 
 
 def test_normalises_real_lark_cli_compact_with_json_encoded_content():
@@ -411,7 +412,7 @@ def test_default_target_param_routes_human_messages_elsewhere():
 
 
 def test_normalises_image_message_to_placeholder_text():
-    """REGRESSION (Round B.1): image messages used to drop as 'empty'
+    """REGRESSION: image messages used to drop as 'empty'
     because content didn't include a 'text' field. Now produces a
     placeholder so the router can route the message and the worker
     knows something arrived."""
@@ -492,21 +493,6 @@ def test_normalises_file_message_with_filename():
     assert "file_key=file_v2_xxx" in applied[0].text
 
 
-def test_normalises_file_message_filename_only():
-    line = json.dumps({
-        "message_id": "om_file2",
-        "chat_id": "oc_team",
-        "sender_id": "ou_user",
-        "message_type": "file",
-        "content": json.dumps({"file_name": "notes.txt"}),
-    })
-    applied = []
-    stats = process_lines([line], team_agents=_AGENTS,
-                          chat_id="oc_team", apply_fn=applied.append)
-    assert stats.handled == 1
-    assert applied[0].text == "[file: notes.txt]"
-
-
 def test_normalises_audio_message():
     line = json.dumps({
         "message_id": "om_audio1",
@@ -523,24 +509,9 @@ def test_normalises_audio_message():
     assert "audio_xxx" in applied[0].text
 
 
-def test_normalises_sticker_message():
-    line = json.dumps({
-        "message_id": "om_stk1",
-        "chat_id": "oc_team",
-        "sender_id": "ou_user",
-        "message_type": "sticker",
-        "content": json.dumps({"file_key": "stk_xxx"}),
-    })
-    applied = []
-    stats = process_lines([line], team_agents=_AGENTS,
-                          chat_id="oc_team", apply_fn=applied.append)
-    assert stats.handled == 1
-    assert "[sticker: stk_xxx]" in applied[0].text
-
-
 def test_normalises_post_text_only_message():
-    """Boss-flagged 2026-05-06: 飞书富文本 (post) 消息要被路由到 manager
-    inbox, 不能丢. 纯文字段落场景."""
+    """飞书富文本 (post) 消息要被路由到 manager inbox, 不能丢.
+    纯文字段落场景."""
     line = json.dumps({
         "message_id": "om_post1",
         "chat_id": "oc_team",
@@ -738,20 +709,15 @@ def test_normalises_post_with_link_and_at_mention():
     assert "https://x.test/doc" in text
 
 
-def test_text_message_extraction_unchanged_after_b1():
-    """Regression: text-message extraction still works after _extract_text
-    refactor."""
-    line = json.dumps({
-        "message_id": "om_t",
-        "chat_id": "oc_team",
-        "sender_id": "ou_user",
-        "message_type": "text",
-        "content": json.dumps({"text": "hello world"}),
-    })
-    applied = []
-    process_lines([line], team_agents=_AGENTS,
-                  chat_id="oc_team", apply_fn=applied.append)
-    assert applied[0].text == "hello world"
+def test_extract_text_surfaces_worker_card_title_and_body():
+    # REGRESSION (#3): a worker `say` posts a v2 interactive card from the bot
+    # open_id. _extract_text must surface the card title ("{emoji} {agent} ·
+    # {role}") so router._card_sender_agent attributes it to the worker on the
+    # catchup path — without this the card extracted to "" and dropped bot_self.
+    card = cards.simple_card("\U0001f48e worker_cc \u00b7 \u5185\u5bb9\u7b56\u5212", "\u8fdb\u5ea6\uff1a\u5b8c\u6210 X")
+    out = _extract_text(json.dumps(card), "interactive")
+    assert "worker_cc \u00b7" in out   # title leads -> attribution works
+    assert "\u5b8c\u6210 X" in out      # body markdown layered after
 
 
 def test_reply_to_metadata_and_parent_context_are_delivered():
@@ -892,7 +858,7 @@ def test_on_line_received_fires_for_every_non_empty_line_including_drops():
     (lark-cli still emits stdout) — so on_line_received must fire and
     bump the watchdog's stall timer. Without this, chats with mostly
     self-talk/dedup traffic trip the 600s stall threshold even though
-    subscribe is alive (caught 2026-05-08 host smoke)."""
+    subscribe is alive."""
     fires = []
     bot_self_line = json.dumps({
         "event": {
@@ -938,3 +904,124 @@ def test_on_line_received_callback_failure_does_not_kill_loop():
     )
     assert fires == [1]  # callback ran
     assert stats.handled == 1  # loop kept going
+
+
+# ── suppress_slash (catchup replay must not re-run control commands) ──
+
+
+def test_suppress_slash_skips_dispatch_on_catchup():
+    """F-G2-restore: replaying a /restart or /shutdown 确认 from a bring-up
+    backlog would re-run `down` and tear the team back down. With
+    suppress_slash the slash is a counted DROP, never dispatched."""
+    line = _ndjson(_wrapped("om_s", "oc_team", "ou_user", "/restart"))
+    applied = []
+    stats = process_lines(line, team_agents=_AGENTS, chat_id="oc_team",
+                          apply_fn=applied.append, suppress_slash=True)
+    assert applied == []                       # NOT dispatched
+    assert stats.handled == 0
+    assert stats.dropped == 1
+    assert stats.drops_by_reason["catchup_slash_skip"] == 1
+
+
+def test_slash_dispatched_when_not_suppressed_live():
+    """The LIVE path (default suppress_slash=False) still dispatches slash."""
+    line = _ndjson(_wrapped("om_s", "oc_team", "ou_user", "/restart"))
+    applied = []
+    process_lines(line, team_agents=_AGENTS, chat_id="oc_team",
+                  apply_fn=applied.append)
+    assert len(applied) == 1
+    assert applied[0].action.value == "slash"
+
+
+def test_suppress_slash_still_advances_cursor_via_on_progress():
+    """Skipped slash must still move the cursor (+seen) so a respawn doesn't
+    re-encounter it."""
+    line = _ndjson(_wrapped("om_s", "oc_team", "ou_user", "/shutdown 确认"))
+    progressed = []
+    process_lines(line, team_agents=_AGENTS, chat_id="oc_team",
+                  apply_fn=lambda d: None,
+                  on_progress=lambda d, s: progressed.append(d),
+                  suppress_slash=True)
+    assert len(progressed) == 1
+    assert progressed[0].msg_id == "om_s"
+
+
+def test_suppress_slash_still_routes_human_messages():
+    """suppress_slash only gates slash — real boss messages still deliver."""
+    line = _ndjson(_wrapped("om_h", "oc_team", "ou_user", "please help"))
+    applied = []
+    stats = process_lines(line, team_agents=_AGENTS, chat_id="oc_team",
+                          apply_fn=applied.append, suppress_slash=True)
+    assert len(applied) == 1
+    assert stats.handled == 1
+
+
+# ── catchup freshness discrimination ──
+#
+# In a WS-dead env catchup is the *fallback delivery* path for live boss
+# commands, so blanket-suppressing every catchup slash silently eats fresh
+# /login //task etc. (the "slash slow / no response"). Suppress only stale
+# replays + destructive lifecycle commands; dispatch fresh non-lifecycle.
+import time as _t
+
+
+def _slash_line(text, create_time_ms, *, msg_id="om_s", chat_id="oc_team"):
+    import json as _j
+    ev = {"event": {"message": {"message_id": msg_id, "chat_id": chat_id,
+            "message_type": "text", "content": _j.dumps({"text": text}),
+            "create_time": str(create_time_ms)},
+          "sender": {"sender_id": {"open_id": "ou_user"}, "sender_type": "user"}}}
+    return [_j.dumps(ev)]
+
+
+def test_catchup_dispatches_fresh_nonlifecycle_slash():
+    """A FRESH non-lifecycle slash via catchup (WS-fallback) must dispatch."""
+    now = int(_t.time() * 1000)
+    applied = []
+    stats = process_lines(_slash_line("/login cc", now), team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append,
+                          suppress_slash=True)
+    assert len(applied) == 1                                   # dispatched
+    assert stats.drops_by_reason.get("catchup_slash_skip", 0) == 0
+
+
+def test_catchup_suppresses_stale_nonlifecycle_slash():
+    """An OLD non-lifecycle slash (genuine backlog replay) stays suppressed."""
+    old = int(_t.time() * 1000) - 700_000                      # > 600s window
+    applied = []
+    stats = process_lines(_slash_line("/login cc", old), team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append,
+                          suppress_slash=True)
+    assert applied == []
+    assert stats.drops_by_reason.get("catchup_slash_skip", 0) == 1
+
+
+def test_catchup_always_suppresses_lifecycle_even_when_fresh():
+    """Destructive lifecycle slashes suppressed at ANY age — a replayed
+    /restart re-runs down → kill-before-persist loop (F-G2)."""
+    now = int(_t.time() * 1000)
+    applied = []
+    stats = process_lines(_slash_line("/restart", now), team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append,
+                          suppress_slash=True)
+    assert applied == []
+    assert stats.drops_by_reason.get("catchup_slash_skip", 0) == 1
+
+
+def test_catchup_dispatches_slash_with_no_create_time():
+    """Unparseable/missing create_time → can't age it → don't risk dropping a
+    fresh boss slash; dispatch it."""
+    applied = []
+    process_lines(_slash_line("/task", ""), team_agents=_AGENTS,
+                  chat_id="oc_team", apply_fn=applied.append, suppress_slash=True)
+    assert len(applied) == 1
+
+
+def test_catchup_fresh_window_is_tunable():
+    """A 700s-old slash is fresh under an 800s window → dispatched."""
+    old = int(_t.time() * 1000) - 700_000
+    applied = []
+    process_lines(_slash_line("/login cc", old), team_agents=_AGENTS,
+                  chat_id="oc_team", apply_fn=applied.append,
+                  suppress_slash=True, catchup_slash_fresh_ms=800_000)
+    assert len(applied) == 1

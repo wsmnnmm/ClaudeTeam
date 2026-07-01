@@ -85,6 +85,20 @@ def capture_pane(target: Target, *, lines: int = 80, run: Callable = _default_ru
     return r.stdout if r.returncode == 0 else ""
 
 
+def pane_command(target: Target, *, run: Callable = _default_run) -> str:
+    """The pane's foreground process name (tmux `#{pane_current_command}`).
+
+    This is what the kernel says is running in the pane — `node` (claude /
+    codex / gemini / qwen), `python` / `uv` (kimi), or a shell (`bash` /
+    `zsh` …) once the CLI has exited. It's a process fact, not pane content,
+    so it's the dependable signal for "is the CLI still up?" without scraping
+    the TUI. Returns '' if the pane / window / session doesn't exist.
+    """
+    r = run(["tmux", "display-message", "-p", "-t", str(target),
+             "#{pane_current_command}"])
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def new_session(session: str, *, window: str = "manager",
                 detached: bool = True, run: Callable = _default_run) -> bool:
     args = ["tmux", "new-session"] + (["-d"] if detached else []) + [
@@ -130,20 +144,26 @@ def send_keys(target: Target, *keys: str, run: Callable = _default_run) -> bool:
 def inject(target: Target, text: str, *, submit_keys: list[str] | None = None,
            settle_ms: int = 200, sleep: Callable = time.sleep,
            run: Callable = _default_run) -> bool:
-    """Send `text` into the pane and submit it.
+    """Send `text` into the pane and submit it with the PRIMARY submit key.
 
-    Tries each key in `submit_keys` in order with a small settle pause.
+    Sends the literal text, settles, then sends `submit_keys[0]` only.
+    Sending the whole fallback list (Enter / C-m / C-j …) every time used to
+    leave trailing blank lines in a multi-line CLI's composer (codex) — that
+    was both the "extra newline before the next message" and a source of
+    unsubmitted-text pile-up. Verification + escalation through the rest of
+    the key list live in `wake.inject_and_confirm`; this stays a single
+    best-effort submit.
+
     Returns False if any subprocess call fails — callers can retry or
     surface the error.
     """
     if not send_text(target, text, run=run):
         return False
     sleep(settle_ms / 1000)
-    keys = submit_keys or ["Enter", "C-m", "C-j"]
-    for key in keys:
-        if not send_keys(target, key, run=run):
-            return False
-        sleep(settle_ms / 1000)
+    key = (submit_keys or ["Enter"])[0]
+    if not send_keys(target, key, run=run):
+        return False
+    sleep(settle_ms / 1000)
     return True
 
 

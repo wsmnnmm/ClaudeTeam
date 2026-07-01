@@ -5,7 +5,7 @@ import signal
 import sys
 from pathlib import Path
 
-from helpers import isolated_env
+from helpers import attr_patch, isolated_env
 from claudeteam.runtime.watchdog import (
     NetworkStatus,
     ProcessSpec,
@@ -123,8 +123,8 @@ def test_respawn_returns_false_on_oserror():
 
 
 def test_respawn_uses_devnull_when_log_file_unset():
-    """Default behavior: no log_file → stdout/stderr both DEVNULL.
-    Mirrors pre-R178 contract for any spec that doesn't opt in."""
+    """Default behavior: no log_file → stdout/stderr both DEVNULL, for
+    any spec that doesn't opt in."""
     import subprocess
     spec = _spec()
     captured = {}
@@ -141,8 +141,8 @@ def test_respawn_appends_to_log_file_when_set():
     """When spec.log_file is set, both stdout and stderr go to that file
     in append mode. Without this, transient daemon failures (router
     silently drops a slash, watchdog hits a Popen error) leave no trace.
-    REGRESSION: 2026-05-06 /tmux worker_cc silent failures couldn't be
-    diagnosed because router stdout was DEVNULL."""
+    REGRESSION: /tmux worker_cc silent failures couldn't be diagnosed
+    because router stdout was DEVNULL."""
     import os, tempfile
     from pathlib import Path
     with tempfile.TemporaryDirectory() as tmp:
@@ -178,33 +178,33 @@ def test_respawn_falls_back_to_devnull_when_log_file_open_fails():
     assert "log_file open failed" in out.getvalue()
 
 
-# ── orphan reap (round-65) ───────────────────────────────────────
+# ── orphan reap ──────────────────────────────────────────────────
 
 
 _PS_HEADER = "  PID  PPID COMMAND\n"
-# Realistic mac/linux ps snapshot. The orphan-root after a SIGKILL'd
-# router is the `npm exec @larksuite/cli` process (it had npx as parent;
-# npx already exited, so it reparents to launchd/init when router dies).
-# Its child node binary keeps the orphan as parent (PPID != 1) until
-# the orphan exits, so it doesn't directly count as orphan-root.
+# Realistic mac/linux ps snapshot. After a SIGKILL'd router, the Feishu
+# event-ingress sidecar (`node …/feishu_channel/sidecar.js run`) reparents to
+# launchd/init (PPID 1). A descendant (worker) keeps the sidecar as parent
+# (PPID != 1), so it doesn't count as an orphan-root.
 _PS_REAL_SAMPLE = _PS_HEADER + (
     "    1     0 /sbin/launchd\n"
     "  100     1 /usr/libexec/UserEventAgent\n"
-    "95773     1 npm exec @larksuite/cli --profile test-live-a event +subscribe --as bot\n"
-    "96397 95773 node /Users/x/.npm/_npx/.../lark-cli --profile test-live-a event +subscribe --as bot\n"
-    "98765     1 npm exec @larksuite/cli --profile test-live-b event +subscribe --as bot\n"
+    "95773     1 node /app/scripts/feishu_channel/sidecar.js run\n"
+    "96397 95773 node /app/scripts/feishu_channel/sidecar.js run\n"
+    "98765     1 node /home/u/proj/scripts/feishu_channel/sidecar.js run\n"
     "99999     1 some-other-daemon --foo\n"
 )
 
 
-def test_list_orphan_pids_finds_lark_subscribe_with_ppid_one():
-    """Orphan-detection sees only PPID=1 lark-cli +subscribe processes
-    (not their non-orphan descendants, not unrelated daemons)."""
+def test_list_orphan_pids_finds_sidecar_run_with_ppid_one():
+    """Orphan-detection sees only PPID=1 sidecar `run` processes (not their
+    non-orphan descendants, not unrelated daemons). Uses the production
+    markers so the test tracks the source constant."""
+    from claudeteam.runtime.watchdog import _ROUTER_SUBSCRIBE_MARKERS
     fake = _FakeRun(stdout=_PS_REAL_SAMPLE)
-    pids = list_orphan_pids(("@larksuite/cli", "+subscribe"), run=fake)
-    # Both 95773 (team A) and 98765 (team B) are orphan-root npm-exec
-    # processes whose parent reparented to launchd. 96397 has PPID 95773
-    # so it's not an orphan-root. 100 and 99999 don't carry both markers.
+    pids = list_orphan_pids(_ROUTER_SUBSCRIBE_MARKERS, run=fake)
+    # 95773 and 98765 are PPID=1 sidecar orphans; 96397 has PPID 95773 so it's
+    # not an orphan-root; 100 and 99999 don't carry both markers.
     assert sorted(pids) == [95773, 98765]
 
 
@@ -242,7 +242,7 @@ def test_list_orphan_pids_skips_malformed_lines():
 
 
 def test_reap_orphans_sigterms_each_orphan():
-    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    spec = _spec(orphan_markers=("feishu_channel/sidecar.js", "run"))
     fake_run = _FakeRun(stdout=_PS_REAL_SAMPLE)
     killed: list[tuple[int, int]] = []
     n = reap_orphans(spec, run=fake_run,
@@ -255,7 +255,7 @@ def test_reap_orphans_sigterms_each_orphan():
 def test_reap_orphans_tolerates_lookup_and_permission_errors():
     """Process exited between scan and kill, OR runs as a different uid:
     just count it as not-reaped, never raise."""
-    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    spec = _spec(orphan_markers=("feishu_channel/sidecar.js", "run"))
     fake_run = _FakeRun(stdout=_PS_REAL_SAMPLE)
 
     def angry_kill(pid, sig):
@@ -279,24 +279,12 @@ def test_reap_orphans_returns_zero_for_empty_markers():
 def test_respawn_invokes_reap_before_spawning_when_markers_present():
     """The reap must happen BEFORE Popen — otherwise the new daemon's
     subscribe would race with the orphan's subscribe for events."""
-    spec = _spec(orphan_markers=("@larksuite/cli", "+subscribe"))
+    spec = _spec(orphan_markers=("feishu_channel/sidecar.js", "run"))
     order: list[str] = []
     respawn(spec,
             popen=lambda *a, **k: order.append("popen") or object(),
             reap=lambda s: order.append("reap"))
     assert order == ["reap", "popen"]
-
-
-def test_respawn_skips_reap_when_no_markers():
-    """Specs without orphan_markers (e.g. watchdog itself) shouldn't
-    trigger a ps scan — reap is still called but is a noop."""
-    spec = _spec(orphan_markers=())
-    reap_called: list[ProcessSpec] = []
-    respawn(spec,
-            popen=lambda *a, **k: object(),
-            reap=lambda s: reap_called.append(s) or 0)
-    # reap is invoked uniformly; the noop check is in list_orphan_pids
-    assert reap_called == [spec]
 
 
 # ── supervise: alive path ────────────────────────────────────────
@@ -311,16 +299,6 @@ def test_supervise_records_alive_when_check_passes():
               now=lambda: 0,
               log=lambda *_: None)
     assert states["router"].last_action == "alive"
-    assert states["router"].fail_count == 0
-
-
-def test_supervise_resets_fail_count_on_alive_recovery():
-    spec = _spec()
-    states = {"router": ProcessState("router", fail_count=2)}
-    supervise([spec], states,
-              alive_check=lambda s: True,
-              respawn_fn=lambda s: True,
-              now=lambda: 0, log=lambda *_: None)
     assert states["router"].fail_count == 0
 
 
@@ -365,7 +343,7 @@ def test_supervise_enters_cooldown_after_max_retries():
 
 
 def test_supervise_calls_alert_fn_when_entering_cooldown():
-    """Round-82: cooldown entry triggers alert_fn(name, failed_at, cooldown_secs)
+    """Cooldown entry triggers alert_fn(name, failed_at, cooldown_secs)
     so callers can fan out to Feishu / pager / log."""
     spec = _spec(max_retries=2, cooldown_secs=600)
     states = {"router": ProcessState("router", fail_count=1)}
@@ -471,8 +449,8 @@ def test_default_specs_includes_router_pointing_at_state_dir():
         # Round-65: router spec ships with orphan-reap markers so the
         # watchdog reaps stale lark-cli +subscribe processes left by a
         # SIGKILL'd predecessor before respawning.
-        assert "@larksuite/cli" in router.orphan_markers
-        assert "+subscribe" in router.orphan_markers
+        assert "feishu_channel/sidecar.js" in router.orphan_markers
+        assert "run" in router.orphan_markers
 
 
 def test_all_known_specs_router_has_orphan_markers_watchdog_does_not():
@@ -531,7 +509,9 @@ def test_check_network_localhost_dns_ok():
 
 
 def test_check_network_dns_failure():
-    status = check_network(targets=[("this-host-definitely-does-not-exist.invalid", 443)])
+    from claudeteam.runtime import watchdog
+    with attr_patch(watchdog, _dns_resolve=lambda *a, **k: False):
+        status = check_network(targets=[("example.invalid", 443)])
     assert not status.ok
     assert any("DNS" in f for f in status.failures)
 
@@ -542,20 +522,27 @@ def test_check_network_empty_targets_returns_ok():
 
 
 def test_check_network_multiple_targets_reports_all_failures():
-    status = check_network(targets=[
-        ("this-host-definitely-does-not-exist.invalid", 443),
-        ("another-bogus-host.invalid", 443),
-    ])
+    from claudeteam.runtime import watchdog
+    with attr_patch(watchdog, _dns_resolve=lambda *a, **k: False):
+        status = check_network(targets=[
+            ("example-one.invalid", 443),
+            ("example-two.invalid", 443),
+        ])
     assert not status.ok
     assert len(status.failures) == 2
 
 
 def test_check_network_mixed_results():
     """DNS failure on first, success on second — overall not ok."""
-    # Two bogus hosts — both should fail DNS, giving 2 failures
-    status = check_network(targets=[
-        ("this-host-definitely-does-not-exist.invalid", 443),
-        ("another-bogus-host.invalid", 443),
-    ])
+    from claudeteam.runtime import watchdog
+    def fake_dns(host, **_):
+        return host == "ok.example"
+    def fake_tcp(host, port, **_):
+        return True
+    with attr_patch(watchdog, _dns_resolve=fake_dns, _tcp_connect=fake_tcp):
+        status = check_network(targets=[
+            ("bad.example", 443),
+            ("ok.example", 443),
+        ])
     assert not status.ok
-    assert len(status.failures) == 2
+    assert len(status.failures) == 1

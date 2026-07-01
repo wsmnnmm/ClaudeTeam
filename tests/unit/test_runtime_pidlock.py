@@ -61,8 +61,7 @@ def test_acquire_spin_waits_for_sigterm_in_progress_then_takes_over():
     immediately, the previous router is mid-shutdown — pid still alive
     in OS but the signal handler hasn't yet released the lock. Without
     a spin-wait, the new router refuses with 'another already running'.
-    Caught 2026-05-08 host smoke. Simulate by patching pid_alive to
-    flip to False mid-acquire."""
+    Simulate by patching pid_alive to flip to False mid-acquire."""
     import time as _time
     from claudeteam.runtime import pidlock as plk
     from helpers import attr_patch

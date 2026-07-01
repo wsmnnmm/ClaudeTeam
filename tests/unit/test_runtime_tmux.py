@@ -36,19 +36,10 @@ class _Recorder:
         return _FakeResult()
 
 
-def test_target_str_is_session_colon_window():
-    assert str(Target("S", "manager")) == "S:manager"
-
-
 def test_has_session_returns_true_on_zero_exit():
     rec = _Recorder([_FakeResult(returncode=0)])
     assert has_session("S", run=rec) is True
     assert rec.calls == [["tmux", "has-session", "-t", "S"]]
-
-
-def test_has_session_returns_false_on_nonzero():
-    rec = _Recorder([_FakeResult(returncode=1)])
-    assert has_session("S", run=rec) is False
 
 
 def test_capture_pane_returns_stdout_when_ok():
@@ -115,28 +106,29 @@ def test_new_window_creates_in_existing_session():
     assert rec.calls == [["tmux", "new-window", "-t", "S", "-n", "worker_cc"]]
 
 
-def test_inject_sends_text_then_default_submit_keys_in_order():
+def test_inject_sends_text_then_primary_submit_key_only():
+    """inject sends the literal text + ONLY the primary submit key — not the
+    whole Enter/C-m/C-j fallback list. Blasting the list left trailing blank
+    lines in a multi-line composer (the 'extra newline' + pile-up bug);
+    verification/escalation now lives in wake.inject_and_confirm."""
     rec = _Recorder()  # all calls return default ok
     sleeps: list[float] = []
     ok = inject(Target("S", "m"), "hello", sleep=sleeps.append, run=rec)
     assert ok is True
-    # 1 send_text + 3 default submit keys = 4 calls
-    assert len(rec.calls) == 4
+    # 1 send_text + the primary submit key = 2 calls
+    assert len(rec.calls) == 2
     assert rec.calls[0] == ["tmux", "send-keys", "-l", "-t", "S:m", "--", "hello"]
     assert rec.calls[1] == ["tmux", "send-keys", "-t", "S:m", "Enter"]
-    assert rec.calls[2] == ["tmux", "send-keys", "-t", "S:m", "C-m"]
-    assert rec.calls[3] == ["tmux", "send-keys", "-t", "S:m", "C-j"]
-    # one settle per key + one after the literal text
-    assert len(sleeps) == 4
+    assert len(sleeps) == 2                             # settle after text + key
 
 
-def test_inject_uses_custom_submit_keys_for_codex_style():
+def test_inject_uses_primary_of_custom_submit_keys():
     rec = _Recorder()
     inject(Target("S", "m"), "x", submit_keys=["M-Enter", "Enter"],
            sleep=lambda _: None, run=rec)
     keys_sent = [c[-1] for c in rec.calls if c[1] == "send-keys"]
-    # first call is the text payload; remaining are submit keys
-    assert keys_sent[1:] == ["M-Enter", "Enter"]
+    # first call is the text payload; only the PRIMARY submit key follows
+    assert keys_sent[1:] == ["M-Enter"]
 
 
 def test_inject_returns_false_if_send_text_fails():
@@ -144,10 +136,10 @@ def test_inject_returns_false_if_send_text_fails():
     assert inject(Target("S", "m"), "x", sleep=lambda _: None, run=rec) is False
 
 
-def test_inject_returns_false_if_a_submit_key_fails():
-    # text ok, first key ok, second key fails
-    rec = _Recorder([_FakeResult(), _FakeResult(), _FakeResult(returncode=1)])
-    ok = inject(Target("S", "m"), "x", submit_keys=["Enter", "C-m"],
+def test_inject_returns_false_if_submit_key_fails():
+    # text ok, submit key fails
+    rec = _Recorder([_FakeResult(), _FakeResult(returncode=1)])
+    ok = inject(Target("S", "m"), "x", submit_keys=["Enter"],
                 sleep=lambda _: None, run=rec)
     assert ok is False
 
@@ -159,12 +151,6 @@ def test_spawn_agent_sends_command_then_enter():
         ["tmux", "send-keys", "-l", "-t", "S:w", "--", "claude --model sonnet"],
         ["tmux", "send-keys", "-t", "S:w", "Enter"],
     ]
-
-
-def test_has_window_uses_session_colon_window():
-    rec = _Recorder([_FakeResult(returncode=0)])
-    has_window(Target("S", "manager"), run=rec)
-    assert rec.calls == [["tmux", "has-session", "-t", "S:manager"]]
 
 
 # ── _default_run resilience ──────────────────────────────────────

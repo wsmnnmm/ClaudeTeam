@@ -16,7 +16,7 @@ does the whole-state nuke; this is the per-agent scalpel.
 """
 from __future__ import annotations
 
-from claudeteam.store import memory
+from claudeteam.store import memory, team_memory
 from claudeteam.util import (
     error_exit, maybe_print_help, pop_bool_flag, pop_flag, usage_error,
 )
@@ -24,6 +24,8 @@ from claudeteam.util import (
 
 USAGE = (
     "usage: claudeteam forget <agent> [--kind K] [--yes]\n"
+    "       claudeteam forget --team --id <E-n>   (retire one shared entry)\n"
+    "       claudeteam forget --team --yes        (wipe all shared experience)\n"
     f"       known kinds: {memory.kinds_summary()}\n"
     "       (--kind drops only that slice; default = all entries)"
 )
@@ -34,7 +36,27 @@ def main(argv: list[str]) -> int:
     if maybe_print_help(rest, USAGE):
         return 0
     yes = pop_bool_flag(rest, "--yes")
+    team = pop_bool_flag(rest, "--team")
+    entry_id = pop_flag(rest, "--id") or ""
     kind = pop_flag(rest, "--kind") or ""
+
+    if team:
+        # Shared experience: --id retires a single entry (a targeted drop
+        # needs no --yes); wiping the whole pool still does.
+        if entry_id:
+            ok = team_memory.remove(entry_id)
+            print(f"🗑  team experience: retired {entry_id}" if ok
+                  else f"🤝 team: no entry {entry_id} to retire")
+            return 0
+        if not yes:
+            return error_exit(
+                "❌ refusing to wipe ALL team experience without --yes; run "
+                "`claudeteam recall --team` first, then re-run with --yes")
+        n = team_memory.clear()
+        print(f"🗑  team experience: wiped {n} entr{'ies' if n != 1 else 'y'}"
+              if n else "🤝 team: nothing to wipe")
+        return 0
+
     if len(rest) < 1:
         return usage_error(USAGE)
     agent = rest[0]

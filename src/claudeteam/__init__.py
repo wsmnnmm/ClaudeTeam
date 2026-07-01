@@ -1,3 +1,3 @@
-"""ClaudeTeam — multi-agent CLI orchestrator (clean-slate rebuild)."""
+"""ClaudeTeam — multi-agent CLI orchestrator."""
 
 __version__ = "0.0.0"

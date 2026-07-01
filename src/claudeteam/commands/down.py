@@ -34,8 +34,8 @@ def _stop_pid(name: str, pid: int, *, pid_file: Path | None = None) -> int:
     except PermissionError as e:
         return error_exit(f"❌ {name}: not allowed to kill pid {pid}: {e}")
 
-    # SIGTERM grace, then escalate to SIGKILL. Smoke v3: 3s wasn't enough
-    # for router/watchdog mid-lark-cli to flush — 10s catches the slow
+    # SIGTERM grace, then escalate to SIGKILL. 3s wasn't enough for
+    # router/watchdog mid-lark-cli to flush — 10s catches the slow
     # path; SIGKILL fallback guarantees `compose down` doesn't punt to
     # the operator.
     for _ in range(100):

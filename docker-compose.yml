@@ -1,14 +1,14 @@
 # Minimum-viable compose for ClaudeTeam.
 #
-# Mounts a host `./team-data/` directory into /data so team.json,
-# runtime_config.json, and the state dir survive `docker compose down`.
+# Mounts a host `./team-data/` directory into /data so claudeteam.toml
+# and the state dir survive `docker compose down`.
 # Mounts the host's lark-cli OAuth profile so `claudeteam say`/`router`
 # don't need a fresh authentication round inside the container.
 #
 # Usage:
-#   mkdir -p team-data && cd team-data && claudeteam init   # bootstrap once
-#   docker compose up -d
-#   docker compose exec claudeteam claudeteam up
+#   docker compose build && docker compose up -d            # build image + start
+#   docker compose exec --workdir /data claudeteam claudeteam init  # bootstrap → /data/claudeteam.toml
+#   docker compose exec claudeteam claudeteam up            # spawn the crew
 #   docker compose exec claudeteam claudeteam health
 #
 # Network: host mode lets lark-cli's long-poll reach Feishu without
@@ -19,7 +19,14 @@ services:
   claudeteam:
     build: .
     image: claudeteam:dev
+    # tini as PID 1 reaps orphaned <defunct> lark-cli/claudeteam zombies
+    # left by router self-respawn churn (macOS WS silent-drop loop).
+    # Without a reaper, PID 1 (`sleep infinity`) never wait()s them.
+    init: true
     volumes:
+      # NOTE: every host path below must already exist before `up -d` — Docker
+      # turns a missing *file* source into a directory and the app then breaks.
+      # Delete any mount for a CLI you don't run. See docs/DEPLOYMENT.md.
       # Bind-mount source RW so Python edits hot-reload without
       # `docker compose build`. Only rebuild for Dockerfile / deps
       # changes. RW (not :ro) because pip's `*.egg-info` writes into

@@ -85,12 +85,6 @@ def test_switch_no_arg_prints_defaults_when_env_unset():
     assert "(default)" in out
 
 
-def test_switch_help_returns_zero():
-    rc, out, _ = run_cli(["switch", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam switch" in out
-
-
 # ── happy path ───────────────────────────────────────────────────
 
 

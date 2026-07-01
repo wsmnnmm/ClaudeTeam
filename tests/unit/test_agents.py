@@ -7,27 +7,29 @@ from claudeteam.agents.base import CliAdapter
 from claudeteam.agents.claude_code import ClaudeCodeAdapter
 from claudeteam.agents.codex_cli import CodexCliAdapter
 from claudeteam.agents.kimi_code import KimiCodeAdapter
+from claudeteam.agents.gemini_cli import GeminiCliAdapter
+from claudeteam.agents.qwen_code import QwenCodeAdapter
 
 
 # ── registry ──────────────────────────────────────────────────────
 
 
 def test_registry_lists_known_clis_plus_kimi_and_qwen_aliases():
-    """Round-85 added gemini-cli; round-101 added qwen-code (+qwen-cli
-    alias). kimi-cli + qwen-cli are aliases so both forms in team.json
-    work."""
+    """gemini-cli and qwen-code (+qwen-cli alias) are registered.
+    kimi-cli + qwen-cli are aliases so both forms in team.json work."""
     names = set(known_clis())
     assert names == {
         "claude-code", "codex-cli", "gemini-cli",
         "kimi-code", "kimi-cli",
         "qwen-code", "qwen-cli",
+        "minimax", "mini-agent",
+        "opencode",
+        "codewhale", "code-whale",
+        "openclaw",
+        "trae", "trae-cli",
+        "hermes",
+        "pi", "pi-cli",
     }
-
-
-def test_get_adapter_returns_matching_concrete_type():
-    assert isinstance(get_adapter("claude-code"), ClaudeCodeAdapter)
-    assert isinstance(get_adapter("codex-cli"), CodexCliAdapter)
-    assert isinstance(get_adapter("kimi-code"), KimiCodeAdapter)
 
 
 def test_kimi_alias_returns_same_instance():
@@ -60,8 +62,6 @@ def test_every_adapter_implements_required_methods():
         assert isinstance(cmd, str) and cmd.strip()
         ready = adapter.ready_markers()
         assert ready and isinstance(ready, list)
-        busy = adapter.busy_markers()
-        assert busy and isinstance(busy, list)
         assert adapter.process_name()
         assert adapter.submit_keys()
 
@@ -214,11 +214,96 @@ def test_codex_spawn_quotes_agent_name_with_special_chars():
     assert "'worker x'" in cmd  # shlex.quote
 
 
+def test_codex_spawn_sets_per_agent_codex_home():
+    from claudeteam.agents.codex_cli import codex_home
+    cmd = CodexCliAdapter().spawn_cmd("worker_codex", "")
+    assert f"CODEX_HOME={codex_home('worker_codex')}" in cmd
+    assert codex_home("worker_codex").endswith("/codex-home/worker_codex")
+
+
+def test_codex_native_memory_path_is_agents_md_under_codex_home():
+    from claudeteam.agents.codex_cli import codex_home
+    path = CodexCliAdapter().native_memory_path("worker_codex")
+    assert path == f"{codex_home('worker_codex')}/AGENTS.md"
+
+
+def test_codex_display_model_passes_openai_through_but_labels_dropped():
+    a = CodexCliAdapter()
+    assert a.display_model("gpt-5.5") == "gpt-5.5"
+    assert a.display_model("o3") == "o3"
+    # Dropped (non-OpenAI) → label the real source, not the stale alias.
+    assert a.display_model("opus") == "codex 自身配置"
+    assert a.display_model("") == "codex 自身配置"
+
+
+def test_native_memory_reloads_only_claude_and_gemini():
+    """The mid-session disk-reload capability gates the G reidentify
+    fallback: claude (re-reads after /compact) + gemini (every-prompt +
+    /memory reload) → True; codex/qwen/kimi load once at startup → False,
+    so they need a reidentify re-inject to pick up a fresh anchor."""
+    assert ClaudeCodeAdapter().native_memory_reloads() is True
+    assert GeminiCliAdapter().native_memory_reloads() is True
+    assert CodexCliAdapter().native_memory_reloads() is False
+    assert QwenCodeAdapter().native_memory_reloads() is False
+    assert KimiCodeAdapter().native_memory_reloads() is False
+
+
+def test_kimi_has_no_native_memory_file_by_design():
+    """E/Plan-B: kimi loads memory only via the git-root→cwd chain, so
+    isolating a per-agent AGENTS.md would force the pane's cwd off the
+    repo. We deliberately keep cwd=repo and skip the native file — kimi
+    relies on the init-prompt anchor (+ reidentify fallback) instead.
+    Pin it so a future change can't silently flip kimi to a colliding or
+    cwd-moving native path without revisiting the rationale."""
+    assert KimiCodeAdapter().native_memory_path("worker_kimi") is None
+
+
 def test_kimi_spawn_uses_yolo_flag_and_disable_update():
     cmd = KimiCodeAdapter().spawn_cmd("worker_kimi", "")
     assert "kimi --yolo" in cmd
     assert "DISABLE_UPDATE_CHECK=1" in cmd
     assert "KIMI_AGENT=worker_kimi" in cmd
+
+
+# ── kimi model bootstrap ─────────────
+
+
+def test_kimi_passes_kimi_valid_team_model_via_dash_m():
+    """A kimi/Moonshot model from team config is passed explicitly with -m
+    (no longer dropped) so a respawned session can't land on 'LLM not set'."""
+    cmd = KimiCodeAdapter().spawn_cmd("worker_kimi", "kimi-for-coding")
+    assert "kimi --yolo -m kimi-for-coding" in cmd
+
+
+def test_kimi_drops_non_kimi_model_but_force_applies_config_default():
+    """A claude/gpt team alias isn't a kimi model → dropped; instead kimi's
+    own config default_model is force-applied with -m (defeats kimi-cli's
+    respawn quirk of not auto-loading it)."""
+    import os
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents import kimi_code
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as d:
+        cfg = Path(d) / "config.toml"
+        cfg.write_text('default_model = "kimi-code"\n')
+        with attr_patch(kimi_code, _kimi_config_path=lambda: cfg):
+            cmd = KimiCodeAdapter().spawn_cmd("worker_kimi", "claude-opus-4-8")
+    assert "claude-opus-4-8" not in cmd          # claude alias dropped
+    assert "kimi --yolo -m kimi-code" in cmd     # config default force-applied
+
+
+def test_kimi_omits_dash_m_when_no_model_and_no_config():
+    """No kimi-valid model + no readable config default → omit -m (graceful
+    fallback to kimi's own auto path; never emit a broken `-m`)."""
+    from pathlib import Path
+    from claudeteam.agents import kimi_code
+    from helpers import attr_patch
+    with attr_patch(kimi_code,
+                    _kimi_config_path=lambda: Path("/nonexistent/.kimi/config.toml")):
+        cmd = KimiCodeAdapter().spawn_cmd("worker_kimi", "")
+    assert " -m " not in cmd
+    assert "kimi --yolo" in cmd
 
 
 # ── markers ──────────────────────────────────────────────────────

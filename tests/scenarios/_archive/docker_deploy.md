@@ -3,7 +3,7 @@
 ## 场景
 
 把 ClaudeTeam 跑在容器里，state + 多种 OAuth credentials 通过 volume
-持久化。R168/R170 起，基础镜像 **预装** claude-code / codex / kimi-cli
+持久化。基础镜像 **预装** claude-code / codex / kimi-cli
 （避免每个派生镜像都得装一遍）；OAuth tokens 走 host bind-mount，从
 keychain 取出后直接挂进容器，不需要在容器内重新登录。
 
@@ -26,7 +26,7 @@ keychain 取出后直接挂进容器，不需要在容器内重新登录。
 
 ## When
 
-R172.b: a Makefile bundles the deploy flow so operators don't have to
+A Makefile bundles the deploy flow so operators don't have to
 remember the steps or worry about expired OAuth tokens.
 
 ```bash
@@ -76,9 +76,9 @@ docker compose exec claudeteam tmux attach -t ContainerA  # eyeball panes
 
 ## Why this is here
 
-CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。Now (R172.b):
+CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现：
 
-1. **基础镜像装好 claude / codex / kimi**（R168/R170）— derived images
+1. **基础镜像装好 claude / codex / kimi** — derived images
    could still skip the install but baseline ergonomics matter more.
 
 2. **OAuth bind-mounts not in-container login** — keychain reach broken
@@ -86,7 +86,7 @@ CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。Now (R172.b):
    find-generic-password` on the host and mounts the resulting file
    read-write into the container. Each `make deploy` refreshes.
 
-3. **Per-agent HOME=/data/agent-home/<agent>** (R172.b) — multiple
+3. **Per-agent HOME=state/agents/<agent>/home** — multiple
    panes sharing one ~/.claude.json corrupted on concurrent writes.
    Each agent now owns its own copy, seeded once from the host's
    ~/.claude.json (mounted RO at /root/host-claude.json).
@@ -98,20 +98,20 @@ CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。Now (R172.b):
 ## Known caveats
 
 - **macOS keychain → container reach**: lark-cli + claude-code both
-  store OAuth in keychain. R161 added a `_fetch_tenant_token`
-  fallback for lark-cli (env-driven app_id/secret bootstrap into a
-  cached tenant_access_token). R172.b's `make deploy` extracts
+  store OAuth in keychain. lark-cli has a `_fetch_tenant_token`
+  fallback (env-driven app_id/secret bootstrap into a
+  cached tenant_access_token). `make deploy` extracts
   claude's `Claude Code-credentials` keychain entry into
   `~/.claude/.credentials.json` (RW bind-mounted into container) so
   the in-container claude sees the same tokens.
 - **Token expiry**: claude tokens expire ~12h; refreshToken auto-renew
   works AS LONG AS the credentials file has a non-empty refreshToken
-  AND can be written. R172.b mounts RW so claude can refresh in-place
-  and the host keychain stays in sync (... mostly; if the host's
+  AND can be written. The container mounts RW so claude can refresh
+  in-place and the host keychain stays in sync (... mostly; if the host's
   active claude session also rotates, run `make creds` to re-extract).
 - **First-launch dialogs**: claude pops up to 3 onboarding dialogs
   (theme picker / auth-method picker / bypass-permissions confirm)
-  on a fresh ~/.claude.json. R172.b auto-Enters them in the
+  on a fresh ~/.claude.json. The deploy flow auto-Enters them in the
   `wait_until_ready` poll loop; `theme: "dark"` baked into
   /root/.claude/settings.json suppresses the picker on most runs.
 
@@ -120,8 +120,8 @@ CLAUDE.md item 18 (Dockerfile + compose) 的最小可行实现。Now (R172.b):
 - **多容器编排**：每个 agent 各自一容器、router 单独一容器 etc. ——
   现在的 ClaudeTeam runtime 把 router/watchdog/panes 共享一个 tmux
   session，改成多容器就要重新设计 IPC，留给 future 工作。
-- **CI/CD 集成**：smoke conductor 在容器里跑、push 镜像到 registry
-  这些都不在 B.3 范围内。手动 build + run 就够最小可行。
+- **CI/CD 集成**：在容器里跑冒烟测试、push 镜像到 registry
+  这些都不在范围内。手动 build + run 就够最小可行。
 - **Windows host**：Docker Desktop 上 host 网络只是部分模拟，lark-cli
   long-poll 可能要换 bridge + port-publish。Linux 上按上面 pattern
   直接能跑；macOS 上 build 需要 `docker build --network host`，并

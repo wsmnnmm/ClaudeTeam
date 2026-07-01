@@ -73,9 +73,8 @@ def acquire(pid_file: Path, *, name: str = "",
     old pid and refuses with "another instance already running".
     Spin-poll for up to a few seconds — long enough to ride out the
     typical sigterm cleanup, short enough that a genuinely-stuck
-    other-instance still surfaces an error promptly. 2026-05-08
-    fresh-host smoke caught this when an agent rapid-cycled the
-    deploy for §6/§7/§9 tests.
+    other-instance still surfaces an error promptly. This matters when
+    a deploy is rapid-cycled.
     """
     if pid_file.exists():
         old = read_pid(pid_file)

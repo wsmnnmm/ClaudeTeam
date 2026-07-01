@@ -79,7 +79,7 @@ def col_cell(content: str, weight: int = 1) -> dict:
     """Single column cell containing one markdown element.
 
     Kept for backwards-compat with any external callers; production
-    rebuild code path no longer uses this directly — see column_set_2
+    code paths no longer use this directly — see column_set_2
     / column_set_3 below for the inlined-markdown-row replacement."""
     return {"tag": "column", "width": "weighted", "weight": weight,
             "elements": [{"tag": "markdown",

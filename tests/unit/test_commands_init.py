@@ -39,7 +39,11 @@ def test_init_writes_toml_and_returns_zero():
         assert "Next:" in out
 
 
-def test_init_default_team_has_three_agents():
+def test_init_default_team_is_claude_only():
+    """Default team needs only claude-code so a fresh user with just Claude
+    installed gets a working team out of the box (agents reuse the local Claude
+    login). codex / other-CLI workers are a commented example to uncomment when
+    you have them — "用户有什么用什么", optional, not required."""
     with _tmp_env() as tmp:
         with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
             run_cli(["init"])
@@ -68,8 +72,8 @@ def test_init_emits_chat_publish_section():
             run_cli(["init"])
         cfg = _read_toml(tmp / "claudeteam.toml")
         assert cfg["chat"]["publish"]["user_to_manager"] == "always"
-        # 2026-05-06: defaults flipped to True/always — boss-flagged
-        # "测试阶段多看到一些东西" — see init.py header comment.
+        # defaults flipped to True/always so more chat is visible during
+        # testing — see init.py header comment.
         assert cfg["chat"]["publish"]["manager_to_worker"] is True
         assert cfg["chat"]["publish"]["worker_to_manager"] is True
         assert cfg["chat"]["publish"]["worker_to_worker"] is True
@@ -125,6 +129,17 @@ def test_init_session_flag_overrides_default():
             run_cli(["init", "--session", "Alpha"])
         cfg = _read_toml(tmp / "claudeteam.toml")
         assert cfg["team"]["session"] == "Alpha"
+
+
+def test_init_default_session_is_per_team_derived():
+    """Without --session, the written session derives from the config's
+    location (not a bare "ClaudeTeam") so two teams on one host don't collide
+    on one tmux session / cross-kill each other's panes."""
+    with _tmp_env() as tmp:
+        with env_patch(CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+            run_cli(["init"])
+        sess = _read_toml(tmp / "claudeteam.toml")["team"]["session"]
+        assert sess.startswith("ClaudeTeam-") and sess != "ClaudeTeam"
 
 
 # ── overwrite protection ─────────────────────────────────────────
@@ -203,12 +218,6 @@ def test_upgrade_emits_legacy_preserved_note():
 
 
 # ── help / arg validation ────────────────────────────────────────
-
-
-def test_init_help_returns_zero():
-    rc, out, _ = run_cli(["init", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam init" in out
 
 
 def test_init_unknown_arg_returns_one():

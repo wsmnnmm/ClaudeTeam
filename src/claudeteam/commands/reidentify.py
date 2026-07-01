@@ -1,27 +1,34 @@
-"""`claudeteam reidentify <agent>` — single agent
-`claudeteam reidentify --all`   — every agent in team.json with a live pane
+"""`claudeteam reidentify <agent> [--print]` — single agent
+`claudeteam reidentify --all [--print]`   — every agent in claudeteam.toml
+
+`--print` renders the agent's identity to stdout and stops — no live team
+needed, so you can preview/verify a freshly-edited config or playbook. Without
+it, reidentify re-injects the identity into running panes.
 
 Re-inject the identity init prompt into running agents' panes. Useful
 when an agent has just `/compact`'d its context and forgot who it is, or
-when an operator just edited `team.json` / identity templates and wants
+when an operator just edited `claudeteam.toml` / identity templates and wants
 the team to pick up the changes without `down` + `up`.
 
 Does NOT spawn a new pane or restart the CLI — only sends the init
 prompt as a fresh user message. The agent re-reads `identity.md` and
 re-introduces itself in chat.
 
-Round-91: `--all` flag added. Skips agents that don't have a live
-pane (lazy / fired) and prints one line per agent for visibility.
-Returns rc=0 only if every targeted agent re-injected successfully.
+The `--all` flag skips agents that don't have a live pane (lazy /
+fired) and prints one line per agent for visibility. Returns rc=0
+only if every targeted agent re-injected successfully.
 """
 from __future__ import annotations
 
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
-from claudeteam.util import error_exit, pop_bool_flag, usage_error
+from claudeteam.util import (
+    error_exit, maybe_print_help, pop_bool_flag, usage_error,
+)
 
 
-USAGE = "usage: claudeteam reidentify <agent>  |  claudeteam reidentify --all"
+USAGE = ("usage: claudeteam reidentify <agent> [--print]  |  "
+         "claudeteam reidentify --all [--print]")
 
 
 def _reidentify_one(agent: str, session: str, *,
@@ -70,7 +77,10 @@ def _reidentify_one(agent: str, session: str, *,
 
 def main(argv: list[str]) -> int:
     rest = list(argv)
+    if maybe_print_help(rest, USAGE):
+        return 0
     do_all = pop_bool_flag(rest, "--all")
+    do_print = pop_bool_flag(rest, "--print")
 
     # Argv validation first so existing single-agent error contracts
     # hold: `reidentify` (no arg) → usage_error;
@@ -83,7 +93,7 @@ def main(argv: list[str]) -> int:
     if do_all:
         agents_dict = config.load_team().get("agents", {})
         if not agents_dict:
-            return error_exit("❌ team.json has no agents")
+            return error_exit("❌ claudeteam.toml has no agents")
         agents = sorted(agents_dict)
     else:
         if len(rest) < 1:
@@ -92,8 +102,17 @@ def main(argv: list[str]) -> int:
         try:
             config.agent_config(agent)
         except KeyError:
-            return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
+            return error_exit(f"❌ unknown agent: {agent} (not in claudeteam.toml)")
         agents = [agent]
+
+    # --print: render the identity to stdout and stop — verifying a config
+    # (e.g. a freshly-edited playbook) shouldn't need a live tmux team.
+    if do_print:
+        for i, a in enumerate(agents):
+            if i:
+                print("\n" + "─" * 60 + "\n")
+            print(identity.render(a))
+        return 0
 
     session = config.session_name()
     if not tmux.has_session(session):

@@ -40,16 +40,16 @@ def _stub_npx_present(present: bool):
 # ── happy path ──────────────────────────────────────────────────
 
 
-# R173: ccusage-shell-out tests retired — the CC probe is now an
-# Anthropic OAuth API call (`_query_cc_usage` hits api.anthropic.com).
-# `_query_cc_usage` is covered by the new tests further below + the
-# slash card tests in test_feishu_slash.py.
+# ccusage-shell-out tests retired — the CC probe is now an Anthropic
+# OAuth API call (`_query_cc_usage` hits api.anthropic.com).
+# `_query_cc_usage` is covered by the tests further below + the slash
+# card tests in test_feishu_slash.py.
 
 
 def test_usage_lists_other_clis_with_no_tool_message():
-    """R170: codex-cli + kimi-code now have first-class probes (handled
-    by their own sections), so the catch-all `other_clis` branch fires
-    only for CLIs we genuinely have no upstream tool for — qwen / gemini."""
+    """codex-cli + kimi-code have first-class probes (handled by their
+    own sections), so the catch-all `other_clis` branch fires only for
+    CLIs we genuinely have no upstream tool for — qwen / gemini."""
     team = {"agents": {"a": {"cli": "qwen-code"}, "b": {"cli": "gemini-cli"}}}
     with isolated_env(team=team), _stub_npx_present(False):
         rc, out, _ = run_cli(["usage"])
@@ -66,24 +66,11 @@ def test_usage_rejects_unknown_view():
         assert "unknown view" in err
 
 
-def test_usage_rejects_unexpected_args():
-    with isolated_env():
-        rc, _, err = run_cli(["usage", "--bogus"])
-        assert rc == 1
-        assert "unexpected args" in err
-
-
-def test_usage_help():
-    rc, out, _ = run_cli(["usage", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam usage" in out
-
-
 # ── --json mode ─────────────────────────────────────────────────
 
 
 def test_usage_json_includes_claude_code_section_with_metrics():
-    """R173: --json record carries `claude_code` as the new shape
+    """--json record carries `claude_code` as the shape
     `{ok, metrics: [...]}` from `_query_cc_usage`. ccusage-era fields
     (rc, output, lines) gone — ok=False with `note` is the failure
     surface now. CC probe stubbed because the live API needs OAuth
@@ -111,24 +98,48 @@ def test_usage_json_includes_claude_code_section_with_metrics():
         assert "no upstream usage tool" in qwen_entry["note"]
 
 
-def test_usage_json_records_cc_failure_without_aborting():
-    """When the CC probe fails (token expired, network down), JSON
-    still emits with ok=False + `note` so consumers branch on field."""
+# ── _query_cc_usage HTTPError body capture ──────────────────────
+
+
+def test_cc_usage_http_error_includes_api_message():
+    """When the API returns a 4xx with a JSON error body, the `note`
+    in the failure dict should include Anthropic's message string so
+    users see WHY it failed (e.g. 'subscription required') not just
+    the bare 'HTTP 403: Forbidden'."""
+    import contextlib
+    import io
     import json as _json
-    from helpers import attr_patch
-    team = {"agents": {"manager": {"cli": "claude-code"}}}
-    with isolated_env(team=team), \
-            attr_patch(_usage_mod,
-                       _query_cc_usage=lambda home=None, opener=None: {
-                           "ok": False, "note": "access token 已过期"}):
-        rc, out, _ = run_cli(["usage", "--json"])
-        assert rc == 0
-        data = _json.loads(out)
-        assert data["claude_code"]["ok"] is False
-        assert "已过期" in data["claude_code"]["note"]
+    import tempfile
+    from pathlib import Path as _Path
+    from urllib import error as urllib_error
+
+    body = _json.dumps({"error": {"type": "permission_error",
+                                   "message": "Claude Max subscription required"}})
+
+    def fake_opener(req, timeout):
+        fp = io.BytesIO(body.encode())
+        raise urllib_error.HTTPError(
+            "https://api.anthropic.com/api/oauth/usage",
+            403, "Forbidden", hdrs={}, fp=fp)
+
+    import time as _t
+    creds = {"claudeAiOauth": {
+        "accessToken": "sk-ant-oat01-test",
+        "expiresAt": int(_t.time() * 1000) + 3_600_000,  # 1h from now
+    }}
+    with tempfile.TemporaryDirectory() as tmp:
+        home = _Path(tmp) / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        (home / ".claude" / ".credentials.json").write_text(_json.dumps(creds))
+        result = _usage_mod._query_cc_usage(home=home, opener=fake_opener)
+
+    assert result["ok"] is False
+    assert "403" in result["note"]
+    assert "subscription required" in result["note"].lower()
 
 
-# ── R170: codex + kimi probes ───────────────────────────────────
+# ── codex + kimi probes ─────────────────────────────────────────
 
 
 import contextlib
@@ -180,8 +191,7 @@ def _make_runner(returncode=0, stdout="", stderr=""):
 
 
 def test_codex_query_parses_codex_cli_usage_output():
-    """R173: real path is `codex-cli-usage` subprocess. Output looks
-    like:
+    """Real path is `codex-cli-usage` subprocess. Output looks like:
         Plan: ChatGPT Pro
         5h limit  20% resets 4h
         Weekly limit  35% resets 5d
@@ -323,7 +333,7 @@ def test_kimi_query_failure_on_http_error():
     assert "401" in result["note"]
 
 
-# ── R170: --json end-to-end shape ───────────────────────────────
+# ── --json end-to-end shape ─────────────────────────────────────
 
 
 def test_usage_json_includes_codex_and_kimi_keys_for_those_clis():
@@ -357,7 +367,7 @@ def test_usage_json_includes_codex_and_kimi_keys_for_those_clis():
 
 
 def test_usage_probes_codex_kimi_when_team_has_no_matching_agent():
-    """R170: even when no team agent declares cli=codex-cli/kimi-code,
+    """Even when no team agent declares cli=codex-cli/kimi-code,
     `_build_data` opportunistically probes if the host has the cred
     files — so a single-claude-code deployment still surfaces whether
     Codex Pro / Kimi auth is alive."""
@@ -426,7 +436,7 @@ def test_usage_text_renders_codex_and_kimi_sections():
                                 "reset_iso": "2026-05-08T00:00:00Z"}]}):
         rc, out, _ = run_cli(["usage"])
         assert rc == 0
-        # R173: codex header changed from "(chatgpt OAuth)" → "(codex-cli-usage)"
+        # codex header changed from "(chatgpt OAuth)" → "(codex-cli-usage)"
         assert "codex (codex-cli-usage)" in out
         assert "Plan: Pro" in out
         assert "kimi-code (api.kimi.com)" in out

@@ -36,7 +36,7 @@ def test_simple_card_normalizes_visible_newline_escapes():
 def test_simple_card_falls_back_to_blue_on_unknown_color():
     """Defensive — a typo or future palette change shouldn't bork rendering.
 
-    R166 expanded the palette to include `purple` / `orange` / `turquoise`
+    The palette expanded to include `purple` / `orange` / `turquoise`
     (used by /health server-load card), so use a genuinely-invalid name
     here to keep this test honest."""
     assert simple_card("X", "y", color="magenta")["header"]["template"] == "blue"
@@ -50,7 +50,7 @@ def test_simple_card_empty_body_becomes_space():
     assert card["body"]["elements"][0]["content"] == " "
 
 
-# ── beijing_stamp helper (R117 / R136-relocated) ─────────────────
+# ── beijing_stamp helper ─────────────────────────────────────────
 
 
 def test_beijing_stamp_renders_canonical_format():
@@ -71,15 +71,15 @@ def test_beijing_stamp_default_now_is_datetime_now():
     assert s[10] == " " and s[13] == ":"
 
 
-# ── fenced_block helper (R118 / R136-relocated) ──────────────────
+# ── fenced_block helper ──────────────────────────────────────────
 
 
 def test_fenced_block_wraps_text_in_triple_backticks():
-    """Helper for /health, /usage, /tmux body fencing. R159: card v2's
+    """Helper for /health, /usage, /tmux body fencing. Card v2's
     `markdown` element renders the standard GFM fenced block (triple
-    backticks) as a real code block — pre-R159 cards used `lark_md`
-    which silently dropped the fence to literal backtick text. Output
-    shape is unchanged; just the surrounding card schema swapped."""
+    backticks) as a real code block — the earlier `lark_md` cards
+    silently dropped the fence to literal backtick text. Output shape
+    is unchanged; just the surrounding card schema swapped."""
     assert fenced_block("alpha\nbeta") == "```\nalpha\nbeta\n```"
     # Empty string still produces a valid fence (Feishu rejects empty
     # element content; an empty fence renders as a 1-line empty code
@@ -105,10 +105,10 @@ def test_col_cell_wraps_content_in_weighted_column():
 
 
 def test_column_set_3_joins_cells_with_paragraph_breaks():
-    """R172.b: column_set rendering is broken in current Feishu (both
-    v1 and v2 collapse it to stacked paragraphs anyway), so column_set_3
-    now returns a single markdown element with cells separated by `\\n\\n`
-    paragraph breaks. Empty/blank cells are dropped."""
+    """column_set rendering is broken in current Feishu (both v1 and v2
+    collapse it to stacked paragraphs anyway), so column_set_3 returns a
+    single markdown element with cells separated by `\\n\\n` paragraph
+    breaks. Empty/blank cells are dropped."""
     from claudeteam.feishu.cards import column_set_3
     row = column_set_3(["**CPU**\n0%", "", "**Disk**\n10%"])
     assert row["tag"] == "markdown"
@@ -119,7 +119,7 @@ def test_column_set_3_joins_cells_with_paragraph_breaks():
 
 
 def test_column_set_2_joins_label_value_with_colon():
-    """R172.b: column_set_2 renders as one markdown line `<label>：<value>`
+    """column_set_2 renders as one markdown line `<label>：<value>`
     (full-width colon) so the bold-label + colored-value pair stays
     on a single visual row."""
     from claudeteam.feishu.cards import column_set_2
@@ -152,9 +152,9 @@ def test_remaining_color_inverse_thresholds():
 
 
 def test_rich_card_emits_v2_schema_with_body_elements():
-    """R172.b: rich_card stays on v2 (`schema:"2.0"` + `body.elements`).
-    R172.a briefly flipped to v1 thinking column_set rendered side-by-
-    side in v1 but not v2; reality is column_set is broken in BOTH
+    """rich_card stays on v2 (`schema:"2.0"` + `body.elements`).
+    An earlier attempt flipped to v1 thinking column_set rendered side-
+    by-side in v1 but not v2; reality is column_set is broken in BOTH
     schemas in current Feishu, so we dropped column_set entirely
     (cards.py column_set_2/3 now emit plain markdown rows) and kept
     v2 for its GFM features (fenced blocks, nested lists, font color
@@ -176,7 +176,7 @@ def test_rich_card_falls_back_to_placeholder_when_elements_empty():
 
 
 def test_simple_card_accepts_purple_after_R166():
-    """R166 added purple to _VALID_COLORS for /health card. Sanity:
+    """purple was added to _VALID_COLORS for the /health card. Sanity:
     simple_card propagates purple through _normalised_color."""
     from claudeteam.feishu.cards import simple_card
     assert simple_card("X", "y", color="purple")["header"]["template"] == "purple"

@@ -177,7 +177,7 @@ def classify_event(event: dict, *,
         return Decision(Action.DROP, reason="no_msg_id", **common)
     if seen_msg_ids is not None and msg_id in seen_msg_ids:
         return Decision(Action.DROP, reason="dedup", **common)
-    if chat_id and event.get("chat_id") and event["chat_id"] != chat_id:
+    if chat_id and event.get("chat_id") != chat_id:
         return Decision(Action.DROP, reason="cross_team", **common)
 
     raw_text = (event.get("text") or "").strip()
@@ -209,9 +209,17 @@ def classify_event(event: dict, *,
     # Slash command: matched at router level, NOT injected into any pane.
     # Deliver layer runs the registered handler and posts the result back
     # to chat as a bot reply. Zero LLM involvement.
-    slash_text = re.sub(r"^\s*\[[^\]]+\]\s*", "", raw_text)
-    if slash_text.startswith("/"):
-        return Decision(Action.SLASH, text=slash_text, **common)
+    slash_text = re.sub(r"^\s*\[[^\]]+\]\s*", "", raw_text)  # drop a leading [agent]
+    # Detect a `/...` line ANYWHERE in the message, not only at the very start:
+    # the @larksuite/channel chat-queue merges messages sent within ~600ms, so a
+    # boss who types a message then `/team` gets one blob `"…\n\n/team"`. Without
+    # this, the slash is swallowed into a routed text message. (Continuous text
+    # with no slash still routes to the manager as before.)
+    slash_line = next(
+        (ln.strip() for ln in slash_text.splitlines() if ln.strip().startswith("/")),
+        "")
+    if slash_line:
+        return Decision(Action.SLASH, text=slash_line, **common)
 
     sender, text = _parse_sender(raw_text, agents)
 

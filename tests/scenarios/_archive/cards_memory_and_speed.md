@@ -1,19 +1,18 @@
-# Cards / memory / watchdog alerts / speed (R79-R112 extended push)
+# Cards / memory / watchdog alerts / speed
 
-Coverage for the boss-directed extended push (rounds 79-112, 2026-05-04).
-Originally R79-R89; subsequent rounds (R90-R112) added complementary
-behaviours but kept the same scenario shape, hence the rolled-up doc.
+Coverage for the cards / memory / watchdog-alert / speed feature set.
+These behaviours were added incrementally but share the same scenario
+shape, hence the rolled-up doc.
 
 ## 场景
 
-The push delivered these operator-visible behaviours on top of the
-existing rebuild:
+This scenario covers these operator-visible behaviours:
 
 1. Slash replies (/help, /team, /health, /usage, /tmux) post Feishu
    **interactive cards** with health-aware header colours instead of
-   plain text blobs. Watchdog cooldown alerts also card-formatted (R98,
-   red header). R172.b: /recall + /forget slashes dropped (not in main,
-   not requested by boss); the CLI commands still ship for in-pane use.
+   plain text blobs. Watchdog cooldown alerts also card-formatted
+   (red header). The /recall + /forget slashes were dropped; the CLI
+   commands still ship for in-pane use.
 
 2. Watchdog **posts to Feishu chat** when a supervised daemon enters
    cooldown (max_retries failed respawns), now as a red card with
@@ -23,8 +22,7 @@ existing rebuild:
    `facts/<agent>/memory.jsonl` that survives `/clear` and pane restart.
    Memory auto-injects into the identity init prompt on next wake.
 
-4. **Memory CRUD slice trio** (R87/R92/R96/R107/R108/R111/R112), CLI
-   only after R172.b (slash form dropped):
+4. **Memory CRUD slice trio**, CLI only (slash form dropped):
    - `claudeteam remember <agent> <kind> "<content>" [--ref X]` — write
    - `claudeteam recall <agent> [--limit N] [--kind K] [--json]` — read
    - `claudeteam forget <agent> [--kind K] --yes` — drop
@@ -34,32 +32,32 @@ existing rebuild:
    anyway. `--help` for remember/recall/forget all advertise the
    convention.
 
-5. **lark-cli send latency 73s → 0.6s** (R86) by bypassing `npx`'s
+5. **lark-cli send latency 73s → 0.6s** by bypassing `npx`'s
    package-lookup overhead in favour of the direct binary in
    `~/.npm/_npx/<hash>/.bin/` (or whatever `which lark-cli` returns
    when `npm i -g @larksuite/cli`). Resolver in
    `feishu/lark.resolve_cli_prefix`.
 
-6. **`claudeteam say <agent> <msg> --card`** (R99) for card-formatted
+6. **`claudeteam say <agent> <msg> --card`** for card-formatted
    chat replies; manager → blue, worker_* → green template by
    convention. `_color_for(agent)` is the shared helper.
 
-7. **`claudeteam peek <agent> [N]`** (R103) — branded fast path for
+7. **`claudeteam peek <agent> [N]`** — branded fast path for
    the manager 5-min 巡视 cadence (replaces raw `tmux capture-pane`).
-   `/peek` install-hooks (R104).
+   `/peek` install-hooks.
 
-8. **5/5 adapter parity** with old main: `qwen-code` adapter (R101)
+8. **5/5 adapter parity** with old main: `qwen-code` adapter
    alongside claude-code / codex-cli / gemini-cli / kimi-code. Both
    `qwen-code` and `qwen-cli` resolve to the same instance.
 
-9. **Structured `--help`** (R93): `claudeteam --help` renders commands
+9. **Structured `--help`**: `claudeteam --help` renders commands
    grouped by `[bootstrap]` / `[team lifecycle]` / `[durable agent
    memory]` / etc. instead of a flat alphabetical wall.
 
-10. **`reidentify --all`** (R91) batches identity re-injection across
+10. **`reidentify --all`** batches identity re-injection across
     every agent in team.json with a live pane.
 
-Plus identity v2 (R85): manager body ported management discipline from
+Plus identity v2: manager body ported management discipline from
 old main (角色边界 / 秒回闭环 / 巡视核实 / 集合指令必须 dispatch / 沟通格式
 / 需求纪律 / 外部系统). Worker body teaches `remember` + memory-vs-log
 distinction. Manager 巡视 line now uses `claudeteam peek <agent>`
@@ -87,7 +85,7 @@ Send `/help` in the Feishu group from any account. Within ~1 second
 - A Feishu **interactive card**, NOT a plain message
 - Header in **blue**, title `🆘 ClaudeTeam 自定义斜杠命令`
 - Body listing every `/<cmd>` with description (v2 markdown element —
-  R159 migrated from v1 `lark_md` text tag, which silently dropped
+  migrated from the v1 `lark_md` text tag, which silently dropped
   fenced code blocks + nested lists)
 
 `/team` → green card if all agents are 💤 idle / 🔄 working, yellow
@@ -96,7 +94,7 @@ if any show ⚠️/🛑/❌; body has `<emoji> **<agent>**: <brief>` lines.
 `/health` → green card if `claudeteam health` output has no ❌/⚠️ glyph,
 yellow otherwise. Body wrapped in a fenced code block (` ``` … ``` `)
 which v2's markdown element renders as a real grey-background code
-block — pre-R159 the lark_md text tag showed the literal triple
+block — the older lark_md text tag showed the literal triple
 backticks instead.
 
 ## When — watchdog cooldown alert
@@ -146,7 +144,7 @@ print(memory.render_for_prompt('manager'))
 
 ```bash
 # Time a small lark-cli call. Should be ~0.6s on macOS host with
-# direct binary; was ~73s before R86 when we used `npx` blindly.
+# direct binary; was ~73s back when we used `npx` blindly.
 time lark-cli --profile <name> im +chat-search --as bot --query x
 
 # If still 73s, the resolver fell through to `npx` because no direct
@@ -159,7 +157,7 @@ npm install -g @larksuite/cli
 
 | Behaviour | Expected | Sign of failure |
 | --- | --- | --- |
-| `/help` in chat | Interactive card, blue header | Plain-text reply (smoke deploy still on old src; rsync src + restart router) |
+| `/help` in chat | Interactive card, blue header | Plain-text reply (deployment still on old src; rsync src + restart router) |
 | `/team` health colour | Green if all healthy, yellow if any ⚠️/🛑/❌ | Always blue → handler returning str instead of dict (slash.py drift) |
 | `/health` body | Code-fenced raw `claudeteam health` output | Empty / unfenced — _shell stderr, check claudeteam on PATH |
 | Watchdog cooldown | Feishu message starting `🚨 watchdog:` | No msg → `_make_alert_fn` returned None (chat_id unset) or send failed (check `lark-cli profile list`) |
@@ -178,12 +176,13 @@ npm install -g @larksuite/cli
 
 - Single-entry pruning (operator dropping ONE specific entry by id from
   the middle): not exposed yet. `claudeteam forget <agent> [--kind K]
-  --yes` (R96/R111) handles all-at-once or per-kind slice; per-id
+  --yes` handles all-at-once or per-kind slice; per-id
   surgery would need an entry index in memory.jsonl that today's
   schema doesn't have.
 - Cards with buttons / actions: this push only adds static info cards.
   Action-buttons would require an event handler at the router level for
   `card.action.trigger` events.
-- Multi-platform direct-binary auto-install: R86 picks an existing
-  binary; if none is present anywhere, falls back to `npx` (works but
-  slow). Operators on a clean machine should `npm i -g @larksuite/cli`.
+- Multi-platform direct-binary auto-install: the resolver picks an
+  existing binary; if none is present anywhere, falls back to `npx`
+  (works but slow). Operators on a clean machine should
+  `npm i -g @larksuite/cli`.

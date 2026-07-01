@@ -1,4 +1,4 @@
-"""End-to-end in-process integration test for the rebuild.
+"""End-to-end in-process integration test.
 
 Wires `feishu.subscribe.process_lines` (real) → `feishu.deliver.apply`
 (real) → `local_facts` (real, isolated tempdir) and a fake tmux.inject so
@@ -32,7 +32,7 @@ def _fake_chat_send():
         return {"message_id": "om_fake"}
 
     def fake_card(chat_id, card, **kw):
-        # R159: card v2 shape — body lives at `body.elements[0].content`
+        # card v2 shape — body lives at `body.elements[0].content`
         # (was `elements[0].text.content` in v1).
         body = ""
         try:
@@ -149,9 +149,9 @@ def test_human_message_lands_in_manager_inbox_and_pane():
         # manager pane received an inject
         manager_inj = [c for c in inj["calls"] if c["target"] == "SmokeTeam:manager"]
         assert len(manager_inj) == 1
-        # R172.b: deliver wraps chat messages with a routing hint so the
-        # agent posts replies via `claudeteam say` instead of answering
-        # in pane. The original message body still appears verbatim.
+        # deliver wraps chat messages with a routing hint so the agent
+        # posts replies via `claudeteam say` instead of answering in
+        # pane. The original message body still appears verbatim.
         assert "please help" in manager_inj[0]["text"]
         assert "bin/ct say manager" in manager_inj[0]["text"]
         # ClaudeCodeAdapter uses the default ["Enter", "C-m", "C-j"]
@@ -161,10 +161,10 @@ def test_human_message_lands_in_manager_inbox_and_pane():
 # ── Scenario B: @-mention worker_codex ───────────────────────────
 
 
-def test_mention_now_routes_to_manager_only_r174():
-    """R174: `@worker_codex review` from boss no longer fans out to
-    codex directly — it goes to manager, who decides whether to
-    dispatch via `claudeteam send`."""
+def test_mention_now_routes_to_manager_only():
+    """`@worker_codex review` from boss no longer fans out to codex
+    directly — it goes to manager, who decides whether to dispatch via
+    `claudeteam send`."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_mention_1", "ou_user", "@worker_codex review")
         _run_lines([line])
@@ -209,8 +209,8 @@ def test_message_from_other_chat_is_ignored():
 
 
 def test_mixed_traffic_classifies_each_event_correctly():
-    """R174: ALL human messages → manager (`@worker_X` is now content,
-    not routing). 3 handled events all land in manager's inbox."""
+    """ALL human messages → manager (`@worker_X` is now content, not
+    routing). 3 handled events all land in manager's inbox."""
     with _isolated(), _fake_inject() as inj:
         events = [
             _ndjson_event("om_1", "ou_user", "task A"),                  # → manager
@@ -232,13 +232,13 @@ def test_mixed_traffic_classifies_each_event_correctly():
         assert len(local_facts.list_messages("worker_codex")) == 0
 
 
-# ── Scenario F: R174 — broadcast triggers route to manager only ───
+# ── Scenario F: broadcast triggers route to manager only ─────────
 
 
-def test_at_team_routes_to_manager_only_r174():
-    """R174: `@team` from boss → manager only. Manager parses the
-    intent and decides whether to fan-out via `claudeteam send` per
-    worker. Workers get nothing from the router for this event."""
+def test_at_team_routes_to_manager_only():
+    """`@team` from boss → manager only. Manager parses the intent and
+    decides whether to fan-out via `claudeteam send` per worker. Workers
+    get nothing from the router for this event."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_bcast_1", "ou_user", "@team standup at 3pm")
         stats = _run_lines([line])
@@ -253,9 +253,9 @@ def test_at_team_routes_to_manager_only_r174():
         assert "@team" in manager_inj[0]["text"]
 
 
-def test_chinese_quanti_prefix_routes_to_manager_only_r174():
-    """`全体X` from boss → manager only (was BROADCAST in R172.b,
-    now ROUTE per R174)."""
+def test_chinese_quanti_prefix_routes_to_manager_only():
+    """`全体X` from boss → manager only (broadcast tokens now ROUTE to
+    manager)."""
     with _isolated(), _fake_inject() as inj:
         line = _ndjson_event("om_bcast_2", "ou_user", "全体注意：今晚封版")
         _run_lines([line])
@@ -270,8 +270,8 @@ def test_chinese_quanti_prefix_routes_to_manager_only_r174():
 def test_slash_help_does_not_touch_inboxes_or_panes():
     """`/help` is recognised at the router level → bot reply only,
     no inbox row, no pane inject. This is the core "zero LLM" promise.
-    Round-79: /help now sends a card (kind="card"); cards don't carry
-    reply_to (Feishu interactive cards don't thread)."""
+    /help sends a card (kind="card"); cards don't carry reply_to
+    (Feishu interactive cards don't thread)."""
     with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
         line = _ndjson_event("om_help_1", "ou_user", "/help")
         stats = _run_lines([line])
@@ -290,9 +290,9 @@ def test_slash_help_does_not_touch_inboxes_or_panes():
 
 
 def test_slash_with_sender_prefix_still_recognised():
-    """REGRESSION (round A2 B1): `say` wraps outbound text with
-    `[<sender>] ...`. The router pre-strips that prefix before checking
-    for `/`, so `[boss] /help` still dispatches as a slash command."""
+    """REGRESSION: `say` wraps outbound text with `[<sender>] ...`. The
+    router pre-strips that prefix before checking for `/`, so
+    `[boss] /help` still dispatches as a slash command."""
     with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
         line = _ndjson_event("om_slash_2", "ou_user", "[boss] /help")
         _run_lines([line])
@@ -397,10 +397,10 @@ def test_image_with_at_mention_caption_routes_to_mentioned_worker():
 def test_lazy_pane_wake_fn_invoked_then_inject_proceeds():
     """When deliver.apply is wired with a wake_fn (production: the
     router daemon passes wake.wake_if_dormant), a Decision that targets
-    a lazy worker should trigger the wake before the inject. R174:
-    router only routes to manager from chat — but `claudeteam send`
-    + watchdog respawn paths still construct ROUTE Decisions targeting
-    workers directly, so this still matters. Verify wake_fn fires."""
+    a lazy worker should trigger the wake before the inject. The router
+    only routes to manager from chat — but `claudeteam send` + watchdog
+    respawn paths still construct ROUTE Decisions targeting workers
+    directly, so this still matters. Verify wake_fn fires."""
     from claudeteam.feishu.router import Action, Decision
     wake_calls = []
 

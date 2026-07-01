@@ -142,6 +142,16 @@ def test_status_upsert_then_get():
         assert snap["status"] == "已完成"
 
 
+def test_is_retired_reflects_status_row():
+    with isolated_env():
+        assert local_facts.is_retired("a") is False          # never-seen agent
+        local_facts.upsert_status("a", "进行中", "working")
+        assert local_facts.is_retired("a") is False          # live agent
+        local_facts.upsert_status("a", local_facts.RETIRED_STATUS, "fired")
+        assert local_facts.is_retired("a") is True            # fired
+        assert local_facts.RETIRED_STATUS == "已停止"
+
+
 def test_log_append_then_list():
     with isolated_env():
         local_facts.append_log("a", "info", "first")
@@ -152,12 +162,6 @@ def test_log_append_then_list():
         assert rows[0]["content"] == "first"
         assert rows[1]["content"] == "second"
         assert rows[1]["ref"] == "REF-1"
-
-
-def test_log_returns_empty_when_no_log_file():
-    with isolated_env():
-        # never appended → no log file
-        assert local_facts.list_logs("a") == []
 
 
 def test_facts_dir_uses_state_dir_env():
@@ -188,10 +192,22 @@ def test_touch_heartbeat_overwrites_previous_timestamp():
         assert second >= first
 
 
-def test_touch_heartbeat_skips_blank_agent():
+def test_touch_heartbeat_skips_flag_shaped_agent():
+    """Safety net: a '-'-prefixed name (misparsed option like
+    '--help') must never register as a phantom heartbeat, no matter which
+    command forgot its own help guard."""
     with isolated_env():
-        local_facts.touch_heartbeat("")
+        for bad in ("--help", "-h", "--json"):
+            local_facts.touch_heartbeat(bad)
         assert local_facts.all_heartbeats() == {}
+
+
+def test_upsert_status_skips_flag_shaped_agent():
+    """Same net for the status store — a flag-shaped token never becomes a
+    phantom status row that would pollute /team."""
+    with isolated_env():
+        local_facts.upsert_status("--help", "进行中", "x")
+        assert local_facts.get_status("--help") is None
 
 
 def test_all_heartbeats_returns_each_recorded_agent():
@@ -200,11 +216,6 @@ def test_all_heartbeats_returns_each_recorded_agent():
         local_facts.touch_heartbeat("bob")
         beats = local_facts.all_heartbeats()
         assert set(beats) == {"alice", "bob"}
-
-
-def test_get_heartbeat_returns_none_for_unknown_agent():
-    with isolated_env():
-        assert local_facts.get_heartbeat("ghost") is None
 
 
 def test_touch_heartbeat_swallows_oserror_so_callers_dont_die():

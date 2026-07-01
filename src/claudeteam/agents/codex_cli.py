@@ -10,16 +10,21 @@ import os
 import shlex
 from pathlib import Path
 
-from .base import CliAdapter, SPINNER_CHARS
+from .base import AuthSlots, CliAdapter, SPINNER_CHARS
+from claudeteam.runtime import paths
+
+
+def codex_home(agent: str) -> str:
+    return str(paths.codex_home_dir(agent))
 
 
 def ensure_workdir_trusted(workdir: Path,
                            config_path: Path | None = None) -> None:
-    """Pre-trust `workdir` in ~/.codex/config.toml so the first-run
+    """Pre-trust `workdir` in CODEX_HOME/config.toml so the first-run
     "Do you trust this directory?" prompt doesn't block a freshly-spawned
     pane. Idempotent: a no-op if the entry already exists.
 
-    `config_path` is injectable for tests.
+    `config_path` is injectable for tests (and per-agent provisioning).
     """
     if config_path is not None:
         cfg = config_path
@@ -49,7 +54,23 @@ class CodexCliAdapter(CliAdapter):
         if model and any(model.startswith(p) for p in _OPENAI_PREFIXES):
             args += ["--model", model]
         quoted = " ".join(shlex.quote(a) for a in args)
-        return f"CODEX_AGENT={shlex.quote(agent)} codex {quoted}"
+        return (f"CODEX_HOME={shlex.quote(codex_home(agent))} "
+                f"CODEX_AGENT={shlex.quote(agent)} codex {quoted}")
+
+    def display_model(self, model: str) -> str:
+        # Only OpenAI-prefixed models reach codex via --model; anything
+        # else is dropped and codex runs its own configured default, so
+        # don't label the agent with a model it isn't running.
+        if model and any(model.startswith(p) for p in _OPENAI_PREFIXES):
+            return model
+        return "codex 自身配置"
+
+    def native_memory_path(self, agent: str) -> str:
+        # Codex reads $CODEX_HOME/AGENTS.md as global memory at session
+        # start (AGENTS.override.md wins if present; we don't write it).
+        # It does NOT re-read from disk after its own context compaction,
+        # so a mid-session anchor change still needs a reidentify inject.
+        return f"{codex_home(agent)}/AGENTS.md"
 
     def ready_markers(self) -> list[str]:
         # Banner/status lines after CLI 0.124+ becomes interactive.  The
@@ -74,6 +95,13 @@ class CodexCliAdapter(CliAdapter):
 
     def process_name(self) -> str:
         return "codex"
+
+    def auth_slots(self) -> AuthSlots:
+        return AuthSlots(
+            token_env="CODEX_ACCESS_TOKEN",
+            api_key_envs=("OPENAI_API_KEY",),
+            login_credfile="auth.json",
+        )
 
     def submit_keys(self) -> list[str]:
         # Codex 0.130 submits injected buffers with plain Enter. Sending

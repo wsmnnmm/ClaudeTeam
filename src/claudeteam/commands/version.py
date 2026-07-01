@@ -5,8 +5,8 @@ pyproject.toml `[project] version`). Useful in shell scripts:
 
     if [ "$(claudeteam version)" != "0.1.0" ]; then ...
 
-and in smoke conductors that want to assert they're testing the
-checkout they think they're testing.
+and in CI that wants to assert it's testing the checkout it thinks
+it's testing.
 """
 from __future__ import annotations
 

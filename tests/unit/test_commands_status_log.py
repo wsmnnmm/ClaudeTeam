@@ -59,6 +59,27 @@ def test_status_zero_args_returns_one_with_usage():
     assert "usage:" in err
 
 
+def test_status_help_shows_usage_and_creates_no_phantom_agent():
+    """`status --help` must print help and NOT register
+    '--help' as an agent in heartbeats/status."""
+    with isolated_env():
+        rc, out, _ = run_cli(["status", "--help"])
+        assert rc == 0
+        assert "usage:" in out
+        assert local_facts.all_heartbeats() == {}
+        assert local_facts.get_status("--help") is None
+
+
+def test_status_flag_shaped_agent_rejected():
+    """A non-help flag as the agent name is rejected with a usage error,
+    not silently registered."""
+    with isolated_env():
+        rc, _, err = run_cli(["status", "--bogus", "进行中", "x"])
+        assert rc == 1
+        assert "agent" in err
+        assert local_facts.all_heartbeats() == {}
+
+
 def test_status_set_missing_state_or_task_returns_one():
     with isolated_env():
         rc, _, err = run_cli(["status", "agent", "进行中"])

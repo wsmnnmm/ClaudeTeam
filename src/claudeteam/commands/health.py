@@ -360,15 +360,23 @@ def _check_cursor(rep: HealthReport) -> None:
     cur = catchup.read_cursor()
     if cur:
         rep.ok(f"router cursor: {cur.get('message_id', '?')} (create_time={cur.get('create_time', '?')})")
+        # Positive inbound signal. On macOS the live WS often goes quiet and
+        # router.log only shows the rotate line, so "is inbound actually
+        # working?" is otherwise unanswerable without tailing logs. The
+        # cursor's last-event time is the closest at-a-glance proxy.
+        cts = cur.get("create_time_ms")
+        if cts:
+            rep.note(f"inbound: last event {ago_ms(int(cts))}")
     else:
         # Empty cursor is normal until the first inbound event lands;
         # advancement only happens for events coming OFF the wire, not
         # for self-originated `say` calls. Informational, not warning.
         rep.info("router cursor: empty (advances on first inbound event)")
+        rep.note("inbound: none observed yet — send a test message in the group to confirm")
 
 
 def _check_memory(rep: HealthReport) -> None:
-    """Round-132: list agents that have written memory entries. Empty
+    """List agents that have written memory entries. Empty
     is normal on a fresh deploy; informational only. Surfaces
     persisted state that would otherwise need a `find facts/ -name
     memory.jsonl` to discover."""
@@ -457,7 +465,7 @@ def _emit_text(rep: HealthReport) -> None:
 def _emit_json(rep: HealthReport) -> None:
     """Machine-readable shape:
         {"ok": bool, "bad": int, "warn": int, "lines": [str, ...]}
-    Smoke conductors / CI can branch on `ok` and inspect `lines` for
+    CI / scripts can branch on `ok` and inspect `lines` for
     the rendered glyphs (which still appear in `lines`, just packaged)."""
     print_json({
         "ok": rep.bad == 0,

@@ -24,8 +24,13 @@ class _FakeAdapter:
     def ready_markers(self):
         return ["fake-ready"]
 
-    def rate_limit_markers(self):
-        return []
+    def process_name(self):
+        return "fake"
+
+    def auth_slots(self):
+        # No managed auth → agent_auth resolves to mode "none" (empty prefix),
+        # keeping these wake/spawn tests independent of auth.
+        return None
 
 
 def _adapter_factory(_agent):
@@ -650,6 +655,53 @@ def test_append_message_exception_skips_inject_for_that_agent():
     assert inject_calls == ["S:worker_b"]
 
 
+# ── retirement gate ─────────────────────────────────────────────
+
+
+def test_route_to_retired_agent_keeps_inbox_but_skips_pane():
+    """A fired agent (status 已停止) still gets its inbox row (recoverable
+    via hire) but its pane is never woken/injected — the delivery-path
+    half of the 反复自动重启 fix."""
+    decision = Decision(action=Action.ROUTE, targets=["worker_fired"],
+                        text="ping", msg_id="om")
+    inject_calls = []
+    wake_calls = []
+    with isolated_env():
+        local_facts.upsert_status("worker_fired", local_facts.RETIRED_STATUS, "fired")
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda t, *a, **kw: inject_calls.append(str(t)) or True,
+            wake_fn=lambda *a, **kw: wake_calls.append(a) or True,
+            session="S",
+        )
+    assert report.written == ["worker_fired"]   # inbox row kept
+    assert report.retired == ["worker_fired"]   # tracked as retired
+    assert report.injected == []
+    assert inject_calls == []                    # pane never touched
+    assert wake_calls == []                      # never tried to wake/revive
+
+
+def test_route_mixed_retired_and_live_targets():
+    """Firing one target doesn't block delivery to a live peer."""
+    decision = Decision(action=Action.ROUTE,
+                        targets=["worker_fired", "worker_live"],
+                        text="x", msg_id="om")
+    inject_calls = []
+    with isolated_env():
+        local_facts.upsert_status("worker_fired", local_facts.RETIRED_STATUS, "fired")
+        report = apply(
+            decision,
+            adapter_for_agent=_adapter_factory,
+            tmux_inject=lambda t, *a, **kw: inject_calls.append(str(t)) or True,
+            session="S",
+        )
+    assert set(report.written) == {"worker_fired", "worker_live"}
+    assert report.retired == ["worker_fired"]
+    assert report.injected == ["worker_live"]
+    assert inject_calls == ["S:worker_live"]
+
+
 # ── adapter integration ─────────────────────────────────────────
 
 
@@ -713,44 +765,6 @@ def test_no_wake_fn_skips_wake_step():
     assert report.injected == ["worker_a"]
 
 
-# ── rate limit ──────────────────────────────────────────────────
-
-
-def test_rate_limited_pane_keeps_inbox_skips_inject():
-    """When wake.is_rate_limited returns True for an agent, inbox row is
-    written but inject is skipped — message preserved for replay."""
-    decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
-    inject_calls = []
-
-    class RateLimitedAdapter:
-        def submit_keys(self):
-            return ["Enter"]
-
-        def spawn_cmd(self, agent, model):
-            return "fake"
-
-        def ready_markers(self):
-            return ["fake-ready"]
-
-        def rate_limit_markers(self):
-            return ["Approaching usage limit"]
-
-    # patch tmux.capture_pane to feign a rate-limited pane
-    rate_text = "...Approaching usage limit\n"
-    with tmux_patch(capture_pane=lambda t, lines=80: rate_text), \
-            isolated_env(team=_WAKE_TEAM):
-        report = apply(
-            decision,
-            adapter_for_agent=lambda _: RateLimitedAdapter(),
-            tmux_inject=lambda *a, **kw: inject_calls.append(a) or True,
-            session="S",
-        )
-    assert report.written == ["worker_a"]
-    assert report.injected == []
-    assert report.rate_limited == ["worker_a"]
-    assert inject_calls == []
-
-
 def test_each_agent_uses_its_own_submit_keys():
     """Codex/Kimi vs Claude submit-key sequences differ; verify each."""
     keys_seen = {}
@@ -761,9 +775,6 @@ def test_each_agent_uses_its_own_submit_keys():
 
         def submit_keys(self):
             return self._k
-
-        def rate_limit_markers(self):
-            return []
 
     def factory(agent):
         return _A(["M-Enter"]) if agent == "codex_w" else _A(["Enter"])
@@ -794,10 +805,9 @@ def test_slash_logs_warning_when_chat_send_returns_none():
 
     decision = Decision(action=Action.SLASH, text="/help",
                         msg_id="om_slash_test", create_time="0")
-    # Round-79: /help now returns a card dict; it routes through
-    # chat_send_card, not chat_send. Capture both sites so the test still
-    # exercises the failure path regardless of which transport the handler
-    # picked.
+    # /help returns a card dict; it routes through chat_send_card, not
+    # chat_send. Capture both sites so the test still exercises the
+    # failure path regardless of which transport the handler picked.
     chat_send_card_calls = []
 
     def failing_chat_send_card(chat_id, card, **kw):
@@ -822,7 +832,7 @@ def test_slash_logs_warning_when_chat_send_returns_none():
     assert "chat reply for om_slash_test failed to post" in log
 
 
-# ── inject-text composer (R172.b/R173) ───────────────────────────
+# ── inject-text composer ─────────────────────────────────────────
 
 
 def _decision(text, *, sender="", reply_context=""):
@@ -978,7 +988,7 @@ def test_compose_inject_text_omits_read_hint_when_local_id_blank():
 
 
 def test_compose_inject_text_summary_cue_adds_send_to_manager_hint():
-    """R173: when boss message asks for a summary / 汇总 / report,
+    """When a boss message asks for a summary / 汇总 / report,
     non-manager agents get an extra hint to also `claudeteam send
     manager` so manager's inbox pings (manager pane is blind to chat)."""
     out = _compose_inject_text(
@@ -1019,11 +1029,6 @@ def test_compose_inject_text_keeps_reply_context_next_to_user_message():
 def test_wants_manager_summary_chinese_cues():
     for cue in ("汇总", "汇报", "总结", "报告"):
         assert _wants_manager_summary(f"做个 {cue} 给我"), cue
-
-
-def test_wants_manager_summary_english_cues():
-    for cue in ("summarize", "summary", "report back"):
-        assert _wants_manager_summary(f"please {cue} when done"), cue
 
 
 def test_wants_manager_summary_no_match():

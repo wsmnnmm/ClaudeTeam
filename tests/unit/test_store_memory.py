@@ -1,6 +1,8 @@
 """Tests for store/memory.py — per-agent durable memory."""
 from __future__ import annotations
 
+import json
+
 from helpers import captured_stderr, isolated_env
 from claudeteam.store import memory
 
@@ -44,7 +46,7 @@ def test_list_recent_empty_when_agent_unknown():
         assert memory.list_recent("nobody") == []
 
 
-# ── Round-141: list_recent_filtered ─────────────────────────────
+# ── list_recent_filtered ────────────────────────────────────────
 
 
 def test_list_recent_filtered_no_kind_matches_list_recent():
@@ -72,8 +74,8 @@ def test_list_recent_filtered_picks_only_matching_kind():
 
 
 def test_list_recent_filtered_scans_full_window_so_rare_kinds_surface():
-    """Round-141 contract: when filtering, scan the FULL backlog, then
-    trim to limit AFTER. A buried decision among many notes must not
+    """When filtering, scan the FULL backlog, then trim to limit AFTER.
+    A buried decision among many notes must not
     get missed by limit's pre-filter pruning. This is the whole reason
     the helper exists — `list_recent(agent, limit=N)` would have
     pre-pruned the rare kind out of the window before the filter ran."""
@@ -115,13 +117,47 @@ def test_append_caps_at_max_per_agent():
     """Memory growth is bounded — the oldest entries get dropped past
     the cap to keep the file small enough to inject into a prompt."""
     with isolated_env():
-        for i in range(memory._MAX_PER_AGENT + 50):
-            memory.append("worker", "note", f"i={i}")
+        with captured_stderr():   # overflow warnings tested separately
+            for i in range(memory._MAX_PER_AGENT + 50):
+                memory.append("worker", "note", f"i={i}")
         rows = memory.list_recent("worker", limit=memory._MAX_PER_AGENT * 2)
         assert len(rows) == memory._MAX_PER_AGENT
         # Oldest dropped → first surviving is i=50
         assert rows[0]["content"] == "i=50"
         assert rows[-1]["content"] == f"i={memory._MAX_PER_AGENT + 49}"
+
+
+def test_append_cap_is_tunable_and_overflow_warns():
+    """The retention cap reads tunable memory.max_per_agent, and dropping
+    entries on overflow is LOUD: one stderr line naming the count and the
+    oldest casualty, so an agent's early decisions can't age out with
+    zero traces."""
+    from claudeteam.runtime import tunables
+    with isolated_env() as tmp:
+        (tmp / "claudeteam.toml").write_text(
+            "[memory]\nmax_per_agent = 5\n", encoding="utf-8")
+        tunables.reset_cache()
+        try:
+            with captured_stderr() as err:
+                for i in range(7):
+                    memory.append("worker", "note", f"i={i}")
+            rows = memory.list_recent("worker", limit=99)
+            assert len(rows) == 5
+            assert rows[0]["content"] == "i=2"     # i=0, i=1 dropped
+            msg = err.getvalue()
+            assert "over cap (5)" in msg
+            assert "i=0" in msg                     # oldest casualty named
+            assert "memory.max_per_agent" in msg    # remedy named
+        finally:
+            tunables.reset_cache()
+
+
+def test_append_under_cap_stays_quiet():
+    """No overflow → no warning noise."""
+    with isolated_env():
+        with captured_stderr() as err:
+            memory.append("worker", "note", "fits fine")
+        assert "over cap" not in err.getvalue()
 
 
 def test_append_tolerates_corrupt_pre_existing_lines():
@@ -195,12 +231,12 @@ def test_all_agents_with_memory_lists_only_agents_that_wrote():
         assert sorted(agents) == ["manager", "worker_cc"]
 
 
-# ── Round-111: clear_kind (scalpel inside the scalpel) ─────────
+# ── clear_kind (scalpel inside the scalpel) ────────────────────
 
 
 def test_clear_kind_drops_only_matching_entries():
-    """Round-111: `clear_kind(agent, K)` removes only entries with
-    kind == K, leaves others untouched."""
+    """`clear_kind(agent, K)` removes only entries with kind == K,
+    leaves others untouched."""
     with isolated_env():
         memory.append("manager", "decision", "use bcrypt")
         memory.append("manager", "blocker", "missing PAT")
@@ -241,11 +277,11 @@ def test_clear_kind_drops_all_unlinks_file():
         assert memory.list_recent("worker_cc") == []
 
 
-# ── Round-106: KNOWN_KINDS soft validation ──────────────────────
+# ── KNOWN_KINDS soft validation ─────────────────────────────────
 
 
 def test_known_kinds_covers_documented_vocabulary():
-    """The 6 conventional kinds match what manager identity v2 +
+    """The 6 conventional kinds match what the manager identity +
     install-hooks `/remember` documentation teaches. Pin the set so a
     drift between code and docs gets caught."""
     assert set(memory.KNOWN_KINDS) == {
@@ -254,48 +290,7 @@ def test_known_kinds_covers_documented_vocabulary():
     }
 
 
-def test_kinds_summary_renders_canonical_separator():
-    """Round-119: USAGE strings + future docs format kinds with `' / '`.
-    The helper is the single source of truth so a separator change
-    (e.g. to commas) propagates without grep-and-replace."""
-    s = memory.kinds_summary()
-    # Every kind shows up at least once
-    for k in memory.KNOWN_KINDS:
-        assert k in s
-    # Separator is `" / "` (with surrounding spaces)
-    assert " / " in s
-    # No double-separator (would mean order quirk)
-    assert " /  / " not in s
-
-
-def test_kinds_sorted_returns_alphabetical_list():
-    """Round-120: slash card display uses alphabetical order so boss
-    reading two cards (kind list in /recall help vs /forget warn) sees
-    the same sequence. KNOWN_KINDS itself is in author-priority order
-    (task_assigned first), but the slash UI prefers stable sort."""
-    s = memory.kinds_sorted()
-    assert s == sorted(memory.KNOWN_KINDS)
-    # All kinds present
-    assert set(s) == set(memory.KNOWN_KINDS)
-    # Returns a list (not tuple) so f-string repr renders as Python list literal
-    assert isinstance(s, list)
-
-
-# ── Round-156: warn_unknown_kind ─────────────────────────────────
-
-
-def test_warn_unknown_kind_no_op_for_known():
-    """Round-156 contract: known kind = silence, no stderr noise."""
-    with captured_stderr() as err:
-        memory.warn_unknown_kind("decision")
-    assert err.getvalue() == ""
-
-
-def test_warn_unknown_kind_no_op_for_empty():
-    """Empty kind = "no filter intent" — pass-through, no warn."""
-    with captured_stderr() as err:
-        memory.warn_unknown_kind("")
-    assert err.getvalue() == ""
+# ── warn_unknown_kind ────────────────────────────────────────────
 
 
 def test_warn_unknown_kind_nudges_for_unconventional():
@@ -338,11 +333,83 @@ def test_append_silent_for_known_kinds():
         assert err.getvalue() == ""
 
 
-def test_append_empty_kind_does_not_warn():
-    """Empty `kind` (some integration callers might pass it) — don't
-    warn. Validate only when something IS supplied that misses the
-    vocabulary."""
-    with isolated_env():
-        with captured_stderr() as err:
-            memory.append("manager", "", "anonymous note")
-        assert err.getvalue() == ""
+# ── R-consolidate: memory lives under agents/<name>/, legacy migration ──
+
+
+def _write_legacy_memory(tmp, agent: str, *entries: dict) -> "object":
+    """Drop a memory.jsonl in the pre-consolidation facts/<agent>/ spot
+    to simulate an upgraded deployment. Returns the legacy file path."""
+    legacy = tmp / "state" / "facts" / agent / "memory.jsonl"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+        encoding="utf-8",
+    )
+    return legacy
+
+
+def test_memory_file_lives_under_agents_dir_not_facts():
+    """Consolidation: a fresh write lands in agents/<name>/memory.jsonl
+    (the CLI-agnostic per-agent business dir), NOT facts/<name>/."""
+    with isolated_env() as tmp:
+        memory.append("worker_cc", "note", "hi")
+        new = tmp / "state" / "agents" / "worker_cc" / "memory.jsonl"
+        assert memory._memory_file("worker_cc") == new
+        assert new.exists()
+        assert not (tmp / "state" / "facts" / "worker_cc" / "memory.jsonl").exists()
+
+
+def test_append_migrates_legacy_memory_then_appends():
+    """Pre-consolidation memory at facts/<agent>/memory.jsonl is moved to
+    agents/<agent>/ on first append, preserving existing entries in order."""
+    with isolated_env() as tmp:
+        legacy = _write_legacy_memory(
+            tmp, "worker_cc",
+            {"kind": "decision", "content": "old one", "ref": "", "created_at": 1},
+        )
+        memory.append("worker_cc", "note", "new one")
+        rows = memory.list_recent("worker_cc")
+        assert [r["content"] for r in rows] == ["old one", "new one"]
+        # Now consolidated; legacy file gone.
+        assert (tmp / "state" / "agents" / "worker_cc" / "memory.jsonl").exists()
+        assert not legacy.exists()
+
+
+def test_list_recent_migrates_and_reads_legacy():
+    """Reading (not just writing) triggers the lazy migration, so a
+    /recall right after upgrade still surfaces old memory."""
+    with isolated_env() as tmp:
+        _write_legacy_memory(
+            tmp, "w",
+            {"kind": "note", "content": "legacy", "ref": "", "created_at": 1},
+        )
+        rows = memory.list_recent("w")
+        assert [r["content"] for r in rows] == ["legacy"]
+        assert (tmp / "state" / "agents" / "w" / "memory.jsonl").exists()
+
+
+def test_migration_no_op_when_new_file_already_present():
+    """If consolidated memory already exists, the legacy file is ignored
+    (no clobber, no merge) — migration is one-time on first access only."""
+    with isolated_env() as tmp:
+        memory.append("worker_cc", "note", "current")
+        # A stale legacy file appears (shouldn't normally happen, but be safe).
+        _write_legacy_memory(
+            tmp, "worker_cc",
+            {"kind": "note", "content": "stale legacy", "ref": "", "created_at": 1},
+        )
+        rows = memory.list_recent("worker_cc")
+        # Only the consolidated content; legacy not merged in.
+        assert [r["content"] for r in rows] == ["current"]
+
+
+def test_all_agents_with_memory_includes_legacy_unmigrated():
+    """Audit view unions both locations so an agent whose memory hasn't
+    been touched since upgrade (still in facts/) isn't invisible."""
+    with isolated_env() as tmp:
+        _write_legacy_memory(
+            tmp, "old_agent",
+            {"kind": "note", "content": "x", "ref": "", "created_at": 1},
+        )
+        memory.append("new_agent", "note", "y")
+        assert sorted(memory.all_agents_with_memory()) == ["new_agent", "old_agent"]

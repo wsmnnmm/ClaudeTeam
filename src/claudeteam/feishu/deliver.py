@@ -13,12 +13,13 @@ touches the store and tmux.
              touched, no LLM runs.
   BROADCAST  same as ROUTE but targets are all non-sender agents
   ROUTE      per-target: `_write_inbox` (always; flock-serialised) +
-             `_inject_to_pane` (best-effort; skipped when `wake.is_rate_limited`
-             returns True so the inbox row stays the canonical record).
+             `_inject_to_pane` (best-effort — inject is always attempted
+             regardless of pane state; the inbox row stays the canonical
+             record either way).
 
 Returns a `DeliveryReport` so callers can log / surface partial-success
 without inspecting hand-rolled tuples. Lists in the report:
-  written / injected / failed_inject / rate_limited (per agent),
+  written / injected / failed_inject (per agent),
   skipped (DROP), slash_reply (SLASH text-form replies only).
 """
 from __future__ import annotations
@@ -45,6 +46,7 @@ class DeliveryReport:
     written: list[str] = field(default_factory=list)        # inbox row landed
     injected: list[str] = field(default_factory=list)       # pane received text
     failed_inject: list[str] = field(default_factory=list)
+    retired: list[str] = field(default_factory=list)         # fired: inbox kept, pane not revived
     skipped_inject: list[str] = field(default_factory=list) # inbox kept, pane intentionally skipped
     rate_limited: list[str] = field(default_factory=list)   # inbox kept, inject skipped
     skipped: bool = False                                    # True iff decision was DROP
@@ -141,7 +143,7 @@ def _build_wake_args(agent: str, adapter) -> dict:
 
     Wrapping the lazy-wake setup keeps `_inject_to_pane` focused on its
     actual job (deliver text) and isolates the cross-module wiring
-    (lifecycle.pane_env_prefix, identity.init_prompt, status upsert).
+    (lifecycle.build_spawn_command, identity.init_prompt, status upsert).
     """
     from claudeteam.runtime import tunables
     return {
@@ -160,9 +162,8 @@ def _build_wake_args(agent: str, adapter) -> dict:
 # manager (not just `say` to chat) so manager's inbox pings and they can
 # follow up. manager's pane doesn't see chat messages — only its own
 # inbox + dispatched messages — so without this hint the dispatch +
-# summarize loop stalls (boss saw this 2026-05-05 in a Round C dry-run:
-# manager dispatched, worker counted, posted to chat, manager never
-# learned and never summarized).
+# summarize loop stalls (manager dispatches, the worker counts and posts
+# to chat, but manager never learns and never summarizes).
 _SUMMARY_CUE_TOKENS = (
     "汇总", "汇报", "总结", "报告",
     "summarize", "summary", "report back",
@@ -623,11 +624,16 @@ def _inject_to_pane(agent: str, decision: Decision,
     hint so the agent knows which inbox row to mark read.
 
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
-    'rate_limited'.
+    'retired' / 'rate_limited'. A retired agent (status 已停止 — fired) keeps its inbox row
+    (written by the caller before this) so a future `hire` picks it up,
+    but its pane is NOT woken/injected — firing means stay down.
     """
     if _should_skip_pane_inject(agent, decision):
         print(f"  ⏭  {agent} pane inject skipped by router config; inbox row kept")
         return "skipped_inject"
+    if local_facts.is_retired(agent):
+        print(f"  ⏸️  {agent} 已停止 (fired); inbox row kept, pane not revived")
+        return "retired"
     target = tmux.Target(deps.session, agent)
     try:
         adapter = deps.adapter_for_agent(agent)
@@ -757,9 +763,9 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
     """Run slash command at router level (zero LLM) and post reply to chat
     as bot. Pane is never touched.
 
-    Round-79: dispatch may now return a dict (Feishu card schema) — branch
-    on type to call chat.send_card instead of chat.send_text. `reply_to`
-    only applies to the text path; cards don't support thread-reply.
+    dispatch may return a dict (Feishu card schema) — branch on type to
+    call chat.send_card instead of chat.send_text. `reply_to` only applies
+    to the text path; cards don't support thread-reply.
     """
     dispatch = slash_dispatch or _slash.dispatch
     ctx = _slash.SlashContext(

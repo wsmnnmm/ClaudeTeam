@@ -20,8 +20,8 @@ def test_make_alert_fn_returns_none_when_chat_id_unset():
 
 
 def test_make_alert_fn_sends_red_card_on_cooldown():
-    """Round-98: cooldown alert is a red Feishu card (visually distinct
-    from /team /health cards) instead of plain text."""
+    """Cooldown alert is a red Feishu card (visually distinct from
+    /team /health cards) instead of plain text."""
     cards_sent = []
 
     def fake_send_card(chat_id, card, **kw):

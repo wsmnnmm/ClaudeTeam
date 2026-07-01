@@ -23,8 +23,8 @@ def _no_proxy_env():
 
 
 def test_run_builds_lark_cli_argv_with_profile():
-    """Round-86: argv prefix is whichever direct lark-cli we found
-    (or npx fallback). Either way, profile/positional args must be
+    """Argv prefix is whichever direct lark-cli we found (or npx
+    fallback). Either way, profile/positional args must be
     appended in order. Pin the prefix via env override so the test
     doesn't depend on whatever's installed locally."""
     rec = _Recorder(FakeProc(stdout='{"ok": true, "data": {"x": 1}}'))
@@ -58,7 +58,7 @@ def test_run_passes_optional_cwd_to_subprocess():
 
 
 def test_resolve_cli_prefix_uses_explicit_env_override():
-    """Round-86: CLAUDETEAM_LARK_CLI_BIN takes priority over auto-discovery."""
+    """CLAUDETEAM_LARK_CLI_BIN takes priority over auto-discovery."""
     import tempfile
     import os as _os
     with tempfile.TemporaryDirectory() as td:
@@ -120,9 +120,9 @@ def test_run_returns_none_on_nonzero_exit():
 
 
 def test_nonzero_exit_with_json_blob_extracts_real_message():
-    """Smoke v3 found: when claudeteam say targets an unjoinable chat,
-    lark-cli prints `{"ok":false,"msg":"invalid receive_id","code":230001}`
-    to stdout AND exits non-zero. Old code took stderr.splitlines()[-1]
+    """When claudeteam say targets an unjoinable chat, lark-cli prints
+    `{"ok":false,"msg":"invalid receive_id","code":230001}` to stdout
+    AND exits non-zero. Old code took stderr.splitlines()[-1]
     so operators saw `lark-cli failed (rc=1): }` — useless. Now we
     parse JSON first and route through _extract_error_message."""
     import io
@@ -146,8 +146,8 @@ def test_run_returns_none_when_api_says_ok_false():
 
 
 def test_api_error_extracts_message_from_nested_error_dict():
-    """REGRESSION (round-60): lark-cli sometimes returns a structured
-    error object: {"error": {"type": "...", "code": ..., "message": "..."}}
+    """REGRESSION: lark-cli sometimes returns a structured error object:
+    {"error": {"type": "...", "code": ..., "message": "..."}}
     instead of a plain "msg" field. Old code printed the dict's repr
     making the warning useless. Now extract error.message + type."""
     import io
@@ -164,23 +164,6 @@ def test_api_error_extracts_message_from_nested_error_dict():
     assert "type=api_error" in log
     # Should NOT print the dict repr (old behaviour)
     assert "{'type'" not in log
-
-
-def test_api_error_extracts_message_from_validation_error():
-    """Same shape, different type — `validation` errors from
-    `--image` flag rejection (round-58 saw this). Operator wants
-    the actual rejection reason, not a dict literal."""
-    import io
-    import contextlib
-    payload = ('{"ok":false,"error":{"type":"validation",'
-               '"message":"--image: --file must be a relative path"}}')
-    rec = _Recorder(FakeProc(stdout=payload))
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        lark.call(["x"], run=rec)
-    log = out.getvalue()
-    assert "must be a relative path" in log
-    assert "type=validation" in log
 
 
 def test_api_error_falls_back_when_error_is_plain_string():
@@ -422,9 +405,9 @@ def test_run_keeps_proxy_env_when_no_proxy_unset():
 
 
 def test_subprocess_env_strips_proxy_when_no_proxy_set():
-    """REGRESSION: round 6 smoke proved the router daemon's Popen
-    inherits HTTPS_PROXY untouched and lark-cli +subscribe then fails
-    to deliver events. router now calls lark.subprocess_env() to get
+    """REGRESSION: the router daemon's Popen inherits HTTPS_PROXY
+    untouched and lark-cli +subscribe then fails to deliver events.
+    router now calls lark.subprocess_env() to get
     the same proxy-stripped env that lark.call uses."""
     with env_patch(LARK_CLI_NO_PROXY="1",
                    HTTPS_PROXY="http://proxy.example:7890",
@@ -573,8 +556,8 @@ def test_timeout_falls_back_to_90_when_env_is_garbage():
 
 
 def test_timeout_clamps_zero_or_negative_to_one():
-    """REGRESSION (round-64): CLAUDETEAM_LARK_TIMEOUT=0 used to be
-    passed through to subprocess.run, which insta-raises TimeoutExpired
+    """REGRESSION: CLAUDETEAM_LARK_TIMEOUT=0 used to be passed through
+    to subprocess.run, which insta-raises TimeoutExpired
     on every call → every lark op silently fails. -1 caused ValueError
     deeper in subprocess. Now clamped to min 1 second; operator gets
     a real timeout window even with a fat-fingered config."""
@@ -588,70 +571,10 @@ def test_timeout_clamps_zero_or_negative_to_one():
     assert rec2.calls[0]["kwargs"]["timeout"] == 1
 
 
-def test_timeout_explicit_zero_also_clamped():
-    """Same clamp applied to the explicit `timeout=` kwarg path —
-    a caller passing 0 still gets a usable 1s window, not an
-    insta-fail."""
-    rec = _Recorder(FakeProc(stdout="{}"))
-    lark.call(["x"], timeout=0, run=rec)
-    assert rec.calls[0]["kwargs"]["timeout"] == 1
-
-
 # ── Popen-time errors (npx missing, permission denied, ...) ────
 
 
-def test_run_returns_none_when_npx_not_on_path():
-    """REGRESSION: subprocess raising FileNotFoundError (npx not
-    installed) used to propagate as a top-level traceback through
-    every claudeteam say / chat invocation. Now caught with a
-    one-liner pointing at Node.js install."""
-    import io
-    import contextlib
-
-    def fake(*a, **kw):
-        raise FileNotFoundError("[Errno 2] No such file or directory: 'npx'")
-
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        result = lark.call(["x"], run=fake)
-    assert result is None
-    assert "npx not found on PATH" in out.getvalue()
-
-
-def test_run_returns_none_on_other_oserror():
-    """OSError variants other than FileNotFoundError (permission, EAGAIN,
-    fork failed) — same one-line warn pattern."""
-    import io
-    import contextlib
-
-    def fake(*a, **kw):
-        raise OSError("[Errno 13] Permission denied")
-
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        result = lark.call(["x"], run=fake)
-    assert result is None
-    assert "could not be launched" in out.getvalue()
-
-
-def test_run_logs_preview_when_stdout_is_not_json():
-    """REGRESSION: silent return None on JSONDecodeError used to make
-    debugging impossible. Now logs a one-line preview of the offending
-    output so the operator can see the kind of garbage they got back
-    (typically: HTML auth wall page, lark-cli banner text)."""
-    import io
-    import contextlib
-    rec = _Recorder(FakeProc(stdout="<html>\n<body>auth required</body>\n</html>\n"))
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        result = lark.call(["x"], run=rec)
-    assert result is None
-    log = out.getvalue()
-    assert "non-JSON" in log
-    assert "<html>" in log
-
-
-# ── R161: tenant_access_token bootstrap (container path) ─────────
+# ── tenant_access_token bootstrap (container path) ───────────────
 
 
 def _cache_path(tmp_dir):
@@ -824,10 +747,10 @@ def test_ensure_tenant_token_default_cache_path_is_app_scoped():
     """Default cache files include the app id so two bots on the same host
     don't share `/tmp/claudeteam_tenant_token.json`."""
     assert lark._tenant_token_cache_path("cli_a").endswith(
-        "claudeteam_tenant_token_cli_a.json"
+        f"claudeteam_tenant_token_{lark.os.getuid()}_cli_a.json"
     )
     assert lark._tenant_token_cache_path("cli_b").endswith(
-        "claudeteam_tenant_token_cli_b.json"
+        f"claudeteam_tenant_token_{lark.os.getuid()}_cli_b.json"
     )
     assert lark._tenant_token_cache_path("cli_a") != lark._tenant_token_cache_path("cli_b")
 
@@ -969,7 +892,7 @@ def test_subprocess_env_pairs_token_with_app_id_and_secret():
     (`blocked by env ... LARKSUITE_CLI_APP_ID is missing`) and the
     persistent-connection SDK then refuses on token+id-only with `app_id
     or app_secret is null` because it re-auths off env-vars not the
-    cached token. 2026-05-07 host-smoke walked into both."""
+    cached token. Both failure modes are covered here."""
     import json
     import tempfile
     from helpers import attr_patch

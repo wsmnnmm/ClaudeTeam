@@ -6,7 +6,7 @@
 经 lark-cli 事件订阅接收 → 写入 manager 的本地收件箱 + 注入到 manager tmux pane。
 这是外部消息进入系统的唯一通路。
 
-R174（提交 `9e43309`）之后，**所有人话不论加不加 @ 都只路由到 manager**；
+路由的根本规则（提交 `9e43309`）：**所有人话不论加不加 @ 都只路由到 manager**；
 worker 自己发的卡片是唯一的例外，会被路由回 manager 的收件箱。
 
 ## 范围
@@ -46,9 +46,9 @@ SEND() { LARK_CLI_NO_PROXY=1 lark-cli im +messages-send --chat-id "$CHAT" --text
 3. `tmux capture-pane -t <会话>:manager -p | tail -10` 看到 `smoke ping` 已被注入并提交，CLI 开始处理
 4. `state/router.cursor` 推进到这条消息的 `(message_id, create_time)`
 
-### 用例 B：R174 契约——@ 也只到 manager
+### 用例 B：「manager 是唯一接口」契约——@ 也只到 manager
 
-下面四条全都期望 manager 收件箱拿到，**worker 收件箱不动**。这是 R174 的核心契约。
+下面四条全都期望 manager 收件箱拿到，**worker 收件箱不动**。这是核心契约。
 
 ```bash
 SEND "@worker_cc 你看下 README"
@@ -66,9 +66,9 @@ claudeteam inbox worker_codex  # 应有 0 条新
 ```
 
 `state/router.log` 里这 4 条都应是 `action=route`，目标永远是 manager。
-**不应**出现 `action=broadcast`——R174 之后路由器不再产生 BROADCAST。
+**不应**出现 `action=broadcast`——路由器不再产生 BROADCAST。
 
-### 用例 C：R174 例外——worker 卡片回路 manager
+### 用例 C：例外——worker 卡片回路 manager
 
 ```bash
 # 让 worker_cc 自己往群里发卡：

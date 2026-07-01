@@ -1,11 +1,29 @@
 # tests/scenarios/ — 端到端冒烟剧本
 
+> **这些是最还原用户体验的端到端测试**——真飞书 App + tmux + 真登录的 CLI，从用户
+> 身份往群里发消息、到群里看 agent 响应。**agent 可以驱动**：每一步都是具体的
+> `lark-cli` 发送 + 可机判的验证（卡片标题 / `inbox.json` / `tmux capture`）。只有
+> **3 个一次性步骤要真人做一次**：建飞书 App、用户 OAuth、CLI 登录——做完后整条龙
+> agent 自己跑。
+>
+> 如果你想问的是「我改的代码有没有破坏」——那不用部署，跑 `python tests/run.py`
+> （单元 + 进程内端到端 `tests/integration/`，全 mock）。
+
 冒烟测试的形态：**用户视角，从飞书群里发消息开始，到群里看到结果结束**。
 中间过程（收件箱状态、pane 缓冲、router 日志）是诊断手段，只在失败时才看。
 
 不要把"手动跑一遍 CLI 看输出对不对"塞进这里——那是单元测试已经覆盖的事
 （`tests/unit/test_*.py` 用 mock 自动跑）。这里只放需要真飞书 + 真 tmux +
 真 CLI 联动才能验证的剧本。
+
+## 前置：第一次部署先注册 bot
+
+→ **[feishu_connect.md](feishu_connect.md)**
+
+默认走 `claudeteam feishu connect --quick`（`claudeteam init` 自动跑 `feishu connect`）：
+扫一次登录码 → 建 bot 应用 + 团队群 + 落凭证，并验证 `sidecar.js run` 事件入站通了
+（群里实发一条 manager 能回；免 @ 与否随租户而定）。想跨租户保证群里免 @ 也能收，走
+浏览器自动建的自建应用（持 `im:message.group_msg`，需桌面浏览器）。host_smoke 默认你已跑过本篇。
 
 ## 入口：刚部署完想 1 分钟过一遍
 
@@ -15,9 +33,9 @@
 
 1. 团队上线（`claudeteam up` + `health`）
 2. 用户 OAuth（设备授权流程，一次性）
-3. 9 条斜杠命令矩阵（含状态变更类）
-4. 普通文本路由（验证 R174「manager 是唯一接口」）
-5. Worker → manager 反向路由（R174 例外分支）
+3. 13 条斜杠命令矩阵（含状态变更类）
+4. 普通文本路由（验证「manager 是唯一接口」契约）
+5. Worker → manager 反向路由（例外分支）
 6. 路由器重启不丢消息（catchup）
 7. 懒启动 worker（lazy 标记 + 首消息触发起 CLI）
 8. 多部署冲突（同一 App 抢订阅锁的失败语义）
@@ -29,9 +47,11 @@
 
 | 文件 | 范围 | 何时跑 |
 |---|---|---|
-| [slash_matrix.md](slash_matrix.md) | 9 条斜杠 + 路由分类的详细 pass/fail 标准、color 期望、错误诊断 | host_smoke 某条出错时翻这一篇 |
-| [round_c_real_task.md](round_c_real_task.md) | 老板 → manager → workers → 汇总，30-60 分钟真任务派活 | 重大改动后或想压测协作时 |
+| [slash_matrix.md](slash_matrix.md) | 13 条斜杠 + 路由分类的详细 pass/fail 标准、color 期望、错误诊断 | host_smoke 某条出错时翻这一篇 |
+| [real_task_e2e.md](real_task_e2e.md) | 端到端真任务：老板 → manager → workers → 汇总，30-60 分钟真任务派活 | 重大改动后或想压测协作时 |
 | [reidentify.md](reidentify.md) | `claudeteam reidentify` 重新注入身份的几种触发情境 | post-compact 或 worker 记忆乱了 |
+| [compaction_survival.md](compaction_survival.md) | tasks 原话意图 `/compact` 后逐字幸存：真 agent + 真 /compact，三路 byte-exact 判据 + 反向对照 | 改 tasks 锚点/刷新接线后，或要对外展示抗压缩可验证性 |
+| [shared_experience.md](shared_experience.md) | 团队共享经验库：`remember --team` / `recall --team`，且新 agent 唤醒时自动注入 | 改共享经验 store 或身份注入后 |
 
 ## 归档：`_archive/`
 

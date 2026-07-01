@@ -35,7 +35,7 @@ explicitly — never the global active one — with:
 
 (Bare `tmux display-message -p '#W'` returns whatever window the operator
 is focused on, NOT yours; that path made the manager pane self-identify
-as `worker_kimi` in round 7 smoke and call `claudeteam say worker_kimi`.)
+as `worker_kimi` and call `claudeteam say worker_kimi`.)
 
 """
 
@@ -107,7 +107,7 @@ _COMMANDS: dict[str, str] = {
         "blocker / decision / note. Memory persists across /clear and "
         "auto-injects into your next init prompt.\n"
     ),
-    # Round-104: peek hook for the 5-min 巡视 cadence (manager identity v2).
+    # peek hook for the 5-min 巡视 cadence (manager identity v2).
     # Wraps `tmux capture-pane` so agents don't have to remember the
     # session name or pane-target syntax.
     "peek": (

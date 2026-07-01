@@ -1,6 +1,6 @@
 """Tests for runtime/lifecycle.py — pane_env_prefix + provision_pane.
 
-Both helpers were extracted in round-16 from `commands/start.py` /
+Both helpers were extracted from `commands/start.py` /
 `commands/hire.py` but never got their own unit test (CLAUDE.md rule:
 every new module ships its own unit test). The behaviour was covered
 transitively through start/hire integration tests; this file pins
@@ -106,7 +106,7 @@ def test_pane_env_prefix_skips_unset_vars():
 
 
 def test_pane_env_prefix_propagates_feishu_app_credentials():
-    """Bringup B5: tmux server started by an earlier checkout had its
+    """REGRESSION: a tmux server started by an earlier checkout had its
     own global env without FEISHU_APP_*; new panes inherited that env
     and tenant_token_from_env() returned None → fell back to the saved
     lark-cli profile (an OLD app) → HTTP 400 on every claudeteam say.
@@ -472,7 +472,10 @@ def test_provision_ready_no_init_when_identity_inject_fails():
     assert outcome == READY_NO_INIT
 
 
-def test_provision_ready_pane_env_prefix_baked_into_spawn_cmd():
+def test_provision_sources_env_from_file_never_inline():
+    """The spawn command sent to the pane must SOURCE the env file, not
+    carry `KEY=value` inline — otherwise secrets (FEISHU_APP_SECRET,
+    OPENAI_API_KEY) end up in the pane scrollback + the agent's context."""
     team = {"agents": {"a": {"cli": "claude-code"}}}
     spawn_calls = []
     with isolated_env(team=team) as tmp, tmux_patch(
@@ -746,7 +749,7 @@ def test_provision_ready_no_init_when_marker_never_appears():
         assert local_facts.get_heartbeat("a") is not None
 
 
-# ── provision_pane: CONFIG_ERROR (round-61) ──────────────────────
+# ── provision_pane: CONFIG_ERROR ─────────────────────────────────
 
 
 def test_provision_returns_config_error_on_unknown_cli():
@@ -767,13 +770,119 @@ def test_provision_returns_config_error_on_unknown_cli():
     assert "claude-cod" in err.getvalue() or "unknown cli" in err.getvalue()
 
 
-# ── _ensure_claude_agent_home (R172.b) ───────────────────────────
+# ── _pick_claude_seed (docker login-loop fix) ────────────────────
+
+
+def _write(tmp: Path, name: str, body: str) -> Path:
+    p = tmp / name
+    p.write_text(body)
+    return p
+
+
+def test_pick_claude_seed_prefers_account_over_stub():
+    """The Dockerfile stub /root/.claude.json (no oauthAccount) sorts
+    before the real /root/host-claude.json mount; the helper must skip
+    the stub and pick the account-bearing file regardless of order."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        stub = _write(tmp, "stub.json", '{"firstStartTime":"x","userID":"u"}')
+        full = _write(tmp, "full.json", '{"oauthAccount":{"emailAddress":"a@b"}}')
+        # stub first in priority order — still must return the account file
+        assert lifecycle._pick_claude_seed([stub, full]) == full.read_bytes()
+
+
+def test_pick_claude_seed_returns_first_account_when_in_priority_slot():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        full = _write(tmp, "full.json", '{"oauthAccount":{"emailAddress":"a@b"}}')
+        stub = _write(tmp, "stub.json", '{"userID":"u"}')
+        assert lifecycle._pick_claude_seed([full, stub]) == full.read_bytes()
+
+
+def test_pick_claude_seed_falls_back_to_first_readable_when_no_account():
+    """No source carries an account → still seed *something* so the
+    onboarding/migration flags land (better than claude writing a bare
+    stub of its own)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        a = _write(tmp, "a.json", '{"userID":"first"}')
+        b = _write(tmp, "b.json", '{"userID":"second"}')
+        assert lifecycle._pick_claude_seed([a, b]) == a.read_bytes()
+
+
+def test_pick_claude_seed_skips_unreadable_candidates():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        missing = tmp / "nope.json"  # never created
+        full = _write(tmp, "full.json", '{"oauthAccount":{"x":1}}')
+        assert lifecycle._pick_claude_seed([missing, full]) == full.read_bytes()
+
+
+def test_pick_claude_seed_none_when_nothing_readable():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        assert lifecycle._pick_claude_seed(
+            [tmp / "a.json", tmp / "b.json"]) is None
+
+
+# ── _mark_project_trusted (folder-trust dialog) ──────────────────
+
+
+def test_mark_project_trusted_adds_entry_and_preserves_account():
+    """Fresh agent claude.json seeded from the host account has the
+    operator's projects but not /data; marking must add the trust flag
+    without dropping oauthAccount or the other projects."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        cj = Path(d) / ".claude.json"
+        cj.write_text(json.dumps({
+            "oauthAccount": {"emailAddress": "a@b"},
+            "projects": {"/home/me/proj": {"hasTrustDialogAccepted": True}},
+        }))
+        lifecycle._mark_project_trusted(cj, Path("/data"))
+        out = json.loads(cj.read_text())
+        assert out["projects"]["/data"]["hasTrustDialogAccepted"] is True
+        assert out["oauthAccount"] == {"emailAddress": "a@b"}      # preserved
+        assert "/home/me/proj" in out["projects"]                  # preserved
+
+
+def test_mark_project_trusted_idempotent_no_clobber():
+    """Second call must not wipe other fields claude wrote into the
+    project entry (lastSessionId etc.)."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        cj = Path(d) / ".claude.json"
+        cj.write_text(json.dumps({
+            "projects": {"/data": {"hasTrustDialogAccepted": True,
+                                   "lastSessionId": "s1"}}}))
+        lifecycle._mark_project_trusted(cj, Path("/data"))
+        out = json.loads(cj.read_text())
+        assert out["projects"]["/data"]["lastSessionId"] == "s1"
+
+
+def test_mark_project_trusted_swallows_malformed_json():
+    """A corrupt claude.json must never abort `claudeteam start`."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        cj = Path(d) / ".claude.json"
+        cj.write_text("{not valid json")
+        lifecycle._mark_project_trusted(cj, Path("/data"))  # must not raise
+
+
+# ── _ensure_claude_agent_home ────────────────────────────────────
 
 
 def test_ensure_claude_agent_home_does_not_raise_when_data_missing():
     """On hosts without /data (macOS, test runners), the helper falls
-    back to <state_dir>/agent-home/<agent>. Boss-flagged 2026-05-05:
-    don't crash claudeteam start outside Docker."""
+    back to <state_dir>/agent-home/<agent> — don't crash claudeteam
+    start outside Docker."""
     import os
     if os.path.exists("/data"):
         return  # skip on Linux containers; helper does real work there
@@ -943,8 +1052,8 @@ def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():
     the result as a *regular file* (not a symlink). Earlier impl
     symlinked to ~/.claude/.credentials.json which (a) goes stale
     versus the live keychain and (b) gets atomic-replaced by claude on
-    refresh, defeating the share intent. 2026-05-07 host smoke ate
-    'refreshToken: ""' for breakfast — pin the regular-file invariant."""
+    refresh, defeating the share intent — which surfaced an empty
+    'refreshToken: ""'. Pin the regular-file invariant."""
     import os
     import platform
     if platform.system() != "Darwin":
@@ -958,7 +1067,7 @@ def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():
     with isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
             attr_patch(subprocess, run=fake_run):
         lifecycle._ensure_claude_agent_home("manager")
-        from claudeteam.agents.claude_code import agent_home
+        from claudeteam.runtime.paths import agent_home
         cred = Path(agent_home("manager")) / ".claude" / ".credentials.json"
         assert cred.exists(), "creds file not materialised"
         assert not cred.is_symlink(), "expected regular file, got symlink"
@@ -986,7 +1095,7 @@ def test_ensure_claude_agent_home_overwrites_stale_creds_each_call():
     with isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
             attr_patch(subprocess, run=fake_run):
         lifecycle._ensure_claude_agent_home("manager")
-        from claudeteam.agents.claude_code import agent_home
+        from claudeteam.runtime.paths import agent_home
         cred = Path(agent_home("manager")) / ".claude" / ".credentials.json"
         assert "v1-tok" in cred.read_text()
         lifecycle._ensure_claude_agent_home("manager")

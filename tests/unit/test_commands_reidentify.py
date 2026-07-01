@@ -57,7 +57,7 @@ def test_reidentify_injects_init_prompt_into_existing_pane():
         assert "✅" in out
 
 
-# ── --all flag (round-91) ────────────────────────────────────────
+# ── --all flag ───────────────────────────────────────────────────
 
 
 def test_reidentify_all_injects_into_every_agent():
@@ -117,3 +117,39 @@ def test_reidentify_all_empty_team_returns_one():
         rc, _, err = run_cli(["reidentify", "--all"])
     assert rc == 1
     assert "no agents" in err
+
+
+# ── --print (render without a live team) + --help + error wording ─────────────
+
+
+def test_reidentify_print_renders_identity_without_live_team():
+    """`--print` renders the identity to stdout with NO tmux session — so a
+    freshly-edited config / playbook can be verified without `claudeteam up`."""
+    team = {"session": "S", "agents": {
+        "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "PRINTROLE"}}}
+    # tmux deliberately NOT patched — --print must not touch it
+    with isolated_env(team=team):
+        rc, out, err = run_cli(["reidentify", "worker_cc", "--print"])
+    assert rc == 0, err
+    assert "PRINTROLE" in out          # the rendered identity is printed
+    assert "team worker" in out         # incl the team-protocol body, not just the role
+
+
+def test_reidentify_unknown_agent_names_claudeteam_toml():
+    """Config is claudeteam.toml — the error must not name the legacy
+    team.json (which no longer exists)."""
+    with isolated_env(team=_TEAM):
+        rc, _, err = run_cli(["reidentify", "ghost"])
+    assert rc == 1
+    assert "claudeteam.toml" in err and "team.json" not in err
+
+
+def test_subcommands_print_help_not_execute():
+    """`claudeteam <cmd> --help` must PRINT usage and exit 0, not treat --help
+    as a positional and run the command (regression for the missing
+    maybe_print_help gate)."""
+    for cmd in ("reidentify", "hire", "fire", "team", "say", "read",
+                "restart", "workspace"):
+        rc, out, err = run_cli([cmd, "--help"])
+        assert rc == 0, f"{cmd} --help → rc={rc}, err={err}"
+        assert "usage" in (out + err).lower(), f"{cmd} --help printed no usage"

@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from claudeteam.feishu.deliver import apply
-from claudeteam.feishu.router import classify_event
+from claudeteam.feishu.router import Action, classify_event
 from claudeteam.runtime import manager_action_guard
 
 
@@ -31,6 +32,21 @@ _REPLY_PARENT_FIELDS = (
     "quoted_message_id",
 )
 _REPLY_THREAD_FIELDS = ("root_id", "thread_id")
+_LIFECYCLE_SLASH = ("/shutdown", "/restart")
+_DEFAULT_CATCHUP_SLASH_FRESH_MS = 600_000
+
+
+def _catchup_suppresses_slash(decision, *, now_ms: int, fresh_ms: int) -> bool:
+    """Return True when a catchup-delivered slash is a stale/destructive replay."""
+    text = (decision.text or "").strip()
+    head = text.split(None, 1)[0] if text else ""
+    if head in _LIFECYCLE_SLASH:
+        return True
+    from claudeteam.feishu.catchup import _to_epoch_ms
+    epoch = _to_epoch_ms(getattr(decision, "create_time", ""))
+    if epoch <= 0:
+        return False
+    return (now_ms - epoch) > fresh_ms
 
 
 @dataclass
@@ -53,9 +69,8 @@ def _normalise(raw: dict, *,
       `{"text": "..."}`.
     * Legacy / non-compact: Feishu webhook shape wrapped in `{event: {...}}`
       with nested `message: {chat_id, content, ...}` and
-      `sender: {sender_id: {open_id: ...}}`. The original rebuild only
-      handled this; round 3 smoke proved live lark-cli has switched to
-      the flat shape.
+      `sender: {sender_id: {open_id: ...}}`. The original code only
+      handled this; live lark-cli has since switched to the flat shape.
 
     Handle both. For each field, prefer the legacy nested location
     if present (so old fixtures keep working) then fall back to the
@@ -93,8 +108,7 @@ def _normalise(raw: dict, *,
     # `sender_type: "user" | "app"` flat at top; webhook-shape and
     # chat-messages-list both put it inside `sender.sender_type` /
     # `sender.id_type`. Needed for bot-self detection so manager's
-    # own cards don't loop back into manager's inbox via catchup
-    # (host_smoke 2026-05-06: 7 forward loops before this caught).
+    # own cards don't loop back into manager's inbox via catchup.
     sender_type = (sender.get("sender_type")
                    or sender.get("id_type")
                    or ev.get("sender_type", ""))
@@ -214,6 +228,13 @@ def _extract_text(content, msg_type: str, *,
             message_id=message_id,
             resource_downloader=resource_downloader,
         )
+    if msg_type == "interactive":
+        title = ((data.get("header") or {}).get("title") or {}).get("content", "")
+        body = "\n".join(
+            str(el["content"]) for el in (data.get("body") or {}).get("elements", [])
+            if isinstance(el, dict) and el.get("content")
+        )
+        return f"{title}\n{body}".strip() or "[card]"
     # Default: text or unknown — try common .text field, then .content,
     # then leave empty so callers can fall back to ev.get("text").
     return data.get("text") or data.get("content") or ""
@@ -355,7 +376,10 @@ def process_lines(lines: Iterable[str], *,
                   seen_msg_ids: set[str] | None = None,
                   resource_downloader: Callable | None = None,
                   reply_context_resolver: Callable | None = None,
-                  event_lock: object | None = None) -> LoopStats:
+                  event_lock: object | None = None,
+                  suppress_slash: bool = False,
+                  catchup_slash_fresh_ms: int = _DEFAULT_CATCHUP_SLASH_FRESH_MS
+                  ) -> LoopStats:
     """Run the subscribe loop over `lines` (one Feishu event JSON each).
 
     Designed to be exited by exhausting the iterator.  The production
@@ -364,21 +388,31 @@ def process_lines(lines: Iterable[str], *,
     `seen_msg_ids` lets the caller seed the dedup set across calls /
     process restarts. Used by the router to persist seen ids to
     state/router.seen.json so catchup-after-restart doesn't re-apply
-    messages that were already handled before the restart (host_smoke
-    2026-05-06: same /tmux manager card forwarded into manager inbox
-    every ~3.5min as router self-restarted).
+    messages that were already handled before the restart (otherwise the
+    same /tmux manager card gets forwarded into manager inbox every time
+    the router self-restarts).
+
+    `suppress_slash` is set on the catchup path. It does NOT blanket-drop
+    every slash — catchup is also the WS-fallback delivery path, so a blanket
+    drop silently eats the boss's *fresh* slashes when the WebSocket is down
+    (a "slash slow / no response" regression). Instead, only
+    a genuine stale-replay or a destructive lifecycle command is dropped — see
+    `_catchup_suppresses_slash`. Suppressed slashes still advance the cursor
+    (via on_progress) so a respawn doesn't re-encounter them.
+    `catchup_slash_fresh_ms` is the staleness threshold for that decision.
     """
     stats = LoopStats()
     if seen_msg_ids is not None:
         stats.seen_msg_ids = seen_msg_ids
+    now_ms = int(time.time() * 1000)
     def _process_one(line: str) -> None:
         # Subscribe-aliveness ping: fire on every non-empty stdout line,
         # before classification. Even DROPs (bot_self / dedup / bad_json)
         # prove the lark-cli WebSocket is still emitting; only by counting
         # raw lines, not 'successfully handled events', can the watchdog
-        # tell quiet-but-alive apart from silent-stall. Caught 2026-05-08
-        # host smoke: chats with mostly bot self-talk would trip the 600s
-        # stall threshold even though subscribe was healthy.
+        # tell quiet-but-alive apart from silent-stall. Without this, chats
+        # with mostly bot self-talk would trip the 600s stall threshold
+        # even though subscribe was healthy.
         if on_line_received is not None:
             try:
                 on_line_received()
@@ -429,7 +463,7 @@ def process_lines(lines: Iterable[str], *,
             bot_id=bot_id,
             seen_msg_ids=stats.seen_msg_ids,
             default_target=default_target,
-        )
+            )
         if decision.is_drop():
             if (decision.reason == "bot_self"
                     and decision.sender == default_target
@@ -450,6 +484,18 @@ def process_lines(lines: Iterable[str], *,
                     on_progress(decision, stats)
                 except Exception as e:
                     print(f"  ⚠️ on_progress callback failed on dropped {decision.msg_id}: {e}")
+            return
+        if (suppress_slash and decision.action is Action.SLASH
+                and _catchup_suppresses_slash(
+                    decision, now_ms=now_ms, fresh_ms=catchup_slash_fresh_ms)):
+            _record_drop(stats, "catchup_slash_skip")
+            if decision.msg_id:
+                stats.seen_msg_ids.add(decision.msg_id)
+            if on_progress is not None:
+                try:
+                    on_progress(decision, stats)
+                except Exception as e:
+                    print(f"  ⚠️ on_progress callback failed on {decision.msg_id}: {e}")
             return
         try:
             apply_fn(decision)

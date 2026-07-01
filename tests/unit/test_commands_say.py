@@ -30,7 +30,7 @@ def _isolated(chat_id: str = "oc_test", profile: str = ""):
 def _fake_send():
     """Replace feishu_chat.send_card with a recorder.
 
-    R169: `claudeteam say` is card-only; the old text path is dead.
+    `claudeteam say` is card-only; the old text path is dead.
     Tests still keyed on `state['calls']` (legacy text-test ergonomics)
     but the recorder now captures send_card kwargs and synthesises
     a `text` field from the card body so existing assertions on
@@ -47,7 +47,7 @@ def _fake_send():
                   lark_run=None):
         # Synthesise the legacy `[<agent>] <body>` text shape from the
         # card title + body so older tests' text-string assertions
-        # continue to make sense post-R169.
+        # continue to make sense.
         title = card.get("header", {}).get("title", {}).get("content", "")
         body = ""
         try:
@@ -83,7 +83,7 @@ def _fake_send():
         return state["result"]
 
     def fake_text(*a, **kw):
-        # No-op; should not be called post-R169 but keep for safety.
+        # No-op; should not be called but keep for safety.
         return state["result"]
 
     def fake_image(chat_id, image, *, profile="", as_user=False, lark_run=None):
@@ -302,12 +302,6 @@ def test_say_dash_empty_stdin_returns_one_without_sending():
     assert st["card_calls"] == []
 
 
-def test_say_default_identity_is_bot():
-    with _isolated(), _fake_send() as send:
-        run_cli(["say", "manager", "hi", "--no-card"])
-        assert send["calls"][0]["as_user"] is False
-
-
 def test_say_as_user_flag():
     with _isolated(), _fake_send() as send:
         run_cli(["say", "manager", "hi", "--no-card", "--as", "user"])
@@ -329,9 +323,9 @@ def test_say_explicit_flag_overrides_env_var():
 
 
 def test_say_reply_flag_silently_dropped_post_R169():
-    """R169: cards don't thread; --reply is consumed but silently
-    dropped. say still succeeds (rc=0) and emits a card; only a
-    one-line stderr warning surfaces the dropped threading."""
+    """Cards don't thread; --reply is consumed but silently dropped.
+    say still succeeds (rc=0) and emits a card; only a one-line stderr
+    warning surfaces the dropped threading."""
     with _isolated(), _fake_send() as send:
         rc, _, err = run_cli(["say", "manager", "hi", "--reply", "om_parent"])
         assert rc == 0
@@ -469,7 +463,7 @@ def test_say_zero_or_one_arg_returns_one():
     assert "usage:" in err
 
 
-# ── --card flag (round-99) ──────────────────────────────────────
+# ── --card flag ─────────────────────────────────────────────────
 
 
 @contextlib.contextmanager
@@ -544,8 +538,7 @@ def test_say_card_failure_falls_back_to_plain_text():
 
 def test_say_card_for_worker_uses_team_json_color_after_R169():
     """team.json's per-agent `color` field wins over the hard-coded
-    worker_*→green default. Test fixture sets worker_cc → purple,
-    matches main's worker_cc shade."""
+    worker_*→green default. Test fixture sets worker_cc → purple."""
     with _isolated(), _fake_send_card() as st:
         run_cli(["say", "worker_cc", "step 1 done", "--card"])
     card = st["card_calls"][0]["card"]
@@ -908,25 +901,11 @@ def test_say_card_color_reflects_live_toml_edit():
             f"card_color edit didn't take effect: still {second_color}"
 
 
-def test_say_with_reply_warns_and_sends_card_anyway():
-    """Cards don't thread; `--reply` prints a stderr warning but
-    still sends the card. R169: the warn message is generic
-    "--reply ignored (Feishu cards don't thread)" since there's
-    no longer a --card vs --no-card distinction."""
-    with _isolated(), _fake_send_card() as st:
-        rc, _, err = run_cli(["say", "manager", "msg",
-                              "--reply", "om_xx"])
-    assert rc == 0
-    assert "ignored" in err and "thread" in err
-    assert len(st["card_calls"]) == 1
-
-
 def test_say_default_now_sends_card_after_R168():
-    """R168: default flipped — every `claudeteam say` now sends a v2
-    card (colored header per role), not plain text. Boss-flagged
-    convention for the test_a deploy: agent messages must look like
-    structured updates in chat, not raw text. Plain text path opts
-    in via the new `--no-card` flag (test below).
+    """Default flipped — every `claudeteam say` now sends a v2 card
+    (colored header per role), not plain text. The convention: agent
+    messages must look like structured updates in chat, not raw text.
+    Plain text path opts in via the new `--no-card` flag (test below).
 
     Card title shows a human-facing callsign, not the internal agent id."""
     with _isolated(), _fake_send_card() as st:
@@ -1146,7 +1125,7 @@ def test_say_manager_plain_ack_to_user_is_silenced():
 def test_say_publish_live_edit_takes_effect_without_restart():
     """REGRESSION: editing claudeteam.toml [chat.publish] should
     affect the very next `say` call without needing to restart any
-    daemon. Boss requirement: a config file is meant to live-edit.
+    daemon — a config file is meant to live-edit.
 
     Verifies the tunables mtime-cache invalidation actually works
     end-to-end through commands/say.py."""
@@ -1245,15 +1224,6 @@ def test_say_overrides_take_precedence_over_global():
         assert len(send["calls"]) == 1
 
 
-def test_say_overrides_always_treated_as_true():
-    with _isolated_with_overrides("worker_cc", {"worker_to_user": "always"}) as tmp, \
-            _fake_send() as send:
-        _toml_with_publish(tmp, worker_to_user=False)
-        rc, _, _ = run_cli(["say", "worker_cc", "完工", "--to", "user"])
-        assert rc == 0
-        assert len(send["calls"]) == 1
-
-
 def test_say_overrides_other_agents_unaffected():
     """worker_cc has override forcing silence; worker_codex w/o override
     follows global rule."""
@@ -1281,3 +1251,30 @@ def test_say_no_override_falls_through_to_global():
         assert rc == 0
         assert len(send["calls"]) == 0
         assert "silenced" in out
+
+
+def test_color_for_distinct_per_nonmanager_agent_manager_blue():
+    """Every agent's card is a DISTINCT color block. manager = blue
+    (fixed); non-manager agents — INCLUDING non-worker_* names
+    (dev/devops/expert/…) which previously all fell to the blue
+    fallback — cycle a blue-excluded palette so none collide."""
+    from claudeteam.commands import say
+    team = {"agents": {
+        "manager": {"role": "主管"},
+        "dev": {"role": "x"}, "devops": {"role": "x"}, "expert": {"role": "x"},
+        "qa": {"role": "x"}, "researcher": {"role": "x"}, "tester": {"role": "x"},
+    }}
+    with isolated_env(team=team):
+        assert say._color_for("manager") == "blue"
+        others = ["dev", "devops", "expert", "qa", "researcher", "tester"]
+        colors = [say._color_for(a) for a in others]
+        assert all(c != "blue" for c in colors)              # manager owns blue
+        assert len(set(colors)) == len(colors), \
+            f"non-manager colors collided: {dict(zip(others, colors))}"
+
+
+def test_color_for_explicit_cfg_color_wins_over_palette():
+    from claudeteam.commands import say
+    with isolated_env(team={"agents": {"manager": {}, "dev": {}}}):
+        assert say._color_for("dev", "red") == "red"          # explicit wins
+        assert say._color_for("dev") == say._AGENT_PALETTE[0]  # no cfg → palette

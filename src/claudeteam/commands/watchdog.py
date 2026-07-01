@@ -74,7 +74,7 @@ _CRED_PATH = Path.home() / ".claude" / ".credentials.json"
 # path the host-keychain bind-mount lands on — and to ~/.claude/... on host.
 # Hardcoding /root broke host non-root deploys: Path("/root/...").exists()
 # raised PermissionError (Linux /root is 700) instead of returning False
-# under Python 3.10–3.12, killing `claudeteam up`. Caught 2026-05-08.
+# under Python 3.10–3.12, killing `claudeteam up`.
 
 
 def _make_alert_fn():
@@ -357,6 +357,8 @@ def main(argv: list[str]) -> int:
     try:
         while True:
             watchdog.supervise(specs, states, alert_fn=alert_fn)
+            if reap_agents:
+                _reap_dead_agents(last_respawn, reap_cooldown_s)
             now = time.time()
             if now - last_network_probe >= network_probe_interval_s:
                 _run_network_probe(alert_fn=alert_fn)
@@ -381,6 +383,41 @@ def main(argv: list[str]) -> int:
         return 0
     finally:
         pidlock.release(pid_file)
+
+
+def _reap_dead_agents(last_respawn: dict, cooldown_s: float) -> list[str]:
+    """Detect agents whose CLI exited and respawn them — mirrors `restart`
+    (C-c + kill the window + provision a fresh CLI). Best-effort: the
+    watchdog loop must keep running no matter what, so everything is
+    swallowed. The agent_reaper is conservative (only a clear bash-prompt
+    pane, never an auth screen, lazy/retired skipped, per-agent cooldown)."""
+    from claudeteam.runtime import agent_reaper, config, lifecycle, tmux
+    from claudeteam.store import local_facts
+    try:
+        session = config.session_name()
+        if not tmux.has_session(session):
+            return []
+        agents_cfg = config.load_team().get("agents", {})
+        agents = list(agents_cfg.keys())
+        lazy = frozenset(n for n, c in agents_cfg.items() if c.get("lazy"))
+    except Exception as e:
+        print(f"  ⚠️ watchdog: could not read team for agent reap: {e}")
+        return []
+
+    def _respawn(agent: str) -> bool:
+        target = tmux.Target(session, agent)
+        if tmux.has_window(target):
+            tmux.send_keys(target, "C-c")
+            tmux.kill_window(target)
+        if not tmux.new_window(target):
+            return False
+        outcome = lifecycle.provision_pane(agent, target)
+        return outcome not in (lifecycle.SPAWN_FAILED, lifecycle.CONFIG_ERROR)
+
+    return agent_reaper.reap(
+        agents, session=session, respawn=_respawn,
+        cooldown_s=cooldown_s, last_respawn=last_respawn,
+        is_retired=local_facts.is_retired, lazy=lazy)
 
 
 def _maybe_refresh_claude_oauth(now: float) -> None:

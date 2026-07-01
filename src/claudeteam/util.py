@@ -88,6 +88,28 @@ def reject_extra_args(rest: list[str], usage: str) -> int | None:
     return error_exit(f"❌ unexpected args: {rest}\n{usage}")
 
 
+def reject_flag_as_agent(name: str, usage: str) -> int | None:
+    """Guard for subcommands that take an agent NAME as a positional arg.
+
+    A token starting with '-' is a misparsed option, never a real agent —
+    the classic `claudeteam inbox --help`, where '--help' would otherwise be
+    accepted as the agent and registered into facts (heartbeats / status),
+    spawning a phantom '--help' agent that pollutes `/team`.
+    Callers run `maybe_print_help` first so real
+    -h/--help prints usage; this then rejects any *other* flag-shaped token.
+
+    Prints a usage error to stderr and returns 1, else None so the caller
+    continues. Caller form mirrors reject_extra_args:
+
+        if (rc := reject_flag_as_agent(agent, USAGE)) is not None:
+            return rc
+    """
+    if name.startswith("-"):
+        return usage_error(
+            f"❌ '{name}' 不是合法 agent 名（看起来是选项，不是 agent）\n{usage}")
+    return None
+
+
 def pop_flag(rest: list[str], flag: str) -> str | None:
     """Pop `flag <value>` out of `rest` and return value; or None if absent
     or value is missing. Mutates `rest`. Used by every command that does its
@@ -154,8 +176,8 @@ def read_jsonl(path: Path) -> list[dict]:
       forward-readable when a previous crash left a half-written line;
       callers can still write valid entries afterwards).
 
-    Returns records oldest-first (file order), since JSONL is append-only
-    in this rebuild. Callers that want newest-first reverse explicitly.
+    Returns records oldest-first (file order), since JSONL is append-only.
+    Callers that want newest-first reverse explicitly.
     """
     if not path.exists():
         return []
@@ -187,7 +209,7 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> N
 def write_json(path: Path, data) -> None:
     """Atomically write `data` as pretty-printed UTF-8 JSON.
 
-    Convention used everywhere in the rebuild: `ensure_ascii=False` so
+    Convention used everywhere in this project: `ensure_ascii=False` so
     Chinese strings stay readable in checked-in/audited files,
     `indent=2` for diff-friendliness, trailing newline so `cat` doesn't
     leave the prompt on the same line.
@@ -200,7 +222,7 @@ def print_json(data) -> None:
     every `--json` flag uses (`team`, `health`, `usage`).
 
     Same `ensure_ascii=False` + `indent=2` choices as `write_json` so
-    machine-piped output (jq, grep, smoke conductors) gets identical
+    machine-piped output (jq, grep, CI) gets identical
     formatting to checked-in JSON files. Single source of truth for
     these knobs — earlier the call was inlined in three commands and
     each could drift independently.
@@ -227,7 +249,7 @@ def env_path(name: str) -> Path | None:
 
 
 def now_ms() -> int:
-    """Wall-clock time in epoch milliseconds (the rebuild's canonical
+    """Wall-clock time in epoch milliseconds (the project's canonical
     timestamp resolution). Local stores all serialize this directly."""
     return int(time.time() * 1000)
 

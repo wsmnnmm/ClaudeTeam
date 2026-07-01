@@ -1,10 +1,8 @@
 """Live server-load data collection (subprocess layer).
 
-Ports `feat/messaging-fixes-block1` / `main`'s `runtime/health.py`
-collector so the rebuild branch can render the same rich `/health`
-card the boss recognised — host CPU/mem/disk + docker container stats
-+ per-agent process tree. Subprocess calls live here so
-`feishu/slash._handle_health` stays pure / testable.
+Collects the data behind the rich `/health` card — host CPU/mem/disk +
+docker container stats + per-agent process tree. Subprocess calls live
+here so `feishu/slash._handle_health` stays pure / testable.
 
 Data shape returned by `collect_server_load(agent_set, session)`:
 
@@ -86,9 +84,9 @@ def _host_cpu(run: Callable = _run, *,
               cpu_count: Callable[[], int | None] = os.cpu_count) -> dict | None:
     """Prefer `/proc/loadavg` + `os.cpu_count()` over the
     `uptime` + `nproc` shell-outs because the slim Docker image doesn't
-    ship `procps` (boss saw "无数据" in /health card 2026-05-04). Falls
-    back to `uptime` for macOS hosts which lack `/proc`. `read_proc` and
-    `cpu_count` are injectable for tests."""
+    ship `procps` (which otherwise shows up as "无数据" in the /health
+    card). Falls back to `uptime` for macOS hosts which lack `/proc`.
+    `read_proc` and `cpu_count` are injectable for tests."""
     loadavg = read_proc("/proc/loadavg")
     if loadavg:
         parts = loadavg.split()
@@ -110,8 +108,8 @@ def _host_cpu(run: Callable = _run, *,
     if not m:
         return None
     l1, l5, l15 = (float(m.group(i)) for i in (1, 2, 3))
-    # Try `nproc` first for parity with old test fixture; fall back to
-    # `cpu_count()` if nproc isn't on PATH (or returns garbage).
+    # Try `nproc` first; fall back to `cpu_count()` if nproc isn't on
+    # PATH (or returns garbage).
     n = run(["nproc"])
     try:
         ncores = int((n.stdout or "").strip())

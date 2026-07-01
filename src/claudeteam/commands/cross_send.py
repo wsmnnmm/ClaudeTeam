@@ -16,7 +16,9 @@ from typing import Callable
 
 from claudeteam.commands import send as send_cmd
 from claudeteam.runtime import config, team_registry, tunables
-from claudeteam.util import error_exit, pop_bool_flag, pop_flag, read_json, usage_error
+from claudeteam.util import (
+    error_exit, maybe_print_help, pop_bool_flag, pop_flag, read_json, usage_error,
+)
 
 
 USAGE = (

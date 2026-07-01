@@ -42,9 +42,9 @@ from claudeteam.util import atomic_write_text, env_path, env_str
 
 # env vars to propagate from the operator's shell into every spawned pane
 # so worker agents' shell-out calls (via Bash tool) see the deployment's
-# state dir instead of falling back to ~/.claudeteam.
+# state dir instead of re-deriving a different one from the pane's own cwd.
 #
-# FEISHU_APP_*/LARKSUITE_CLI_APP_* added 2026-05-08 (bringup B5): when
+# FEISHU_APP_*/LARKSUITE_CLI_APP_* are propagated too: when the
 # tmux server was started by an earlier checkout's `claudeteam up`, new
 # panes inherit *its* global env (no FEISHU_APP_ID/SECRET). lark.py's
 # tenant_token_from_env() returned None and fell back to the saved
@@ -155,15 +155,58 @@ def _venv_path_prefix() -> str:
 
 def _path_readable(p: Path) -> bool:
     """Returns True iff `p` can be stat'd. False on PermissionError /
-    not-found / any OSError. deploy-issues 2026-05-08 #1: on Linux host
-    where /root is mode 700, Path("/root/...").exists() raised
-    PermissionError instead of returning False (Python <3.13 behavior),
-    killing `claudeteam up` for non-root deployers. Three /root probes
-    in this module need the soft semantic."""
+    not-found / any OSError. On a Linux host where /root is mode 700,
+    Path("/root/...").exists() raised PermissionError instead of
+    returning False (Python <3.13 behavior), killing `claudeteam up`
+    for non-root deployers. Three /root probes in this module need the
+    soft semantic."""
     try:
         return p.exists()
     except OSError:
         return False
+
+
+def _pick_claude_seed(candidates: list[Path]) -> bytes | None:
+    """Choose the bytes to seed a fresh agent ~/.claude.json with."""
+    seed = None
+    for src in candidates:
+        if not _path_readable(src):
+            continue
+        try:
+            data = src.read_bytes()
+        except OSError:
+            continue
+        if seed is None:
+            seed = data
+        if b'"oauthAccount"' in data:
+            return data
+    return seed
+
+
+def _mark_project_trusted(claude_json: Path, workdir: Path) -> None:
+    """Pre-accept claude's per-folder trust dialog for `workdir`."""
+    key = str(workdir)
+    try:
+        data = json.loads(claude_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    projects = data.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        projects = {}
+        data["projects"] = projects
+    entry = projects.setdefault(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        projects[key] = entry
+    if entry.get("hasTrustDialogAccepted") is True:
+        return
+    entry["hasTrustDialogAccepted"] = True
+    try:
+        claude_json.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _read_json_file(path: Path) -> dict:
@@ -245,13 +288,33 @@ def _ensure_claude_agent_home(agent: str) -> None:
     doesn't exist), silently skip and let claude fall back to its
     default `$HOME` discovery.
     """
-    from claudeteam.agents.claude_code import agent_home as _agent_home
+    from claudeteam.runtime.paths import agent_home as _agent_home
     home = Path(_agent_home(agent))
     claude_dir = home / ".claude"
     try:
         claude_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
+    # Seed ~/.claude.json once. Without the `oauthAccount` + `userID`
+    # keys claude pops the OAuth login dialog (credentials.json alone
+    # isn't enough — claude checks ~/.claude.json for "login complete"
+    # state). Two candidate sources, in priority order: the explicit
+    # Docker mount (/root/host-claude.json) and the invoking user's own
+    # ~/.claude.json (host deployment). The Dockerfile's `claude
+    # --version` leaves a stub /root/.claude.json with no oauthAccount,
+    # so prefer whichever source actually carries an account; only fall
+    # back to an account-less file if that's all we have. After the copy
+    # the per-agent file is writable so claude can update its own
+    # session counters without affecting other agents.
+    claude_json = home / ".claude.json"
+    user_claude_json = Path.home() / ".claude.json"
+    if not claude_json.exists():
+        seed = _pick_claude_seed([Path("/root/host-claude.json"), user_claude_json])
+        if seed is not None:
+            try:
+                claude_json.write_bytes(seed)
+            except OSError:
+                pass
     # Host fallback: claude on macOS keys keychain lookup by $HOME, so a
     # per-agent HOME with no .credentials.json gets "Not logged in" even
     # though the keychain entry exists for the user. Export it to a file
@@ -260,10 +323,10 @@ def _ensure_claude_agent_home(agent: str) -> None:
     # macOS host: prefer the live keychain over a (potentially-stale) host
     # ~/.claude/.credentials.json. Claude refreshes OAuth into the keychain
     # but only writes the file occasionally, so a symlink to the host file
-    # can hand the pane a `refreshToken` the server has already revoked.
-    # 2026-05-07 caught: pane symlinked to stale host file, refresh
-    # round-tripped 401, claude blanked the field, pane logged "401
-    # Invalid auth credentials". Re-extract on every provision and write
+    # can hand the pane a `refreshToken` the server has already revoked:
+    # a pane symlinked to the stale host file would round-trip a 401,
+    # claude blanked the field, and the pane logged "401 Invalid auth
+    # credentials". Re-extract on every provision and write
     # a *regular file* — not a symlink — because claude's atomic-write
     # of credentials replaces the symlink target with a plain file on
     # first refresh anyway, defeating the original sharing intent.
@@ -286,22 +349,27 @@ def _ensure_claude_agent_home(agent: str) -> None:
             # `security` missing / keychain locked / subprocess timeout →
             # silent skip and fall through to the host-file branch below.
             pass
+    # Docker/Linux: the shared /root/.claude/.credentials.json is bind-mounted
+    # and the watchdog rotates its OAuth token — SYMLINK the per-agent file to it
+    # so a refresh reaches every pane (a copy goes stale the moment the watchdog
+    # rotates the shared token; that was the bug). macOS took the keychain branch
+    # above (where /root/.claude isn't readable), so this is a no-op there.
+    cred_target = Path("/root/.claude/.credentials.json")
+    if not keychain_extracted and not cred_link.exists() and _path_readable(cred_target):
+        try:
+            cred_link.symlink_to(cred_target)
+        except OSError:
+            pass
     if not keychain_extracted and not cred_link.exists():
         user_creds = Path.home() / ".claude" / ".credentials.json"
         if user_creds.exists():
             try:
-                # Copy, not symlink: claude's atomic-write replaces the
-                # symlink with a plain file anyway, so start with one.
+                # Copy — last resort (no keychain, no shared target). claude's
+                # atomic-write replaces a symlink with a plain file on refresh,
+                # so a plain file is the honest starting point here.
                 cred_link.write_bytes(user_creds.read_bytes())
             except OSError:
                 pass
-    user_claude_json = Path.home() / ".claude.json"
-    claude_json = home / ".claude.json"
-    if _path_readable(user_claude_json) and not claude_json.exists():
-        try:
-            claude_json.write_bytes(user_claude_json.read_bytes())
-        except OSError:
-            pass
     settings = claude_dir / "settings.json"
     if not settings.exists():
         settings.write_text(
@@ -428,19 +496,109 @@ def _ensure_claude_agent_home(agent: str) -> None:
             projects_link.symlink_to(projects_target)
         except OSError:
             pass
-    # Seed ~/.claude.json from host's read-only mount once. Without
-    # `userID` + `oauthAccount` keys claude pops the OAuth login
-    # dialog (the credentials.json alone isn't enough — claude checks
-    # ~/.claude.json for "you've completed login" state). After the
-    # initial copy, the per-agent file is writable so claude can
-    # update its own session counters without affecting other agents.
-    claude_json = home / ".claude.json"
-    host_claude_json = Path("/root/host-claude.json")
-    if _path_readable(host_claude_json) and not claude_json.exists():
-        try:
-            claude_json.write_bytes(host_claude_json.read_bytes())
-        except OSError:
-            pass
+# Per-CLI OAuth/credential file to SYMLINK from the operator HOME into the
+# agent's isolated HOME so HOME isolation doesn't log the CLI out — and so a
+# token refresh propagates to the one shared file (no per-agent drift).
+# Keyed by the adapter's process_name() so the package-name aliases
+# (kimi-cli / qwen-cli) collapse onto one entry. Value:
+#   (rel  — path of the cred file under HOME, identical on both sides,
+#    skip_env — env var whose presence means the CLI authenticates by API
+#               key and needs no seeded OAuth file; None = always seed)
+#
+# claude-code is absent — its richer seeding (macOS keychain, ~/.claude.json,
+# folder trust) lives in _ensure_claude_agent_home. kimi is absent on
+# purpose: its adapter does NOT set HOME=<agent_home> (it keeps cwd=repo
+# with no native file), so the pane already inherits the operator's
+# ~/.kimi/config.toml — there is nothing to isolate and nothing to seed.
+# (In the prod container, worker_kimi has no agent-home at all.) If kimi
+# ever gains HOME isolation, add its seed entry here.
+_CLI_CRED_SEEDS: dict[str, tuple[str, str | tuple[str, ...] | None]] = {
+    "codex":  (".codex/auth.json", None),
+    "gemini": (".gemini/oauth_creds.json", "GEMINI_API_KEY"),
+    "qwen":   (".qwen/oauth_creds.json", ("DASHSCOPE_API_KEY", "OPENAI_API_KEY")),
+}
+
+
+def _seed_cli_credentials(agent: str, cli: str) -> None:
+    """Symlink the operator's OAuth credential file for `cli` into the agent's
+    isolated HOME, so the per-agent `HOME=<agent_home>` (codex: `CODEX_HOME`)
+    doesn't strand the CLI at a fresh, logged-out state dir — and a token
+    refresh propagates to the one shared file instead of drifting per agent.
+
+    Best-effort throughout — any of these silently skips, never aborting the
+    provision:
+      • CLI not in `_CLI_CRED_SEEDS` (claude handled elsewhere; kimi not
+        isolated)
+      • the skip-env is set (API-key auth → OAuth file unnecessary)
+      • the operator source file is absent / unreadable (never logged in)
+      • the dest already exists (don't clobber a refreshed per-agent token)
+      • the dest HOME isn't writable
+
+    Only the credential file is touched: codex's per-agent config.toml
+    (written by `ensure_workdir_trusted`) lives beside auth.json and is
+    never overwritten here."""
+    try:
+        adapter = get_adapter(cli)
+    except KeyError:
+        return
+    spec = _CLI_CRED_SEEDS.get(adapter.process_name())
+    if spec is None:
+        return
+    rel, skip_env = spec
+    # Skip seeding the OAuth file when the operator authenticates by API key —
+    # check ALL of the CLI's key vars (qwen: DASHSCOPE *and* OPENAI). Otherwise we
+    # symlink an OAuth file that makes agent_auth resolve 'login' and blank the key
+    # the operator actually set.
+    skip_envs = (skip_env,) if isinstance(skip_env, str) else (skip_env or ())
+    if any(env_str(e) for e in skip_envs):
+        return
+    from claudeteam.runtime.paths import agent_home as _agent_home
+    src = Path.home() / rel
+    dst = Path(_agent_home(agent)) / rel
+    if dst.exists() or dst.is_symlink() or not _path_readable(src):
+        return
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Symlink, NOT copy: the agent reads the ONE shared credential file, so
+        # an OAuth token refresh propagates to every agent and the operator —
+        # no per-agent drift, no rotating-refresh logout. (Matches multica's
+        # codex handling.) claude is the deliberate exception: it atomic-writes
+        # credentials, which would replace this link with a stale private file
+        # → 401, so it is copied in _ensure_claude_agent_home instead.
+        dst.symlink_to(src)
+    except OSError:
+        pass
+
+
+def _ensure_agent_home(agent: str, cli: str) -> None:
+    """Provision the per-agent HOME for any CLI before spawn.
+
+    claude-code gets the full seeding (keychain creds, settings.json,
+    ~/.claude.json, folder trust) via `_ensure_claude_agent_home`. Every
+    other CLI just needs its per-agent HOME *directory* to exist so the
+    spawn's `HOME=<agent_home>` (and codex's `CODEX_HOME`) lands the CLI's
+    own config / cache / native-memory file in an isolated dir instead of
+    racing the operator HOME across panes. The native memory file itself
+    (AGENTS.md / GEMINI.md / QWEN.md) is written by `identity.write` via
+    `atomic_write_text`, which creates its own parent dir — so all we owe
+    here is the home root.
+
+    For the HOME-isolated non-claude CLIs we additionally seed the
+    operator's OAuth credential into the isolated HOME (see
+    `_seed_cli_credentials`), otherwise the fresh state dir would leave the
+    CLI logged out.
+
+    Best-effort: an unwritable path must not fail the whole provision (the
+    init-prompt memory injection still delivers identity + digest)."""
+    if cli == "claude-code":
+        _ensure_claude_agent_home(agent)
+        return
+    from claudeteam.runtime.paths import agent_home as _agent_home
+    try:
+        Path(_agent_home(agent)).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    _seed_cli_credentials(agent, cli)
 
 
 def _boolish(value: str, default: bool) -> bool:
@@ -821,7 +979,14 @@ def _write_spawn_script(agent: str, command: str) -> Path:
 
 def _agent_spawn_cmd(agent: str, adapter, model: str) -> str:
     root = shlex.quote(str(_team_root_dir()))
-    lane_cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
+    prefix = pane_env_prefix(agent)
+    spawn_cmd = adapter.spawn_cmd(agent, model)
+    if "CODEX_HOME=" in spawn_cmd:
+        prefix = " ".join(
+            part for part in shlex.split(prefix)
+            if not part.startswith("CODEX_HOME=")
+        )
+    lane_cmd = f"{prefix} {spawn_cmd}".strip()
     command = f"cd {root} && {_spawn_env_wrapper(lane_cmd)}"
     return f"bash {shlex.quote(str(_write_spawn_script(agent, command)))}"
 
@@ -871,7 +1036,8 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
       1. Render + persist agent's identity.md (`agents/<name>/identity.md`).
       2. If agent is `lazy` in team.json and has no unread inbox: set status 待命, return LAZY.
       3. For codex CLI: ensure cwd is trusted in ~/.codex/config.toml.
-      4. Spawn the adapter's CLI in the pane (with pane_env_prefix).
+      4. Spawn the adapter's CLI in the pane (env sourced via
+         build_spawn_command, not typed in as a visible prefix).
       5. Wait up to 20s for the adapter's ready marker to appear.
       6. Inject the identity init prompt so the agent reads identity.md
          and reports for duty.
@@ -894,7 +1060,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     cfg = team.get("agents", {}).get(agent)
     if cfg is None:
         import sys
-        print(f"  ⚠️ {agent}: agent {agent!r} not in team.json", file=sys.stderr)
+        print(f"  ⚠️ {agent}: agent {agent!r} not in claudeteam.toml", file=sys.stderr)
         return CONFIG_ERROR
     cli = cfg.get("cli", "claude-code")
     # Inline agent_model resolution: per-agent override → env var →
@@ -913,6 +1079,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         local_facts.touch_heartbeat(agent)
         return LAZY
+    _ensure_agent_home(agent, cli)
     if cli == "codex-cli":
         _ensure_codex_home(agent, model)
         ensure_workdir_trusted(_team_root_dir(), config_path=paths.codex_config_file(agent))

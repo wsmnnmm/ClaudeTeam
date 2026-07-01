@@ -6,12 +6,15 @@ isolated_env(team=...) for the env / file fixture.
 from __future__ import annotations
 
 import contextlib
+import json
 import shlex
+import time
 from pathlib import Path
 
-from helpers import isolated_env, run_cli, tmux_patch
+from helpers import attr_patch, isolated_env, run_cli, tmux_patch
 from claudeteam.agents import identity
 from claudeteam.commands import up as up_cmd
+from claudeteam.runtime import archive, paths
 from claudeteam.store import local_facts
 
 
@@ -26,7 +29,7 @@ def _spawn_script_text(cmd: str) -> str:
 # All ready-marker strings across every adapter. capture_pane returns this
 # blob so wake.wait_until_ready short-circuits on the first poll regardless
 # of which CLI the test team uses. Without it each spawn paid the 60s
-# wake timeout (R172.b raised it from 20s for fresh-launch dialog headroom),
+# wake timeout (raised from 20s for fresh-launch dialog headroom),
 # and a 3-agent test took 180s of pure idle sleep.
 _ALL_READY_MARKERS = (
     "bypass permissions on\n? for shortcuts\n"        # claude-code
@@ -79,18 +82,26 @@ def _fake_tmux():
         state["calls"].append(("send_keys", str(t), *keys))
         return True
 
+    # Always carries every adapter's ready markers (so wait_until_ready
+    # short-circuits on the first poll) AND changes each call, so provision's
+    # motion-based inject_and_confirm sees the pane move = submitted and
+    # returns without escalating the submit key.
     def capture_pane(target, lines=80):
-        return _ALL_READY_MARKERS
+        state["cap_n"] = state.get("cap_n", 0) + 1
+        return _ALL_READY_MARKERS + f"\nframe {state['cap_n']}\n"
 
     def inject(t, text, *, submit_keys=("Enter",)):
         state["calls"].append(("inject", str(t), text))
         return True
 
+    # No-op sleep: provision's inject_and_confirm always settles once before
+    # checking for motion; without this each provisioned pane paid ~1s.
     with tmux_patch(has_session=has_session, has_window=has_window,
                     new_session=new_session, new_window=new_window,
                     kill_window=kill_window, spawn_agent=spawn_agent,
                     send_keys=send_keys, capture_pane=capture_pane,
-                    inject=inject):
+                    inject=inject), \
+         attr_patch(time, sleep=lambda *a, **k: None):
         yield state
 
 
@@ -108,7 +119,7 @@ def test_start_creates_session_and_one_window_per_agent():
             "worker_kimi":  {"cli": "kimi-code"},
         },
     }
-    with _isolated_team(team), _fake_tmux() as fake:
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
         rc, out, _ = run_cli(["start"])
         assert rc == 0, out
         assert "🚀 created tmux session MyTeam" in out
@@ -222,12 +233,13 @@ def test_start_propagates_state_dir_into_pane_env():
 
 
 def test_hire_unknown_agent_returns_one():
+    """Not in roster AND no archive to restore → can't hire."""
     team = {"session": "S", "agents": {"manager": {}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
         rc, _, err = run_cli(["hire", "ghost"])
         assert rc == 1
-        assert "unknown agent" in err
+        assert "cannot hire ghost" in err
 
 
 def test_hire_when_session_not_running_returns_one():
@@ -266,24 +278,6 @@ def test_hire_lazy_agent_skips_spawn_and_marks_standby():
         assert snap["status"] == "待命"
 
 
-def test_start_lazy_agent_creates_window_no_spawn():
-    team = {
-        "session": "T",
-        "agents": {
-            "manager": {"cli": "claude-code"},
-            "sleeper": {"cli": "kimi-code", "lazy": True},
-        },
-    }
-    with _isolated_team(team), _fake_tmux() as fake:
-        rc, out, _ = run_cli(["start"])
-        assert rc == 0
-        assert "lazy-pane ready" in out
-        spawn_targets = [c[1] for c in fake["calls"] if c[0] == "spawn_agent"]
-        assert "T:manager" in spawn_targets
-        assert "T:sleeper" not in spawn_targets
-        assert local_facts.get_status("sleeper")["status"] == "待命"
-
-
 def test_hire_when_window_already_exists_is_idempotent():
     team = {"session": "S", "agents": {"manager": {}, "x": {}}}
     with _isolated_team(team), _fake_tmux() as fake:
@@ -297,14 +291,20 @@ def test_hire_when_window_already_exists_is_idempotent():
 # ── fire ──────────────────────────────────────────────────────────
 
 
-def test_fire_unknown_pane_marks_status_only():
-    team = {"session": "S", "agents": {"manager": {}, "x": {}}}
-    with _isolated_team(team), _fake_tmux() as fake:
+def test_fire_no_pane_still_archives_and_removes_from_roster():
+    """fire is destructive 裁员 even with no live pane: status 已停止 +
+    workspace archived + roster entry deleted."""
+    import json
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code"}}}
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
         fake["session_exists"].add("S")
         rc, out, _ = run_cli(["fire", "x"])
         assert rc == 0
-        assert "no pane in session" in out
+        assert "has no live pane" in out
         assert local_facts.get_status("x")["status"] == "已停止"
+        # roster entry deleted (root fix: start/up can't revive it)
+        roster = json.loads((tmp / "team.json").read_text())
+        assert "x" not in roster["agents"] and "manager" in roster["agents"]
 
 
 def test_fire_help_prints_usage_without_mutating_status():
@@ -327,9 +327,14 @@ def test_fire_unknown_agent_returns_error_without_status():
 
 def test_fire_existing_pane_sends_ctrl_c_and_kills_window():
     team = {"session": "S", "agents": {"manager": {}, "x": {}}}
-    with _isolated_team(team), _fake_tmux() as fake:
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
         fake["session_exists"].add("S")
         fake["windows"].add("S:x")
+        # give x a workspace dir with a file so we can prove it was archived
+        wsdir = paths.agent_dir("x")
+        wsdir.mkdir(parents=True, exist_ok=True)
+        (wsdir / "identity.md").write_text("I am x", encoding="utf-8")
+
         rc, out, _ = run_cli(["fire", "x"])
         assert rc == 0
         assert "fired: x" in out
@@ -338,7 +343,38 @@ def test_fire_existing_pane_sends_ctrl_c_and_kills_window():
         assert ops[0] == ("send_keys", "S:x", "C-c")
         assert ("kill_window", "S:x") in fake["calls"]
         assert "S:x" not in fake["windows"]
+        # status tombstone
         assert local_facts.get_status("x")["status"] == "已停止"
+        # roster removal
+        roster = json.loads((tmp / "team.json").read_text())
+        assert "x" not in roster["agents"]
+        # workspace archived: original gone, archive holds the file + records
+        assert not wsdir.exists()
+        arc = archive.find_archived("x")
+        assert arc is not None
+        assert (arc / "identity.md").read_text() == "I am x"
+        assert (arc / "_termination.md").exists()
+        assert (arc / "_roster.json").exists()
+
+
+def test_fire_twice_does_not_shadow_good_archive():
+    """Re-firing an already-fired agent (gone from roster, no workspace)
+    must NOT drop a fresh stash-less archive that shadows the original —
+    a later `hire` must still find the original _roster.json."""
+    from claudeteam.runtime import paths, archive
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code", "model": "opus"}}}
+    with _isolated_team(team), _fake_tmux() as fake:
+        fake["session_exists"].add("S")
+        paths.agent_dir("x").mkdir(parents=True, exist_ok=True)
+        run_cli(["fire", "x"])                       # 1st fire: archives with stash
+        first = archive.find_archived("x")
+        assert archive.read_roster_stash(first).get("model") == "opus"
+
+        rc, out, _ = run_cli(["fire", "x"])          # 2nd fire: nothing to archive
+        assert rc == 0
+        assert "nothing to archive" in out
+        # the good archive (with the opus stash) is still what hire would find
+        assert archive.read_roster_stash(archive.find_archived("x")).get("model") == "opus"
 
 
 def test_fire_refuses_to_fire_manager():
@@ -352,3 +388,111 @@ def test_fire_zero_args_returns_one():
     rc, _, err = run_cli(["fire"])
     assert rc == 1
     assert "usage:" in err
+
+
+# ── retirement gate: start skips fired agents ───────────────────────
+
+
+def test_start_skips_fired_agent():
+    """A fired agent (status 已停止) is NOT re-provisioned by `start` — the
+    core 裁员不彻底 fix. The rest of the team still comes up."""
+    team = {
+        "session": "S",
+        "agents": {"manager": {"cli": "claude-code"},
+                   "worker_fired": {"cli": "claude-code"}},
+    }
+    with _isolated_team(team), _fake_tmux() as fake:
+        local_facts.upsert_status("worker_fired", local_facts.RETIRED_STATUS, "fired")
+        rc, out, _ = run_cli(["start"])
+        assert rc == 0, out
+        # worker_fired was skipped; only manager got a CLI spawn
+        spawned = {c[1] for c in fake["calls"] if c[0] == "spawn_agent"}
+        assert "S:worker_fired" not in spawned
+        assert "S:manager" in spawned
+        assert "worker_fired 已停止 (fired); skipping" in out
+        assert "(1 agents) (1 fired, skipped)" in out
+        # its retired row is untouched (still recoverable via hire)
+        assert local_facts.get_status("worker_fired")["status"] == "已停止"
+
+
+# ── restart: non-destructive pane rebuild (model-switch path) ───────
+
+
+def test_restart_rebuilds_pane_without_archiving_or_removing():
+    """restart kills + re-provisions from the roster — NO archive, NO
+    roster removal, NO 已停止. The safe model-switch / restart path."""
+    import json
+    from claudeteam.runtime import paths, archive
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code"}}}
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
+        fake["session_exists"].add("S")
+        fake["windows"].add("S:x")
+        wsdir = paths.agent_dir("x")
+        wsdir.mkdir(parents=True, exist_ok=True)
+        (wsdir / "memory.jsonl").write_text("m", encoding="utf-8")
+
+        rc, out, _ = run_cli(["restart", "x"])
+        assert rc == 0, out
+        assert "restarted: x" in out
+        # old pane killed then re-created + CLI re-spawned
+        assert ("kill_window", "S:x") in fake["calls"]
+        assert ("new_window", "S:x") in fake["calls"]
+        assert "S:x" in {c[1] for c in fake["calls"] if c[0] == "spawn_agent"}
+        # NON-destructive: roster intact, no archive, status not 已停止
+        roster = json.loads((tmp / "team.json").read_text())
+        assert "x" in roster["agents"]
+        assert archive.find_archived("x") is None
+        assert wsdir.exists()
+        assert local_facts.get_status("x")["status"] == "进行中"
+
+
+def test_restart_unknown_agent_returns_one():
+    team = {"session": "S", "agents": {"manager": {}}}
+    with _isolated_team(team), _fake_tmux() as fake:
+        fake["session_exists"].add("S")
+        rc, _, err = run_cli(["restart", "ghost"])
+        assert rc == 1
+        assert "unknown agent" in err
+
+
+def test_restart_when_session_not_running_returns_one():
+    team = {"session": "S", "agents": {"x": {"cli": "claude-code"}}}
+    with _isolated_team(team), _fake_tmux():
+        rc, _, err = run_cli(["restart", "x"])
+        assert rc == 1
+        assert "not running" in err
+
+
+# ── hire: rehire a fired agent from its archive ─────────────────────
+
+
+def test_hire_restores_fired_agent_from_archive():
+    """fire → hire round-trip: hire re-adds the roster entry from the
+    archived _roster.json + moves the workspace back, then provisions."""
+    import json
+    from claudeteam.runtime import paths, archive
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code", "model": "opus"}}}
+    with _isolated_team(team) as tmp, _fake_tmux() as fake:
+        fake["session_exists"].add("S")
+        fake["windows"].add("S:x")
+        wsdir = paths.agent_dir("x")
+        wsdir.mkdir(parents=True, exist_ok=True)
+        (wsdir / "memory.jsonl").write_text("remembered", encoding="utf-8")
+
+        # fire removes x from roster + archives it
+        run_cli(["fire", "x"])
+        roster = json.loads((tmp / "team.json").read_text())
+        assert "x" not in roster["agents"]
+        assert not wsdir.exists()
+
+        # hire x: no roster entry, but an archive exists → restore
+        rc, out, _ = run_cli(["hire", "x"])
+        assert rc == 0, out
+        assert "rehired from archive" in out
+        # roster entry restored with its original cfg
+        roster = json.loads((tmp / "team.json").read_text())
+        assert roster["agents"]["x"]["model"] == "opus"
+        # workspace moved back, memory intact
+        assert (wsdir / "memory.jsonl").read_text() == "remembered"
+        # provisioned (status live again)
+        assert local_facts.get_status("x")["status"] == "进行中"

@@ -1,9 +1,9 @@
 """`claudeteam router`
 
-Long-running event subscriber: spawns `lark-cli event +subscribe`
-(direct binary preferred, npx fallback — see
-`feishu/lark.resolve_cli_prefix`) and feeds each NDJSON line into
-the routing loop (`feishu/subscribe.process_lines`).
+Long-running event subscriber: spawns the `@larksuite/channel` sidecar
+(`node scripts/feishu_channel/sidecar.js run`, the official WebSocket →
+NDJSON ingress) and feeds each NDJSON line into the routing loop
+(`feishu/subscribe.process_lines`).
 
 Boot order:
   1. Validate chat_id + agents (fast-fail BEFORE pidlock so up.py
@@ -13,7 +13,7 @@ Boot order:
   3. Replay `pending_lines(chat_id)` to backfill anything received
      while the daemon was down (catchup-on-restart cursor).
   4. Spawn the subscribe subprocess in its own session (so
-     SIGTERMing the daemon kills the entire npx → node → lark-cli
+     SIGTERMing the daemon kills the entire node sidecar
      tree via killpg).
   5. Spawn a daemon thread that polls the subscribe child's exit
      code every ~20s and self-SIGTERMs when it dies (lark-cli
@@ -33,6 +33,7 @@ processes left by a SIGKILL'd predecessor before respawning.
 from __future__ import annotations
 
 import html
+import collections
 import json
 import os
 import re
@@ -61,33 +62,25 @@ def _subscribe_event_types() -> str:
     return ",".join(types)
 
 
-def _build_subscribe_cmd(profile: str, *,
-                         resolve_prefix=lark.resolve_cli_prefix) -> list[str]:
-    """Build the lark-cli `event +subscribe` argv.
+def _build_subscribe_cmd(profile: str = "", *,
+                         sidecar=lark.sidecar_path) -> list[str]:
+    """Build the Feishu event-ingress argv.
 
-    Prefix comes from `lark.resolve_cli_prefix` (direct binary first,
-    `npx @larksuite/cli` fallback). Tests inject `resolve_prefix=`
-    so the argv shape is deterministic regardless of what's
-    installed locally.
+    The sidecar opens the official long-connection WebSocket and emits each
+    inbound message as one NDJSON line in the lark-cli `--compact` flat shape
+    that `feishu.subscribe.process_lines` already parses — so the whole
+    routing loop downstream is unchanged. App creds reach it via
+    `lark.subprocess_env()` (the same env the Popen uses), not the argv.
 
-    Note on --force: previously included to bypass the single-instance
-    lock from a possibly-zombie previous daemon. lark-cli 1.0.21+ docs
-    that flag explicitly: "UNSAFE: server randomly splits events across
-    connections, each instance only receives a subset". Removing it
-    means events flow to one connection (ours); the lock file at
-    ~/.lark-cli/locks/subscribe_<app_id>.lock is fcntl-advisory, so it
-    auto-releases on process exit. claudeteam's own pidlock + the
-    watchdog respawn keep us at one daemon at a time, so the
-    single-instance lock is harmless.
+    Tests inject `sidecar=` so the argv is deterministic. `profile` is unused
+    now (the sidecar binds to the resolved app creds, not a lark-cli profile)
+    but kept in the signature so the daemon call site stays as-is.
+
+    Replaces the former `lark-cli event +subscribe` argv: that path silently
+    dropped its WebSocket on macOS and split events across connections under
+    the old `--force`; the SDK long-connection is the supported ingress.
     """
-    return [
-        *resolve_prefix(),
-        *(["--profile", profile] if profile else []),
-        "event", "+subscribe",
-        "--event-types", _subscribe_event_types(),
-        "--compact", "--quiet",
-        "--as", "bot",
-    ]
+    return ["node", str(sidecar()), "run"]
 
 
 def _build_agent_adapters(agents_dict: dict) -> dict:
@@ -373,8 +366,8 @@ def _text_row(message_id: str, text: str, *,
 def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
     """Kill the entire subscribe process group (npx + node + lark-cli).
 
-    Round 7 D2: router's plain proc.terminate() only signaled npx; the
-    lark-cli grandchild lived on as an orphan after each up/down cycle.
+    A plain proc.terminate() only signals npx; the lark-cli grandchild
+    then lives on as an orphan after each up/down cycle.
     Putting the subprocess in its own session (start_new_session=True at
     Popen time) means we can take the whole group out with one killpg.
     """
@@ -418,7 +411,8 @@ def _load_seen_msg_ids() -> set[str]:
     return set(ids)
 
 
-def _make_on_progress(last_transport_ok_at: list[float]) -> Callable:
+def _make_on_progress(last_transport_ok_at: list[float],
+                      events_seen: list[int] | None = None) -> Callable:
     """Build the on_progress callback bound to a mutable timestamp slot.
 
     Every successfully handled event, plus every classified permanent DROP:
@@ -429,12 +423,14 @@ def _make_on_progress(last_transport_ok_at: list[float]) -> Callable:
       survives across process restarts. Without this, router self-
       restarts (driven by stale-detect or watchdog) re-apply messages
       that catchup re-fetches because seen_msg_ids was an in-memory
-      set (host_smoke 2026-05-06: /tmux manager card forwarded into
-      manager inbox every ~3.5min on every restart cycle).
+      set (e.g. a /tmux manager card forwarded into the manager inbox
+      every ~3.5min on every restart cycle).
     """
     def _on_progress(decision, stats):
         catchup.record_decision(decision)
         last_transport_ok_at[0] = time.monotonic()
+        if events_seen is not None:
+            events_seen[0] += 1
         msg_id = getattr(decision, "msg_id", "")
         if msg_id:
             try:
@@ -453,18 +449,17 @@ def _platform_default_stale_event_threshold_s() -> float:
     behaviour, not a single-knob tuning problem.
 
     macOS (Darwin) → 120s. lark-cli 1.0.23 WebSocket subscribe silently
-    drops on macOS without reconnecting (verified 2026-05-09 host smoke:
-    subscribe child stayed alive but stopped delivering events; only
-    self-SIGTERM + watchdog respawn + catchup recovers). A tighter
+    drops on macOS without reconnecting (the subscribe child stays
+    alive but stops delivering events; only self-SIGTERM + watchdog
+    respawn + catchup recovers). A tighter
     threshold lets recovery happen in ~2 min instead of ~10. Quiet-chat
     overhead is acceptable on a dev laptop.
 
     Linux (and everything else) → 600s. WebSocket is stable here; quiet
     chats shouldn't churn through respawns. History on this platform:
-    1200s → too lax (2026-05-06 caught manager not seeing user msg for
-    7+ min); 180s → too tight (2026-05-07 fresh-user smoke caught a
-    genuinely quiet chat respawning every ~3 min, churning router.log
-    into a wall of "no events for 180s; respawning"). 600s is the
+    1200s → too lax (manager not seeing a user msg for 7+ min); 180s →
+    too tight (a genuinely quiet chat respawned every ~3 min, churning
+    router.log into a wall of "no events for 180s; respawning"). 600s is the
     calibrated middle.
     """
     import platform
@@ -492,6 +487,17 @@ def _stale_event_threshold_s() -> float:
     return float(tunables.tunable(
         "router.stale_event_threshold_s",
         _platform_default_stale_event_threshold_s()))
+
+
+def _subscribe_rotate_reason(idle: float, threshold: float,
+                             events_seen: int) -> str:
+    """Return the router log line before self-SIGTERM for subscribe rotation."""
+    if events_seen == 0:
+        return (f"  ℹ️ no live events for {idle:.0f}s — rotating subscribe "
+                f"(none inbound yet this session; on macOS the WebSocket often "
+                f"goes quiet, catchup refetches on restart)")
+    return (f"  ⚠️ live events stopped after {idle:.0f}s idle "
+            f"(threshold {threshold:.0f}s) — rotating subscribe for respawn")
 
 
 def _catchup_poll_interval_s() -> float:
@@ -600,8 +606,45 @@ def _watch_catchup_heartbeat(chat: str, profile: str, loop_kwargs: dict,
             return
 
 
+_WS_FAIL_MARKERS = (
+    "ws connect failed",
+    "connect failed",
+    "reconnect",
+    "persistent connection",
+    "长连接",
+)
+
+
+def _diagnose_sidecar_exit(returncode, recent_lines) -> None:
+    """Print the sidecar tail and common WebSocket setup hints, best-effort."""
+    try:
+        tail = [line for line in list(recent_lines or []) if line.strip()][-12:]
+    except RuntimeError:
+        tail = []
+    if tail:
+        print("     ↳ sidecar 最后输出：")
+        for line in tail:
+            print(f"       {line}")
+    blob = "\n".join(tail).lower()
+    if any(marker in blob for marker in _WS_FAIL_MARKERS):
+        print("     ↳ 诊断：sidecar 的 WebSocket(长连接)没建起来。最常见两条：")
+        print("       1) 该应用没开长连接订阅 → 飞书开发者后台 → 事件与回调 → 订阅方式")
+        print("          → 改成「使用长连接接收事件/回调」(不是 Webhook URL)，保存。")
+        print("       2) HTTPS_PROXY 挡了 WebSocket → 启动前 `export LARK_CLI_NO_PROXY=1`")
+        print("          (或写进 $CLAUDETEAM_SECRETS_FILE / shell profile)。")
+
+
+def _tee_recent(stream, sink):
+    """Yield stream lines while keeping a bounded raw-output tail in sink."""
+    for line in stream:
+        sink.append(line.rstrip("\n"))
+        yield line
+
+
 def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,
-                            last_transport_ok_at: list[float]) -> None:
+                            last_transport_ok_at: list[float],
+                            events_seen: list[int],
+                            recent_lines=None) -> None:
     """Background thread: kill the daemon if the subscribe child dies OR
     all message-transport heartbeats stop.
 
@@ -629,13 +672,51 @@ def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,
     while not stop_event.wait(period_s):
         if proc.poll() is not None:
             print(f"  ⚠️ subscribe child exited (rc={proc.returncode}); router will exit so watchdog can respawn")
+            _diagnose_sidecar_exit(proc.returncode, recent_lines)
             os.kill(os.getpid(), signal.SIGTERM)
             return
         idle = time.monotonic() - last_transport_ok_at[0]
         if idle > threshold:
-            print(f"  ⚠️ no subscribe/catchup heartbeat for {idle:.0f}s (threshold {threshold:.0f}s); exiting for respawn")
+            print(_subscribe_rotate_reason(idle, threshold, events_seen[0]))
             os.kill(os.getpid(), signal.SIGTERM)
             return
+
+
+def _catchup_slash_fresh_ms() -> int:
+    """Freshness threshold (ms) below which a catchup-delivered slash is
+    treated as a live WS-fallback command (dispatch) rather than a stale
+    backlog replay (suppress). Tunable; default 180s. <=0 is clamped to the
+    default so a misconfig can't make everything 'stale' and re-eat slashes."""
+    from claudeteam.runtime import tunables
+    try:
+        v = int(tunables.tunable("router.catchup_slash_fresh_ms", 600_000))
+    except (TypeError, ValueError):
+        v = 600_000
+    return v if v > 0 else 180_000
+
+
+def _notify_catchup_skips(default_target: str, *, dropped_stale: int,
+                          slash_skipped: int) -> None:
+    """After catchup, tell the routing-target agent (default manager) if the
+    replay skipped anything — over-cap stale messages or un-replayed control
+    commands — so it doesn't over-claim it received the whole backlog.
+    No-op when nothing was skipped. Best-effort: a
+    notice-write failure must never break bring-up."""
+    if dropped_stale <= 0 and slash_skipped <= 0:
+        return
+    parts = []
+    if dropped_stale > 0:
+        parts.append(f"{dropped_stale} 条超上限的陈旧历史消息未重放")
+    if slash_skipped > 0:
+        parts.append(f"{slash_skipped} 条控制命令(/...)按规则未重放")
+    note = ("⚠️ 恢复(catchup)时跳过了部分历史：" + "；".join(parts)
+            + "。本次你**未必收到完整 backlog**——涉及老板原话/约束请 "
+              "`task intent get` 现读或请老板重发，别按记忆脑补。")
+    try:
+        from claudeteam.store import local_facts
+        local_facts.append_message(default_target, "router", note, priority="高")
+    except Exception as e:
+        warn(f"⚠️ catchup skip-notice failed: {e}")
 
 
 def main(argv: list[str]) -> int:
@@ -648,7 +729,7 @@ def main(argv: list[str]) -> int:
 
     agents = config.agent_names()
     if not agents:
-        return error_exit("❌ team.json has no agents")
+        return error_exit("❌ claudeteam.toml has no agents")
 
     pid_file = paths.router_pid_file()
     if not pidlock.acquire(pid_file, name="router"):
@@ -662,6 +743,8 @@ def main(argv: list[str]) -> int:
     stop_watchdog = None
     last_transport_ok_at = [time.monotonic()]
     last_subscribe_line_at = [time.monotonic()]
+    events_seen = [0]
+    recent_lines: collections.deque = collections.deque(maxlen=30)
     try:
         # Bind deployment-stable config values into apply_fn at daemon
         # startup so deliver.apply doesn't re-resolve them on every
@@ -684,7 +767,7 @@ def main(argv: list[str]) -> int:
 
         # Persisted dedup set — survives daemon restarts so catchup
         # replay after stale-detect / watchdog respawn doesn't re-apply
-        # already-handled messages (host_smoke 2026-05-06 caught it).
+        # already-handled messages.
         seen = _load_seen_msg_ids()
         event_lock = threading.Lock()
 
@@ -703,7 +786,7 @@ def main(argv: list[str]) -> int:
                     payload, profile=profile))
                 if base_intake.enabled() else None
             ),
-            on_progress=_make_on_progress(last_transport_ok_at),
+            on_progress=_make_on_progress(last_transport_ok_at, events_seen),
             seen_msg_ids=seen,
             event_lock=event_lock,
             resource_downloader=(
@@ -776,7 +859,8 @@ def main(argv: list[str]) -> int:
         stop_watchdog = threading.Event()
         threading.Thread(
             target=_watch_subscribe_health,
-            args=(proc, stop_watchdog, last_transport_ok_at),
+            args=(proc, stop_watchdog, last_transport_ok_at, events_seen,
+                  recent_lines),
             daemon=True,
         ).start()
         threading.Thread(
@@ -789,7 +873,8 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
 
-        stats = process_lines(proc.stdout, **live_loop_kwargs)
+        stats = process_lines(_tee_recent(proc.stdout, recent_lines),
+                              **live_loop_kwargs)
         print(f"router exited: handled={stats.handled} dropped={stats.dropped}")
         return 0 if proc.wait() == 0 else 1
     except KeyboardInterrupt:

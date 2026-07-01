@@ -27,7 +27,7 @@ from pathlib import Path
 
 from claudeteam.commands import founder_os
 from claudeteam.runtime import artifact_gate, paths
-from claudeteam.store import tasks
+from claudeteam.store import local_facts, tasks
 from claudeteam.util import (
     error_exit, fmt_time_ms, maybe_print_help, pop_flag, usage_error,
     pop_bool_flag, print_json, reject_extra_args,
@@ -36,7 +36,7 @@ from claudeteam.util import (
 
 USAGE = (
     "usage:\n"
-    "  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>]\n"
+    "  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>] [--artifact <path>] [--intent I-n]\n"
     "                     [--topic <name>] [--parent <T-id>] [--stage idea|mvp|launch|scale] [--evidence <text>]\n"
     "                     [--evidence-action <text>] [--non-goal <text>] [--issue-class <type>]\n"
     "                     [--segment <segment>] [--next-window <text>] [--base-absorb-needed yes|no]\n"
@@ -47,8 +47,45 @@ USAGE = (
     "  claudeteam task list  [--status S] [--assignee A] [--topic <name>] [--parent <T-id>] [--active]\n"
     "  claudeteam task get <id>\n"
     "  claudeteam task done <id> [--artifact <path>] [--by <agent>]\n"
+    "  claudeteam task pause <id> [--note <why>] [--to <who>] [--by <agent>]\n"
+    "  claudeteam task approve <id> [--done] [--note <text>] [--artifact <path>] [--by <agent>]\n"
+    "  claudeteam task reject <id> <feedback> [--cancel]\n"
+    "  claudeteam task void <id> [--note <why>] [--by <agent>]\n"
+    "  claudeteam task intent create <raw...> [--src <msg_id>] [--key <points>] [--by <agent>]\n"
+    "  claudeteam task intent get <I-n>\n"
     "  claudeteam task audit [--assignee A] [--topic <name>] [--parent <T-id>] [--all] [--json]"
 )
+
+
+def _refresh_anchor(*agents: str) -> None:
+    """Best-effort refresh of affected assignees' live intent anchor."""
+    from claudeteam.agents import identity
+    seen: set[str] = set()
+    for agent in agents:
+        if not agent or agent in seen:
+            continue
+        seen.add(agent)
+        identity.refresh_native_memory(agent)
+        _reidentify_stale_anchor(agent)
+
+
+def _reidentify_stale_anchor(agent: str) -> None:
+    """Push a fresh init prompt to non-reloading CLIs when their pane is idle."""
+    try:
+        from claudeteam.agents import adapter_for_agent, identity
+        from claudeteam.runtime import config, pane_probe, tmux, wake
+        adapter = adapter_for_agent(agent)
+        if adapter.native_memory_reloads():
+            return
+        session = config.session_name()
+        target = tmux.Target(session, agent)
+        if not tmux.has_session(session) or not tmux.has_window(target):
+            return
+        if pane_probe.probe(target) != pane_probe.IDLE:
+            return
+        wake.inject_and_confirm(target, adapter, identity.init_prompt(agent))
+    except Exception:
+        pass
 
 
 def _stage_from_cli(raw: str | None) -> str:
@@ -66,6 +103,8 @@ def _fmt_task(t: dict) -> list[str]:
     body = [f"  assignee: {t.get('assignee') or '-'}"]
     if t.get("creator"):
         body.append(f"  by: {t['creator']}")
+    if t.get("intent_id"):
+        body.append(f"  intent: {t['intent_id']}")
     if t.get("topic"):
         body.append(f"  topic: #{t['topic']}")
     if t.get("parent_task_id"):
@@ -94,14 +133,49 @@ def _fmt_task(t: dict) -> list[str]:
         body.append(f"  reviewed_by: {t['reviewed_by']}")
     if t.get("child_rollup"):
         body.append(f"  child_tasks: {t['child_rollup']}")
+    if t.get("status") == tasks.SUSPEND_STATUS:
+        body.append(f"  awaiting: {t.get('awaiting') or '-'}")
+        if t.get("approval_note"):
+            body.append(f"  note: {t['approval_note']}")
     body.append(f"  created: {ts}")
     return [head] + body
+
+
+def _auto_memory(agent: str, kind: str, content: str, *, ref: str = "") -> None:
+    """Auto-record a task-lifecycle event into the assignee's durable memory.
+
+    The highest-value memories (assigned / done / blocked) were the ones most
+    often MISSING, because memory.append's only writer is the manual
+    `claudeteam remember` — nothing wrote on task transitions, so capture was
+    left to the agent remembering to run the command (memory's core
+    unreliability). This records them by CODE instead.
+
+    Memory stays a best-effort *notepad* — the authoritative record is the
+    task/intent store, not this. To avoid flooding (memory caps at ~200), we
+    write ONE brief line per REAL state change only; content is title-capped.
+    Best-effort: a memory write must never fail the task command."""
+    if not agent:
+        return
+    try:
+        from claudeteam.store import memory
+        memory.append(agent, kind, content, ref=ref)
+    except Exception:
+        pass
+
+
+def _mem_title(t: dict | None) -> str:
+    """Short task label for a memory line (id + capped title)."""
+    if not t:
+        return ""
+    title = (t.get("title") or "")[:50]
+    return f"{t.get('id', '')} {title}".strip()
 
 
 def _cmd_create(rest: list[str]) -> int:
     by = pop_flag(rest, "--by") or ""
     desc = pop_flag(rest, "--desc") or ""
     artifact = pop_flag(rest, "--artifact") or ""
+    intent_id = pop_flag(rest, "--intent") or ""
     topic = pop_flag(rest, "--topic") or ""
     parent = pop_flag(rest, "--parent") or ""
     stage_raw = pop_flag(rest, "--stage")
@@ -120,6 +194,7 @@ def _cmd_create(rest: list[str]) -> int:
         stage = _stage_from_cli(stage_raw)
         tid = tasks.create(
             assignee, title, description=desc, creator=by,
+            intent_id=intent_id,
             topic=topic, parent_task_id=parent,
             artifact_path=artifact, founder_stage=stage,
             stage_exit_evidence=evidence, evidence_action=evidence_action,
@@ -129,6 +204,9 @@ def _cmd_create(rest: list[str]) -> int:
             base_absorb_needed=base_absorb_needed)
     except ValueError as e:
         return error_exit(f"❌ {e}")
+    _refresh_anchor(assignee)
+    intent_note = f" (intent {intent_id})" if intent_id else ""
+    _auto_memory(assignee, "task_assigned", f"{tid}{intent_note}", ref=tid)
     print(f"✅ created {tid}: {title} → {assignee}")
     return 0
 
@@ -197,6 +275,13 @@ def _cmd_update(rest: list[str]) -> int:
     if len(rest) < 1:
         return usage_error(USAGE)
     tid = rest[0]
+    before = tasks.get(tid)
+    if before is None:
+        return error_exit(f"❌ no such task: {tid}")
+    if status is not None and tasks.SUSPEND_STATUS in {
+            status, str(before.get("status") or "")}:
+        return error_exit(
+            "❌ 需审批 transitions must use task pause/approve/reject, not update")
     if status in {"待验收", "已完成"}:
         try:
             effective_artifact = _artifact_for_close(tid, artifact or "")
@@ -232,8 +317,17 @@ def _cmd_update(rest: list[str]) -> int:
                           base_absorb_needed=base_absorb_needed)
     except ValueError as e:
         return error_exit(f"❌ {e}")
-    if not ok:
-        return error_exit(f"❌ no such task: {tid}")
+    after = tasks.get(tid)
+    # status flips and reassignment both reshape the anchor; a reassign
+    # moves it between two agents, so refresh both old and new owner.
+    _refresh_anchor(before["assignee"] if before else "",
+                    after["assignee"] if after else "")
+    # Auto-memory only on a REAL transition INTO 已完成 (covers `task done`);
+    # idempotent re-asserts (already 已完成) don't re-record.
+    if (after and after.get("status") == "已完成"
+            and (not before or before.get("status") != "已完成")):
+        _auto_memory(after.get("assignee", ""), "task_completed",
+                     f"{_mem_title(after)} 已完成", ref=tid)
     print(f"✅ updated {tid}")
     return 0
 
@@ -293,6 +387,171 @@ def _cmd_get(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_pause(rest: list[str]) -> int:
+    note = pop_flag(rest, "--note") or ""
+    awaiting = pop_flag(rest, "--to") or "user"
+    by = pop_flag(rest, "--by") or ""
+    if len(rest) < 1:
+        return usage_error(USAGE)
+    tid = rest[0]
+    if not tasks.pause(tid, awaiting=awaiting, approval_note=note, paused_by=by):
+        return error_exit(f"❌ cannot pause {tid} (missing or not 进行中)")
+    task = tasks.get(tid) or {}
+    assignee = str(task.get("assignee") or "")
+    local_facts.append_log(
+        assignee, "task_transition",
+        f"{tid} 进行中→需审批 (await {awaiting}): {note}",
+        ref=tid,
+    )
+    local_facts.append_message(
+        awaiting, by or assignee, note or f"{tid} 需审批",
+        priority="高", task_id=tid,
+    )
+    _refresh_anchor(assignee)
+    _auto_memory(
+        assignee, "blocker",
+        f"{_mem_title(task)} 需审批(await {awaiting})" + (f": {note}" if note else ""),
+        ref=tid,
+    )
+    print(f"⏸️  {tid} 需审批 — awaiting {awaiting}")
+    return 0
+
+
+def _cmd_approve(rest: list[str]) -> int:
+    done = pop_bool_flag(rest, "--done")
+    note = pop_flag(rest, "--note") or ""
+    artifact = pop_flag(rest, "--artifact") or ""
+    reviewed_by = pop_flag(rest, "--by") or "manager"
+    if len(rest) < 1:
+        return usage_error(USAGE)
+    tid = rest[0]
+    before = tasks.get(tid)
+    if before is None:
+        return error_exit(f"❌ cannot approve {tid} (not 需审批)")
+    effective_artifact = ""
+    if done:
+        try:
+            effective_artifact = _artifact_for_close(tid, artifact)
+        except ValueError as e:
+            return error_exit(f"❌ {e}")
+        if not effective_artifact:
+            return error_exit(
+                f"❌ task {tid} cannot be marked 已完成 without an artifact; "
+                "pass --artifact <path> or set one first")
+        missing = _require_artifact_file(tid, effective_artifact)
+        if missing is not None:
+            return missing
+        ui_missing = _require_ui_evidence(tid, effective_artifact, before)
+        if ui_missing is not None:
+            return ui_missing
+    if not tasks.approve(tid, done=done, note=note):
+        return error_exit(f"❌ cannot approve {tid} (not 需审批)")
+    task = tasks.get(tid) or {}
+    assignee = str(task.get("assignee") or "")
+    if done:
+        try:
+            tasks.update(
+                tid,
+                artifact_path=effective_artifact,
+                reviewed_by=reviewed_by,
+                _force=True,
+            )
+            task = tasks.get(tid) or task
+        except ValueError as e:
+            return error_exit(f"❌ {e}")
+    suffix = f": {note}" if note else ""
+    local_facts.append_log(
+        assignee, "task_transition",
+        f"{tid} 需审批→{task.get('status')} (approved){suffix}",
+        ref=tid,
+    )
+    local_facts.append_message(
+        assignee, "user",
+        f"{tid} 已批准{'并完成' if done else '·继续'}{suffix}",
+        task_id=tid,
+    )
+    _refresh_anchor(assignee)
+    if done and task.get("status") == "已完成":
+        _auto_memory(assignee, "task_completed", f"{_mem_title(task)} 已批准完成", ref=tid)
+    print(f"✅ approved {tid} → {task.get('status')}")
+    return 0
+
+
+def _cmd_reject(rest: list[str]) -> int:
+    cancel = pop_bool_flag(rest, "--cancel")
+    if len(rest) < 1:
+        return usage_error(USAGE)
+    tid = rest[0]
+    feedback = " ".join(rest[1:])
+    if not tasks.reject(tid, feedback=feedback, cancel=cancel):
+        return error_exit(f"❌ cannot reject {tid} (not 需审批)")
+    task = tasks.get(tid) or {}
+    assignee = str(task.get("assignee") or "")
+    verb = "已取消" if cancel else "打回"
+    local_facts.append_log(
+        assignee, "task_transition",
+        f"{tid} 需审批→{task.get('status')} ({verb}): {feedback}",
+        ref=tid,
+    )
+    local_facts.append_message(assignee, "user", f"{tid} {verb}: {feedback}", task_id=tid)
+    _refresh_anchor(assignee)
+    print(f"↩️  rejected {tid} → {task.get('status')}")
+    return 0
+
+
+def _cmd_void(rest: list[str]) -> int:
+    note = pop_flag(rest, "--note") or ""
+    by = pop_flag(rest, "--by") or ""
+    if len(rest) < 1:
+        return usage_error(USAGE)
+    tid = rest[0]
+    before = tasks.get(tid)
+    if not tasks.void(tid, reason=note, voided_by=by):
+        return error_exit(f"❌ cannot void {tid} (missing or already 已取消)")
+    task = tasks.get(tid) or {}
+    assignee = str(task.get("assignee") or "")
+    prev = before["status"] if before else "?"
+    suffix = f": {note}" if note else ""
+    local_facts.append_log(
+        assignee, "task_transition",
+        f"{tid} {prev}→已取消 (void){suffix}",
+        ref=tid,
+    )
+    _refresh_anchor(assignee)
+    print(f"🗑️  voided {tid} → 已取消")
+    return 0
+
+
+def _cmd_intent(rest: list[str]) -> int:
+    if not rest:
+        return usage_error(USAGE)
+    action = rest[0]
+    if action == "create":
+        src = pop_flag(rest, "--src") or ""
+        key = pop_flag(rest, "--key") or ""
+        by = pop_flag(rest, "--by") or ""
+        raw = " ".join(rest[1:])
+        try:
+            iid = tasks.create_intent(
+                raw, source_msg=src, key_points=key, creator=by or "user")
+        except ValueError as e:
+            return error_exit(f"❌ {e}")
+        print(f"✅ intent {iid}")
+        return 0
+    if action == "get":
+        if len(rest) < 2:
+            return usage_error(USAGE)
+        intent = tasks.get_intent(rest[1])
+        if intent is None:
+            return error_exit(f"❌ no such intent: {rest[1]}")
+        print(f"{intent['id']}  by {intent['creator']}")
+        print(f"  raw: {intent['raw_text']}")
+        if intent.get("key_points"):
+            print(f"  key: {intent['key_points']}")
+        return 0
+    return usage_error(USAGE)
+
+
 def _render_audit(payload: dict) -> list[str]:
     lines = [
         "✅ task audit passed"
@@ -338,12 +597,17 @@ def _cmd_audit(rest: list[str]) -> int:
 
 
 SUBCOMMANDS = {
-    "create": _cmd_create,
-    "update": _cmd_update,
-    "done":   _cmd_done,
-    "list":   _cmd_list,
-    "get":    _cmd_get,
-    "audit":  _cmd_audit,
+    "create":  _cmd_create,
+    "update":  _cmd_update,
+    "done":    _cmd_done,
+    "list":    _cmd_list,
+    "get":     _cmd_get,
+    "pause":   _cmd_pause,
+    "approve": _cmd_approve,
+    "reject":  _cmd_reject,
+    "void":    _cmd_void,
+    "intent":  _cmd_intent,
+    "audit":   _cmd_audit,
 }
 
 

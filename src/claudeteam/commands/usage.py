@@ -58,8 +58,8 @@ def _read_claude_oauth(home: Path | None = None,
     Code-credentials'`) is the source of truth — claude refreshes there
     on every token rotation. The home file at `~/.claude/.credentials.json`
     only updates occasionally and is often hours behind, so a host that's
-    "logged in" still saw `/usage` say "access token 已过期" because we
-    keyed off the file's stale `expiresAt` (caught 2026-05-07 host smoke).
+    "logged in" can still see `/usage` say "access token 已过期" if we
+    key off the file's stale `expiresAt`.
 
     Resolution order:
       1. macOS keychain (when `security` works) — always live.
@@ -107,9 +107,9 @@ def _query_cc_usage(home: Path | None = None,
                     *, opener: Callable = None,
                     keychain_runner: Callable | None = None) -> dict:
     """Hit Claude Max's `/api/oauth/usage` for real per-window
-    utilization (5h / 7d / Sonnet / Opus / Extra) — boss flagged the
-    earlier `npx ccusage Total: $X` dump as just cumulative cost,
-    NOT actual quota usage. Mirrors main's `scripts/usage_snapshot.py`.
+    utilization (5h / 7d / Sonnet / Opus / Extra) — the earlier
+    `npx ccusage Total: $X` dump is just cumulative cost, NOT actual
+    quota usage.
 
     Returns `{ok, metrics: [{label, used_pct, remaining_pct, reset_iso,
     extra: {used,cap,ccy} optional}]}` on success or `{ok: false, note}`
@@ -140,7 +140,15 @@ def _query_cc_usage(home: Path | None = None,
         with opener(req, timeout=15) as resp:
             data = json.loads(resp.read())
     except urllib_error.HTTPError as e:
-        return {"ok": False, "note": f"Claude usage HTTP {e.code}: {e.reason}"}
+        body = ""
+        try:
+            body = (json.loads(e.read()).get("error") or {}).get("message", "")
+        except Exception:
+            pass
+        note = f"Claude usage HTTP {e.code}: {e.reason}"
+        if body:
+            note += f" · {body}"
+        return {"ok": False, "note": note}
     except (urllib_error.URLError, OSError, ValueError) as e:
         return {"ok": False, "note": f"Claude usage 请求失败: {e}"}
 
@@ -289,8 +297,8 @@ def _query_codex_usage(home: Path | None = None,
                 (ln.strip() for ln in out.splitlines() if ln.strip()),
                 "未知错误")
         # 403 from OpenAI's usage endpoint is a known container-side
-        # auth issue (main's docs: codex tokens get IP-pinned). Add
-        # a hint so boss knows to `docker compose exec ... codex login`.
+        # auth issue (codex tokens can get IP-pinned). Add a hint so the
+        # boss knows to `docker compose exec ... codex login`.
         if "403" in err_line:
             err_line += " · 容器内 codex 可能需重新 login"
         return {"ok": False, "note": f"codex-cli-usage: {err_line[:160]}"}

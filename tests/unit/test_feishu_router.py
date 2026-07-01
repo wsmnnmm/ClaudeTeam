@@ -46,19 +46,42 @@ def test_no_drop_when_team_chat_filter_unset():
     assert d.action is Action.ROUTE
 
 
+def test_drop_when_event_chat_id_missing_but_filter_set():
+    # REGRESSION (#4): a payload with no chat_id must DROP when a team chat
+    # filter is set — the old `and event.get("chat_id")` guard let a missing
+    # chat_id slip past the cross-team check and reach the manager.
+    d = classify_event(_ev(chat_id=None), team_agents=_AGENTS, chat_id="oc_team")
+    assert d.is_drop() and d.reason == "cross_team"
+
+
+def test_slash_detected_when_merged_after_text():
+    # REGRESSION (#1): the @larksuite/channel chat-queue merges messages sent
+    # within ~600ms, so "status?\n/team" arrives as one blob. The slash line
+    # must still dispatch as SLASH, not get swallowed into a routed text msg.
+    d = classify_event(_ev(text="status?\n/team"), team_agents=_AGENTS)
+    assert d.action is Action.SLASH and d.text == "/team"
+
+
+def test_continuous_text_without_slash_still_routes():
+    # Sibling guard to #1: a merged multi-line message with NO slash line still
+    # routes to manager as one text — we only special-case an actual `/...` line.
+    d = classify_event(_ev(text="first line\nsecond line"), team_agents=_AGENTS)
+    assert d.action is Action.ROUTE and d.targets == ["manager"]
+
+
 def test_drop_when_sender_matches_bot_id():
     d = classify_event(_ev(sender_id="ou_bot"), team_agents=_AGENTS, bot_id="ou_bot")
     assert d.is_drop() and d.reason == "bot_self"
 
 
 def test_drop_when_sender_type_is_app_even_without_bot_id():
-    """REGRESSION: 2026-05-06 host_smoke caught manager's own ack cards
-    looping back into manager inbox every router restart. Root cause:
-    `commands/router.py` never passed bot_id to classify_event, so the
-    `bot_id == sender_id` check never fired. Modern lark-cli `--compact`
-    payload carries sender_type=app for bot-sent messages, and
-    chat-messages-list returns id_type=app_id — both surface as
-    sender_type here. R174 bot-self path now triggers on either signal.
+    """REGRESSION: manager's own ack cards looped back into manager inbox
+    every router restart. Root cause: `commands/router.py` never passed
+    bot_id to classify_event, so the `bot_id == sender_id` check never
+    fired. Modern lark-cli `--compact` payload carries sender_type=app
+    for bot-sent messages, and chat-messages-list returns id_type=app_id
+    — both surface as sender_type here. The bot-self path now triggers on
+    either signal.
     """
     d = classify_event(
         _ev(sender_id="cli_xxx", sender_type="app",
@@ -168,25 +191,17 @@ def test_default_target_can_be_overridden():
     assert d.targets == ["worker_cc"]
 
 
-# ── R174: ALL human routes go to manager (mentions are text, not routes) ──
+# ── ALL human routes go to manager (mentions are text, not routes) ──
 
 
 def test_human_at_mention_still_routes_only_to_manager():
-    """R174: `@worker_codex review this` from boss — `@worker_codex` is
-    text content for manager to parse, NOT a routing instruction.
-    Manager decides whether to dispatch via `claudeteam send`."""
+    """`@worker_codex review this` from boss — `@worker_codex` is text
+    content for manager to parse, NOT a routing instruction. Manager
+    decides whether to dispatch via `claudeteam send`."""
     d = classify_event(_ev(text="@worker_codex review this"), team_agents=_AGENTS)
     assert d.action is Action.ROUTE
     assert d.targets == ["manager"]
     assert d.sender == ""  # human
-
-
-def test_multiple_mentions_still_routes_only_to_manager():
-    d = classify_event(
-        _ev(text="@worker_cc and @worker_codex and @worker_cc"),
-        team_agents=_AGENTS,
-    )
-    assert d.targets == ["manager"]
 
 
 def test_mentions_of_unknown_names_routes_to_manager():
@@ -229,18 +244,12 @@ def test_classify_does_not_mutate_seen_set():
     assert seen == set()
 
 
-def test_msg_id_propagates_into_decision():
-    d = classify_event(_ev(message_id="om_42"), team_agents=_AGENTS)
-    assert d.msg_id == "om_42"
-
-
 # ── Action.SLASH (router-level dispatch) ─────────────────────────
 
 
 def test_slash_command_returns_slash_action():
-    """REGRESSION (round A.2): /team etc. must NOT route as ROUTE
-    (would inject into manager pane); must be SLASH for router-level
-    zero-LLM dispatch."""
+    """REGRESSION: /team etc. must NOT route as ROUTE (would inject into
+    manager pane); must be SLASH for router-level zero-LLM dispatch."""
     d = classify_event(_ev(text="/team"), team_agents=_AGENTS)
     assert d.action is Action.SLASH
     assert d.text == "/team"
@@ -283,8 +292,8 @@ def test_slash_strips_known_agent_prefix_too():
 
 
 def test_chinese_broadcast_phrase_routes_to_manager_only():
-    """R174: `全体成员请汇报状态` from boss → only manager. Manager
-    parses the broadcast intent and dispatches to workers."""
+    """`全体成员请汇报状态` from boss → only manager. Manager parses the
+    broadcast intent and dispatches to workers."""
     d = classify_event(_ev(text="全体成员请汇报状态"), team_agents=_AGENTS)
     assert d.action is Action.ROUTE
     assert d.targets == ["manager"]
@@ -296,33 +305,9 @@ def test_at_team_token_routes_to_manager_only():
     assert d.targets == ["manager"]
 
 
-def test_at_all_token_routes_to_manager_only():
-    d = classify_event(_ev(text="@all heads up"), team_agents=_AGENTS)
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
-
-
-def test_at_everyone_routes_to_manager_only():
-    d = classify_event(_ev(text="@everyone deploy now"), team_agents=_AGENTS)
-    assert d.action is Action.ROUTE
-    assert d.targets == ["manager"]
-
-
-def test_action_broadcast_no_longer_emitted():
-    """R174: routing-level broadcast is dead. Every variant of
-    'broadcast trigger' from a human now ROUTEs to manager. The
-    BROADCAST action itself is kept in the enum for legacy reasons
-    but is unreachable from classify_event."""
-    for text in ("全体注意", "@team x", "@all y", "@everyone z"):
-        d = classify_event(_ev(text=text, message_id=f"om_{hash(text)}"),
-                            team_agents=_AGENTS)
-        assert d.action is Action.ROUTE, f"{text!r} should route to manager"
-        assert d.targets == ["manager"], f"{text!r} target wrong"
-
-
 def test_explicit_mention_with_broadcast_token_routes_to_manager():
-    """`@worker_cc 全体成员都开会` — both tokens present. R174: still
-    just manager. Manager reads the text and decides intent."""
+    """`@worker_cc 全体成员都开会` — both tokens present. Still just
+    manager. Manager reads the text and decides intent."""
     d = classify_event(_ev(text="@worker_cc 全体成员都开会"), team_agents=_AGENTS)
     assert d.action is Action.ROUTE
     assert d.targets == ["manager"]

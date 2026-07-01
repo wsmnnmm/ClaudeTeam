@@ -9,7 +9,7 @@ from pathlib import Path
 from claudeteam.runtime import config, paths
 from claudeteam.runtime import providers
 
-from .base import CliAdapter, SPINNER_CHARS
+from .base import AuthSlots, CliAdapter, SPINNER_CHARS
 
 
 def _read_oauth_token(agent: str) -> str | None:
@@ -32,21 +32,8 @@ def _read_oauth_token(agent: str) -> str | None:
 
 
 def agent_home(agent: str) -> str:
-    """Per-agent HOME for an isolated ~/.claude.json.
-
-    Container deploys (Dockerfile mounts /data writable) use
-    /data/agent-home/<agent>. Host deploys (macOS firmlink read-only;
-    Linux without that mount) fall back to <state_dir>/agent-home/<agent>.
-
-    Probe writability rather than just existence: a Linux server might
-    have /data as a read-only data disk mount where mkdir would fail,
-    and macOS Big Sur+ has /data as a firmlink that exists() reports
-    True for in some setups but rejects writes. Cache the probe result
-    so we don't pay an os.access call per spawn.
-    """
-    if _data_writable():
-        return f"/data/agent-home/{agent}"
-    return str(paths.state_dir() / "agent-home" / agent)
+    """Per-agent HOME for an isolated ~/.claude.json."""
+    return paths.agent_home(agent)
 
 
 def managed_mcp_config(agent: str) -> str:
@@ -176,15 +163,22 @@ class ClaudeCodeAdapter(CliAdapter):
     def ready_markers(self) -> list[str]:
         return ["bypass permissions on", "? for shortcuts", "⏵⏵ bypass permissions on"]
 
-    def busy_markers(self) -> list[str]:
-        return [
-            *SPINNER_CHARS,
-            "◐", "◑", "◒", "◓",
-            "Thinking", "Running tool",
-        ]
-
     def process_name(self) -> str:
         return "claude"
+
+    def auth_slots(self) -> AuthSlots:
+        return AuthSlots(
+            token_env="CLAUDE_CODE_OAUTH_TOKEN",
+            api_key_envs=("ANTHROPIC_API_KEY",),
+            login_credfile=".claude/.credentials.json",
+            login_token_env="CLAUDE_CODE_OAUTH_TOKEN",
+        )
+
+    def native_memory_reloads(self) -> bool:
+        return True
+
+    def native_memory_path(self, agent: str) -> str:
+        return str(Path(agent_home(agent)) / ".claude" / "CLAUDE.md")
 
     def rate_limit_markers(self) -> list[str]:
         return [

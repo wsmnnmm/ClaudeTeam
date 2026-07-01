@@ -20,10 +20,25 @@ def test_help_prints_usage():
     assert "commands:" in out
 
 
+def test_version_flag_aliases_version_command():
+    """`-v` / `--version` are the flags operators reflexively try; they must
+    print the version (exit 0), not bounce off 'unknown command'. The
+    `version` subcommand already existed — this pins the flag aliases."""
+    for flag in ("-v", "--version"):
+        rc, out, err = run_cli([flag])
+        assert rc == 0, f"{flag!r} should exit 0, got {rc} (stderr={err!r})"
+        line = out.strip()
+        assert line and "\n" not in line, f"{flag!r} should print one line"
+        assert any(c.isdigit() for c in line), f"{flag!r} output looks like a version"
+    # And it must NOT be treated as an unknown command
+    _, _, err = run_cli(["--version"])
+    assert "unknown command" not in err
+
+
 def test_help_groups_commands_by_category():
-    """Round-93: usage output renders commands grouped by `[group label]`
-    section instead of a flat alphabetical wall. New operators see
-    related commands together (`[team lifecycle]` has start/up/down,
+    """Usage output renders commands grouped by `[group label]` section
+    instead of a flat alphabetical wall. New operators see related
+    commands together (`[team lifecycle]` has start/up/down,
     `[durable agent memory]` has remember/recall, etc.)."""
     rc, out, _ = run_cli(["--help"])
     assert rc == 0

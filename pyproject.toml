@@ -8,8 +8,12 @@ version = "0.1.0"
 description = "Harness your Claude Code: multi-agent orchestrator over tmux + Feishu"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.9"
+dependencies = [
+  # stdlib `tomllib` is 3.11+; on 3.9/3.10 we read TOML via the `tomli` backport
+  # (runtime/tunables.py + agents/kimi_code.py import it under a try/except).
+  'tomli; python_version < "3.11"',
+]
 keywords = ["claude-code", "agents", "tmux", "feishu", "lark", "llm-orchestration"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -18,6 +22,7 @@ classifiers = [
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 
 from helpers import isolated_env, run_cli
-from claudeteam.store import local_facts
 
 
 # ── team ──────────────────────────────────────────────────────────
@@ -18,7 +17,8 @@ def test_team_empty_when_no_agents():
 
 
 def test_team_lists_all_agents_sorted_by_name():
-    with isolated_env():
+    roster = {"agents": {n: {"cli": "claude-code"} for n in ("worker_a", "worker_b", "worker_c")}}
+    with isolated_env(team=roster):
         run_cli(["status", "worker_b", "进行中", "doing b"])
         run_cli(["status", "worker_a", "已完成", "done a"])
         run_cli(["status", "worker_c", "阻塞", "stuck", "no api key"])
@@ -35,7 +35,7 @@ def test_team_lists_all_agents_sorted_by_name():
 
 
 def test_team_appends_heartbeat_marker_when_recorded():
-    with isolated_env():
+    with isolated_env(team={"agents": {"agent": {"cli": "claude-code"}}}):
         run_cli(["status", "agent", "进行中", "task"])
         # status command auto-touches heartbeat
         rc, out, _ = run_cli(["team"])
@@ -43,19 +43,11 @@ def test_team_appends_heartbeat_marker_when_recorded():
         assert "♥" in out
 
 
-def test_team_shows_relative_age():
-    with isolated_env():
-        run_cli(["status", "agent", "进行中", "task"])
-        rc, out, _ = run_cli(["team"])
-        assert rc == 0
-        # latest write is < 1m ago
-        assert "ago)" in out
-
-
 def test_team_json_dumps_machine_readable_records():
-    """`--json` emits a list[dict] consumable by CI / smoke conductors
-    / peer agents — no emoji, no relative timestamps to parse."""
-    with isolated_env():
+    """`--json` emits a list[dict] consumable by CI / scripts / peer
+    agents — no emoji, no relative timestamps to parse."""
+    roster = {"agents": {"worker_a": {"cli": "claude-code"}, "worker_b": {"cli": "claude-code"}}}
+    with isolated_env(team=roster):
         run_cli(["status", "worker_a", "进行中", "task A"])
         run_cli(["status", "worker_b", "已完成", "task B", "blocked on review"])
         rc, out, _ = run_cli(["team", "--json"])
@@ -127,19 +119,3 @@ def test_workspace_zero_args_returns_one():
     rc, _, err = run_cli(["workspace"])
     assert rc == 1
     assert "usage:" in err
-
-
-# ── store helper ───────────────────────────────────────────────────
-
-
-def test_list_all_statuses_returns_sorted_rows():
-    with isolated_env():
-        local_facts.upsert_status("z", "进行中", "z task")
-        local_facts.upsert_status("a", "已完成", "a task")
-        rows = local_facts.list_all_statuses()
-        assert [r["agent"] for r in rows] == ["a", "z"]
-
-
-def test_list_all_statuses_empty_when_no_writes():
-    with isolated_env():
-        assert local_facts.list_all_statuses() == []

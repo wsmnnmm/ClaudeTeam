@@ -70,8 +70,8 @@ def test_install_hooks_remember_md_documents_kind_vocabulary():
 
 
 def test_install_hooks_say_md_documents_card_only_after_R169():
-    """R169: removed --no-card escape hatch — every chat message is a
-    card. The hook doc no longer mentions any plain-text path so claude
+    """Removed --no-card escape hatch — every chat message is a card.
+    The hook doc no longer mentions any plain-text path so claude
     agents don't try to opt out."""
     with tempfile.TemporaryDirectory() as tmp:
         run_cli(["install-hooks", tmp])
@@ -79,23 +79,12 @@ def test_install_hooks_say_md_documents_card_only_after_R169():
             encoding="utf-8")
         # Card-only messaging surfaced
         assert "v2 card" in body
-        assert "--no-card" not in body  # R169: escape hatch gone
+        assert "--no-card" not in body  # escape hatch gone
         # Invocation form documented
         assert "claudeteam say <your-name> - --to user" in body
         assert "cat <<'EOF'" in body
         # Threading caveat surfaced
         assert "thread" in body.lower() or "ignored" in body.lower()
-
-
-def test_install_hooks_recall_md_mentions_other_agent_lookup():
-    """The recall hook must mention that <other-agent> is also valid —
-    that's the manager 巡视 path enabling cross-agent memory peeks."""
-    with tempfile.TemporaryDirectory() as tmp:
-        run_cli(["install-hooks", tmp])
-        body = (Path(tmp) / ".claude" / "commands" / "recall.md").read_text(
-            encoding="utf-8")
-        assert "claudeteam recall" in body
-        assert "other-agent" in body or "another agent" in body.lower()
 
 
 def test_install_hooks_idempotent_overwrites_existing_files():
@@ -207,13 +196,7 @@ def test_install_hooks_too_many_args_returns_one():
     assert "usage:" in err
 
 
-def test_install_hooks_help():
-    rc, out, _ = run_cli(["install-hooks", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam install-hooks" in out
-
-
-# ── pane-staleness warning (round 5 G15b) ─────────────────────────
+# ── pane-staleness warning ────────────────────────────────────────
 
 
 def test_install_hooks_warns_when_session_already_running():

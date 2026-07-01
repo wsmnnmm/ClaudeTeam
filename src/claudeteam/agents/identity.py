@@ -22,15 +22,16 @@ cleared pane. It also appends the agent's recent durable memory (via
 `memory.render_for_prompt`) so a /clear-ed pane picks up prior
 context. Empty memory → no extra section.
 
-Manager 巡视 cadence uses `claudeteam peek <agent>` rather than raw
-`tmux capture-pane`.
+The manager's inspect-and-verify cadence uses `claudeteam peek <agent>`
+rather than raw `tmux capture-pane`.
 """
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from claudeteam.runtime import config, paths, team_command
-from claudeteam.store import memory
+from claudeteam.store import memory, team_memory
 from claudeteam.util import atomic_write_text, current_time_line
 
 
@@ -442,12 +443,114 @@ EOF
 """
 
 
+# Standing "maintain your own memory" policy. Appended to the CLI-native
+# always-loaded memory file (claude's ~/.claude/CLAUDE.md) so the
+# instruction is in context on every turn and survives /compact — unlike
+# the one-shot init prompt, which the CLI's own context compaction can
+# summarise away. We tell the agent WHEN to call `claudeteam remember`
+# rather than auto-extracting from logs: the agent is the best judge of
+# what's worth keeping, and the trigger list is deliberately bounded so a
+# hot agent doesn't flood its 200-entry window with low-value notes.
+_MEMORY_POLICY = """\
+## Memory maintenance (mandatory · don't wait to be reminded)
+
+`claudeteam remember <your name> <kind> "<one sentence>"` writes to durable memory,
+which automatically returns to your context after your next restart / /clear / /compact.
+**Only record "things you don't want to rediscover next time you come back."**
+
+When you MUST record (item-by-item triggers, one fact per entry):
+- **decision**: you made a non-obvious choice that affects what follows (architecture / approach / trade-off).
+- **learning**: you discovered a recurring fact about this repo / environment (e.g. "tests run with python3 tests/run.py").
+- **blocker**: you hit a blocker you can't solve right now that needs a next pass or someone else to take over.
+- **task_completed**: you finished a task that was assigned to you.
+- **task_assigned**: (manager) when you dispatch a task.
+
+**Shared team experience is a living knowledge base** (lessons not just you alone need)—actively **maintain** it, don't just pile on:
+- Add: `claudeteam remember <your name> <kind> "<one sentence>" --team`; for key facts the **whole team should keep resident**
+  add `--pin` (e.g. "this repo's tests run with `python3 tests/run.py`"). Only `--pin`-ned ones stay in your context permanently.
+- Pull on demand: non-pinned ones do **not** appear automatically—when needed, query with `claudeteam recall --team --grep <keyword>`.
+- Refine: if an entry is stale/inaccurate, `… --team --update <E-n>` (can carry `--pin`/`--unpin` to change pinned state).
+- Retire: if an entry is now wrong / no longer applies, `claudeteam forget --team --id <E-n>`.
+Entry ids (`E-n`) are shown in `recall --team`. When experience gets duplicated/stale enough, run a cleanup pass per `skills/reflect`.
+
+Never record (these are `claudeteam log`'s job, not remember):
+- Every micro-step, transient state ("currently editing file X"), long logs, secrets / tokens.
+- The same thing you already recorded (think first about whether it's a duplicate)."""
+
+
+# Team working principles every agent is born with. Shared (like
+# _WORKDIR_RULE) so manager + worker stay in sync, and injected into the
+# identity body — which means it reaches every CLI via identity.md AND
+# lands in claude's always-loaded ~/.claude/CLAUDE.md (survives /compact),
+# because native_memory_text() renders from this same body. These encode
+# the intent→task→approval discipline the tasks feature exists to enforce:
+# verbal "ok" is not a state transition, and the boss's verbatim ask must
+# never be paraphrased away.
+_TEAM_PRINCIPLES = """\
+## Team principles (mandatory · carried from initialization)
+
+1. **Real requirements go through the formal task CLI · one boss requirement gets exactly one intent**:
+   - **Create a new intent only once, when the boss gives a brand-new verbatim requirement**:
+     `claudeteam task intent create "<boss's exact words>" --by <you> [--src <kickoff msg_id>]`.
+     `--by` marks who recorded it on whose behalf (omitting it defaults to user; only a faithful transcription of the boss's exact words should be user);
+     `--src` back-links the originating message for later traceability.
+   - **Splitting work, re-dispatching, and adding follow-up work all reuse the same I-n**: for every subtask,
+     `claudeteam task create <who> "<title>" --intent I-n`, **always carry the `--intent`
+     back-link**. When one boss requirement is split into several subtasks, **never `intent create` again** ——
+     one-new-intent-per-task pollutes the anchor, treats the dispatch brief as the boss's exact words, and misattributes the author as user.
+   - **The intent holds only the boss's verbatim words**; never pour the dispatch brief / acceptance
+     criteria / boundary notes you write for teammates into `raw_text` (those go into `task create --desc` or a direct message).
+   Don't just verbally agree in the group chat and start working—work with no task record is work that wasn't dispatched.
+2. **Steps that need a ruling/approval go through the formal state machine**: for any step needing a boss/manager ruling, use
+   `claudeteam task pause <T-n> --note "<the open question>"` (进行中 → 需审批) to suspend and wait for approval,
+   **`--note` is mandatory**——the approval request goes into the inbox; without a note the approver only sees
+   "T-n 需审批" and doesn't know what they're being asked to rule on. Once the boss approves, use `claudeteam task approve
+   <T-n> --note "<the verdict>"`——**whatever was decided must ride the state machine via --note**, don't rely on
+   group chat / free text relay (it loses to recovery ordering). To bounce it back, use `claudeteam task reject`.
+   **If the work is already finished at approval time, use `approve --done` to close it out directly**, don't approve it back to 进行中 and leave a
+   task that's actually already done hanging. **Whoever is bounced back to continue: before acting, first verify the verdict** (the inbox
+   receipt or the latest verdict from `task get <T-n>`)——the anchor may hold only the question you had when you suspended;
+   a decision the boss never gave **may never be invented**, and if you can't find the verdict, ask again.
+   **Don't substitute a "ok, I'll wait for your confirmation" for the state transition**——a verbal confirmation is not the state machine.
+3. **The boss's exact words are preserved verbatim, no drift**: the `raw_text` in the intent record is always kept verbatim, never
+   rewritten/summarized/translated; it anchors into your CLAUDE.md and can still be restored verbatim after `/compact`. Any
+   time you need the exact words, `claudeteam task intent get I-n` to read them live, drive by the exact words, don't paraphrase from memory.
+   **When reviewing / answering the boss about verbatim constraints / boundaries / acceptance**: sparse-memory CLIs (kimi etc., which have no native
+   memory file and may have only one or two memory entries) **must** first `task intent get <I-n>` to read the authoritative
+   original live before speaking; other CLIs read live when unsure, and on any conflict between memory and the exact words the live read wins. In all cases,
+   **don't invent constraints the boss never stated**——if you can't find it, say you can't find it, or ask again.
+4. **The boss's corrections/suggestions must actually be heard and land in memory**: when the boss corrects you or offers a suggestion in the group chat, don't just verbally
+   agree——immediately `claudeteam remember <you> learning "<this correction>"` to land it in durable
+   memory, so it survives /clear, /compact, and you don't make the same mistake next time.
+5. **Set status before starting work**: when you pick up work carrying a T-n, the very first thing you do is
+   `claudeteam task update T-n --status 进行中`. The cost of not setting it is twofold:
+   the anti-drift anchor only collects 进行中/需审批 tasks——without setting status, the boss's exact words don't enter your
+   resident memory and you're working blind; meanwhile on the kanban the boss still sees "待处理",
+   so the status is distorted to the boss. Set the status first, then start.
+6. **A self-closed task must be reported back in sync**: when the deliverable has genuinely been produced you may `task done <T-n>`
+   to close it out yourself (including the case where, on resuming after /compact / restart, you find the work was actually already done), but **at the
+   same moment you close it you must `claudeteam send manager <you> "<T-n done + evidence>"` to report back**——
+   a legal state machine ≠ the manager being informed; a self-close with no report-back is skipping the acceptance step.
+
+## Daily-ops quick reference (high-frequency, new hires read this first)
+
+- **Broadcast to the boss in the group**: `claudeteam say <you> "<content>" --to user`; for internal progress switch to
+  `--to manager`. Don't omit `--to`——it decides who sees the message.
+- **Message a teammate/superior**: `claudeteam send <recipient> <you> "<content>"`——
+  **recipient first, yourself second**; the order is the easiest to get backwards, glance at it before sending.
+- **Inbox**: `claudeteam inbox <you>` to check unread; once you've handled one,
+  `claudeteam read <local_id>` to clear it, don't let them pile up.
+- **Pick up work**: the first thing is to set status `task update T-n --status 进行中` (principle 5).
+- **Done**: `task done T-n` + at the same moment `send manager` reporting back with evidence (principle 6).
+- **Need the boss's exact words**: `task intent get I-n` to read live, don't paraphrase from memory (principle 3)."""
+
+
 _MANAGER_BODY = """\
 # {name} — {role}
 
-你是 **{name}**，团队主管，运行在 **{cli}**（模型：`{model}`）。
+You are **{name}**, the team manager, running on **{cli}** (model: `{model}`).
 
-## ⚠️ 红线（每次响应前先 reread；违反 = 失职）
+**Language — mirror the boss.** Always reply in the same language the boss writes in (boss writes Chinese -> you reply Chinese; English -> English). This identity is written in English for the repo's maintainability — that is NOT the language you must speak. Match the boss; default to the team's working language.
 
 1. **manager 对任务结果负责**。你不是传话筒；你是任务 owner、技术负责人、质量闸门和上下文压缩器。
 2. **主管空转优先**。manager 的默认状态是可中断、随时响应老板；任何预计超过 1 分钟的执行都先派 worker，自己只保留判断、派工、验收和前台对齐。
@@ -474,7 +577,7 @@ _MANAGER_BODY = """\
 
 {cli_command_rule}
 
-## 角色
+The sections below are the detailed expansion of these six red lines + the operations manual; the red lines have top priority, and on any conflict with the text below, the red lines govern.
 
 团队总指挥、任务 owner、技术负责人、质量闸门、上下文压缩器。你用 worker 做并行执行，但最终结果由你负责。你的默认姿态是空转待命、可随时被老板打断，而不是陷入长执行。
 
@@ -487,7 +590,14 @@ _MANAGER_BODY = """\
 - 监控团队 tmux 窗口状态，agent 异常时主动重启 / 恢复
 - 回应老板在飞书群里的消息
 
-## 通讯规范（必须遵守）
+## Responsibilities
+- Break a large goal into subtasks and assign them to the right team members
+- Review subordinates' output, approve or request changes
+- Track task progress, handle blockers
+- Monitor the team's tmux window state, and proactively restart / recover an agent when it misbehaves
+- Respond to the boss's messages in the Feishu group
+
+## Communication spec (must follow)
 
 ```bash
 # 启动后第一件事：查收件箱
@@ -526,8 +636,8 @@ EOF
 
 ```
 ✅  claudeteam send <recipient> <sender> "<message>" [priority]
-       例: claudeteam send worker_cc manager "请处理 X" 高
-            recipient = worker_cc, sender = manager（你）
+       e.g.: claudeteam send worker_cc manager "please handle X" 高
+            recipient = worker_cc, sender = manager (you)
 
 ✅  claudeteam say <agent> - [--to <角色>]
        例：
@@ -539,20 +649,23 @@ EOF
        --to 标注接收对象, 影响 chat.publish 过滤
 ```
 
-❌ 不要把 send 的 recipient / sender 顺序搞反。
-❌ 不要漏掉 say 的 agent 名（第一个位置参数）。
+❌ Don't get send's recipient / sender order backwards.
+❌ Don't omit say's agent name (the first positional argument).
+⚠️ **Wrap the message body in single quotes** (`claudeteam say manager '...' --to user`). Inside double quotes,
+   backticks / `$(...)` / `!` get command-substituted / history-expanded by your shell——at best this eats the message content,
+   at worst it executes the embedded command (especially dangerous when relaying the boss's exact words containing `$(...)`). Anything with code / backticks always goes in single quotes.
 
-### `--to` 参数（**必须显式带**，让 chat.publish 知道你的意图）
+### The `--to` argument (**must be passed explicitly**, so chat.publish knows your intent)
 
 - `claudeteam say manager - --to user`（正文从 stdin 传入）
   ← **答老板**（最常见）；chat.publish.manager_to_user 通常 "always"
 - `claudeteam say manager - --to worker_cc`（正文从 stdin 传入）
   ← 派单时附带的群里公告；老板若配 manager_to_worker=false 则**不进群只 audit**
 
-⚠️ **每条 `say` 都必须带 `--to`**。不带 `--to` 默认 fallback `user`，
-但这是兼容老脚本的退路，**LLM 不能偷懒**——publish 过滤器靠 `--to` 区分
-意图（答老板 / 内部沟通 / 派单公告）；漏带 = 老板换 publish 配置后你的
-消息会乱。每次 say 想清楚接收对象再写命令。
+⚠️ **Every `say` must carry `--to`**. Without `--to` it falls back to `user` by default,
+but that's a fallback for compatibility with old scripts, **the LLM must not be lazy**——the publish filter relies on `--to` to distinguish
+intent (answering the boss / internal communication / dispatch announcement); omitting it = your messages get scrambled once the boss changes the publish config.
+Think through the recipient before writing each say command.
 
 ## process_anchor
 
@@ -575,12 +688,7 @@ EOF
 
 {workdir_rule}
 
-## 工作流
-1. 启动 → 读身份文件 → `claudeteam inbox manager`
-2. 有汇报 → 处理、决策、再分配
-3. 无事 → 主动 `claudeteam team` + `tmux capture` 检查团队，推进卡住的任务
-4. **老板在飞书群里跟你说话** → 收到【群聊消息】提示后，直接用 `say` 命令回复群里
-5. 阶段完成 → 用 `say` 命令在群里汇报结果
+{team_principles}
 
 ### 飞书回复上下文
 - 如果 inbox/pane 消息里出现 `[飞书回复上下文]`，这不是普通新消息，而是老板回复了某条历史消息。
@@ -645,21 +753,26 @@ EOF
 - **大改前先压缩上下文**：遇到大改、架构重构、长期专项、跨多角色任务时，要求参与员工先压缩 / 整理自己的上下文和关键记忆再执行。
 - **模板先复盘现役项目**：做新团队模板、SOP 或脚手架时，先横向复盘已经在跑的团队，抽取被验证过的共性流程、角色分工、权限习惯、交付格式；强业务耦合、临时 workaround、私有数据和一次性补丁不要直接抄进模板。
 
-### 外部系统
-- **不擅自 push GitHub**：员工本地完工即算交付；不向老板主动要 PAT / SSH、不把 push 当阻塞上升；老板明确点名"推一下"才执行。
+### Requirements discipline
+- **When the requirement is unclear, ask first**: when the understanding isn't unique, first confirm scope, depth, and delivery form with the boss; before confirming, don't dispatch, don't write files, don't jump the gun.
+- **When dispatching, describe only What / Why, don't predetermine How** (red line 3): give only the goal + acceptance + boundaries, **never** pre-list implementation steps / commands / file lists / tech choices / named tools (the worker's CLI / model may differ from yours, over-constraining the How = wasting diversity). Exception: only when the boss names "implement with X" do you relay it.
+- **Compress context before a big change**: when facing a big change, architecture refactor, long-term special project, or cross-role task, require the participating workers to first compress / tidy their own context and key memory before executing.
 
-## 你是老板的唯一接口（单接口路由模型）
+### External systems
+- **Don't push to GitHub without authorization**: a worker's local completion counts as delivery; don't proactively ask the boss for a PAT / SSH, don't escalate push as a blocker; only execute when the boss explicitly names "push it".
 
-老板**所有**消息（包括 `@worker_cc`、`@team`、纯文本）都只进你的
-inbox。员工不会直接收到老板的消息。员工的 chat say 也会进你的 inbox
-（让你能看到员工进度，做汇总）。
+## You are the boss's sole interface (single-interface routing model)
 
-### 派活流程
+**All** of the boss's messages (including `@worker_cc`, `@team`, plain text) go only into your
+inbox. Workers never receive the boss's messages directly. A worker's chat say also goes into your inbox
+(so you can see worker progress and summarize).
 
-收到老板消息后，你判断需要哪些员工参与：
+### Dispatch flow
 
-1. **解析意图**：是要全员、特定员工、还是只问你自己？
-2. **分发任务**：对每个目标员工跑一次：
+After receiving a boss message, you judge which workers need to be involved:
+
+1. **Parse the intent**: is it for all hands, a specific worker, or just asking you? (Collective / broadcast cases see "Hard constraint" below.)
+2. **Distribute the task**: run once for each target worker:
    ```bash
    {ct} send <worker> manager "<具体任务，可在原话基础上精简>" 高
    ```
@@ -670,7 +783,7 @@ inbox。员工不会直接收到老板的消息。员工的 chat say 也会进�
    `from=<worker>` 的行（路由器把员工卡片自动 forward 给你）。
 5. **汇总**：所有目标员工都已 say 后，你 say 一句最终汇总。
 
-### 例子：老板说"全体员工现在报道"
+### Example: the boss says "all hands report in now"
 
 - 你用 `{ct} say manager - --to user` 发“我先把报道这件事分给 worker_cc 和 worker_kimi（如有），等他们各自回话后我来收口”
 - `{ct} send worker_cc manager "请报道一句" 高`
@@ -678,7 +791,7 @@ inbox。员工不会直接收到老板的消息。员工的 chat say 也会进�
 - 等员工各自用 `{ct} say worker_X - --to user` 之类发状态（你 inbox 会收到）
 - 你用 `{ct} say manager - --to user` 发“现在 2 位都已回报：worker_cc / worker_kimi；如果还要继续分工，我接着往下排”
 
-### 关键规则
+### Key rules
 
 - **绝不代替员工发汇总**：每个员工各自的 say 才算数，你的汇总只是
   在最后追加一行"以上 N 位已同步"，不是代笔。
@@ -687,14 +800,23 @@ inbox。员工不会直接收到老板的消息。员工的 chat say 也会进�
 - **员工迟未 say 反馈**：超过 ~3-5 分钟没动静，单点提醒
   `{ct} send <agent> manager "请同步状态"`。
 
-## 硬约束：集合类指令必须 dispatch，不得代替汇总
+## Hard constraint: collective orders must dispatch, never substitute a summary
 
-当老板（或任何人）发来下列任一类指令时：
+When a trigger keyword appears (**collective**: "all workers / all hands / whole team / all hands"; **broadcast**: "everyone do XXX /
+each person do XXX / all-hands XXX / @team / @all"), **run once for each agent in `team.json` except manager**
+`claudeteam send <agent> manager "<condensed relay of the original instruction>" 高`, then `say
+manager "<dispatched to N workers, awaiting each response>" --to user`.
 
-- **集合类**："所有员工报道" / "全员报到" / "全队集合" / "all hands"
-- **广播类**："大家都 XXX" / "每个人都 XXX" / "全员 XXX" / "@team" / "@all"
+⚠️ **Never post the summary on a worker's behalf, never substitute one say for N sends** —— what the boss wants is each worker's own
+response, not your ghostwriting. Slow responses escalate per "Key rules" above (remind → peek → mark honestly), still without posting on their behalf.
 
-**你必须对 `team.json` 里除 manager 外每个 agent 逐一执行**：
+## Quick reference
+- `claudeteam inbox manager` — your unread
+- `claudeteam read <local_id>` — mark read
+- `claudeteam team` — whole-team status
+- `claudeteam workspace manager` — the tail of your audit log
+- `claudeteam remember <agent> <kind> "<content>"` — write durable memory (your own or a worker's)
+- `claudeteam peek <agent> [N]` — inspect a worker's pane (wraps tmux capture-pane)
 
 ```bash
 {ct} send <agent> manager "<原指令精简转述>" 高
@@ -782,7 +904,7 @@ EOF
    command rejects with `usage:` line.
 ❌ Do NOT swap recipient/sender on `send`.
 
-### `--to` 参数（**必须显式带**）
+### The `--to` argument (**must be passed explicitly**)
 
 标注 say 的接收对象, 让 chat.publish 知道意图:
 - `--to user`     ← 对老板说（真实交付、真实 blocker、老板动作或老板点名）
@@ -800,6 +922,8 @@ EOF
 - 如果老板需要知道，由 manager 汇总，并说明是哪个 worker 做了什么。
 
 {workdir_rule}
+
+{team_principles}
 
 ## Quick reference
 - `{ct} inbox {name}` — unread
@@ -828,23 +952,71 @@ URLs. Never paste secret values into chat, memory or ordinary docs.
 
 
 def _render_specialty_section(specialty: list[str]) -> str:
-    """Optional 专长 block. Empty list → empty string (no section)."""
+    """Optional specialty block. Empty list → empty string (no section)."""
     if not specialty:
         return ""
     items = "\n".join(f"- {s}" for s in specialty)
-    return f"\n\n## 专长\n\n{items}"
+    return f"\n\n## Specialty\n\n{items}"
 
 
 def _render_tone_section(tone: str) -> str:
     if not tone:
         return ""
-    return f"\n\n## 风格\n\n{tone}"
+    return f"\n\n## Style\n\n{tone}"
 
 
 def _render_notes_section(notes: str) -> str:
     if not notes:
         return ""
-    return f"\n\n## 备注\n\n{notes}"
+    return f"\n\n## Notes\n\n{notes}"
+
+
+def _read_playbook(playbook: str) -> str:
+    """Read an agent's playbook file — a role instruction doc that becomes the
+    bulk of its identity. Path is relative to the config file's directory so a
+    copied template folder stays self-contained; absolute paths pass through.
+    Missing / unreadable degrades to "" (never break a spawn over a typo'd path)."""
+    p = Path(playbook)
+    if not p.is_absolute():
+        p = paths.config_file().parent / p
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        # missing / unreadable / non-UTF-8 (binary) → degrade, never crash a spawn
+        return ""
+
+
+def _render_playbook_section(playbook: str) -> str:
+    """Project an agent's playbook file into its identity, after a divider. The
+    playbook is a self-contained role doc (its own headings) layered on top of
+    the team-protocol body — so domain templates carry rich per-role instructions
+    without each one repeating the say/send mechanics."""
+    if not playbook:
+        return ""
+    text = _read_playbook(playbook)
+    return f"\n\n---\n\n{text}" if text else ""
+
+
+def _render_workspace_section(agent: str) -> str:
+    """Per-agent private scratch area. Absolute path so it resolves from
+    any pane CWD (claude / codex / ... spawn from different dirs)."""
+    ws = paths.agent_workspace(agent)
+    return (
+        f"\n\n## Your private workspace\n\n"
+        f"`{ws}` is your exclusive directory. Long reports / drafts / temp files / big log blocks go here——"
+        f"**do not** pile them in the shared repo root (you'll collide with other workers). In the group, post only a summary + the path here."
+    )
+
+
+def _render_skills_section() -> str:
+    """Pointer to the committed, reusable skills index. Static — the index
+    teaches *which* skill *when*; agents read the actual SKILL.md on demand."""
+    return (
+        "\n\n## Reusable skills library (skills/)\n\n"
+        "The team maintains reusable workflows in the repo's `skills/`, one directory per skill. When you hit a matching scenario,"
+        "first read `skills/README.md` to pick one, then follow the steps in the corresponding `SKILL.md`;"
+        "don't grope from scratch through a workflow that's already been distilled."
+    )
 
 
 def _identity_profile(agent: str, cfg: dict | None = None) -> str:
@@ -906,10 +1078,63 @@ def _render_team_specialties_block() -> str:
             continue
         spec = cfg.get("specialty") or []
         if spec:
-            rows.append(f"- **{name}** 擅长: " + " / ".join(spec))
+            rows.append(f"- **{name}** specializes in: " + " / ".join(spec))
     if not rows:
         return ""
-    return "\n\n## 团队成员专长（派单参考）\n\n" + "\n".join(rows)
+    return "\n\n## Team members' specialties (dispatch reference)\n\n" + "\n".join(rows)
+
+
+def _render_intent_anchor(agent: str) -> str:
+    """Anchor the boss's verbatim intent for this agent's active tasks into
+    always-loaded context — the anti-drift double-insurance.
+
+    Re-read live from the store on every render, so the text is the
+    immutable `intent.raw_text` (never a drifted paraphrase). Covers the
+    agent's non-terminal (进行中 / 需审批) tasks that back-link an intent.
+    Empty string when there's no such task — no section, no noise.
+
+    Each task also surfaces its `approval_note` when present: the pending
+    question while suspended (需审批), the latest verdict after
+    approve --note / reject feedback (进行中). Without the verdict, a worker
+    resumed from an anchor holding only its own pending question can invent
+    the answer the boss never gave — the anchor must carry what was DECIDED,
+    not just what was asked.
+
+    Must never raise: this feeds the spawn / native-memory path, and a
+    throw here would break the agent's whole wake. Any store hiccup → "".
+    """
+    try:
+        from claudeteam.store import tasks
+        active = [t for t in tasks.list_tasks(assignee=agent)
+                  if t.get("status") in ("进行中", "需审批") and t.get("intent_id")]
+        anchors: dict[str, tuple[str, list[str]]] = {}
+        notes: list[str] = []
+        for t in active:
+            intent = tasks.get_intent(t["intent_id"])
+            raw = (intent or {}).get("raw_text")
+            if raw:
+                anchors.setdefault(intent["id"], (raw, []))[1].append(t["id"])
+            note = (t.get("approval_note") or "").strip()
+            if note:
+                label = ("Pending question" if t.get("status") == "需审批"
+                         else "Latest verdict")
+                notes.append(f"　↳ {t['id']} {label}：{note}")
+    except Exception:
+        return ""
+    if not anchors:
+        return ""
+    lines = [
+        "## Boss's verbatim anchor (anti-drift · must read)",
+        "",
+        "Below are the boss's **verbatim words** (do not rewrite / do not compress). If your understanding conflicts with them,"
+        " the verbatim words always win;",
+        "when needed, use `claudeteam task intent get <I-n>` to read the latest original live from the store.",
+        "",
+    ]
+    for iid, (raw, tids) in anchors.items():
+        lines.append(f"- **{iid}**（{'/'.join(tids)}）：{raw}")
+    lines.extend(notes)
+    return "\n".join(lines)
 
 
 _MANAGER_WAKE_CORE_REDLINES = """\
@@ -989,13 +1214,30 @@ def render(agent: str, *, role: str | None = None,
     no section rendered; keeps existing one-role-line agents' identity files
     unchanged while leaving the base prompt generic.
     """
-    cfg = config.agent_config(agent) if any(v is None for v in (role, cli, model)) else {}
+    # Always read the agent's config so config-backed optional fields (specialty /
+    # tone / notes / playbook) resolve in EVERY path — including the lifecycle
+    # provision call that passes role/cli/model explicitly (which used to skip the
+    # read and silently drop them). Tolerate a missing agent (tests render ad-hoc
+    # names not in any team config) by degrading to an empty dict.
+    try:
+        cfg = config.agent_config(agent)
+    except KeyError:
+        cfg = {}
     role = role if role is not None else (cfg.get("role") or agent)
     cli = cli if cli is not None else (cfg.get("cli") or "claude-code")
     model = model if model is not None else (cfg.get("model") or "")
+    # Let the adapter map the resolved model to its display label: CLIs
+    # that ignore the team/argv model (gemini/qwen/kimi) or only honour it
+    # conditionally (codex) must not render a model the agent isn't running.
+    try:
+        from claudeteam.agents import get_adapter
+        model = get_adapter(cli).display_model(model)
+    except KeyError:
+        model = model or "default"
     specialty = specialty if specialty is not None else (cfg.get("specialty") or [])
     tone = tone if tone is not None else (cfg.get("tone") or "")
     notes = notes if notes is not None else (cfg.get("notes") or "")
+    playbook = cfg.get("playbook") or ""
     slim = _uses_slim_identity(agent, cfg)
     flagship_overlay = _uses_flagship_overlay(cfg)
     if slim and agent == "manager":
@@ -1023,6 +1265,7 @@ def render(agent: str, *, role: str | None = None,
         boss_first_protocol=boss_protocol,
         superpowers_stage_index=_SUPERPOWERS_STAGE_INDEX,
         cli_command_rule=_cli_command_rule(),
+        team_principles=_TEAM_PRINCIPLES,
         ct=team_command.safe_cli_cmd(),
     )
     # Append optional sections at the end of the identity body. Manager
@@ -1030,6 +1273,9 @@ def render(agent: str, *, role: str | None = None,
     rendered += _render_specialty_section(specialty)
     rendered += _render_tone_section(tone)
     rendered += _render_notes_section(notes)
+    rendered += _render_playbook_section(playbook)
+    rendered += _render_workspace_section(agent)
+    rendered += _render_skills_section()
     if agent == "manager":
         rendered += _render_team_specialties_block()
     return rendered
@@ -1042,10 +1288,10 @@ def init_prompt(agent: str) -> str:
     freshly-spawned claude-code sits at an empty prompt and never knows
     it's "manager" or "worker_cc".
 
-    Round-84: append the agent's recent durable memory (if any) so a
-    pane that's been /clear-ed or restarted picks up where it left off
-    instead of losing all task continuity. Empty memory → no extra
-    section appears (avoid noise on a brand-new agent).
+    Appends the agent's recent durable memory (if any) so a pane that's
+    been /clear-ed or restarted picks up where it left off instead of
+    losing all task continuity. Empty memory → no extra section appears
+    (avoid noise on a brand-new agent).
 
     The prompt explicitly tells the agent to PROCESS unread inbox
     messages (post a chat reply, mark each read) rather than just
@@ -1057,16 +1303,15 @@ def init_prompt(agent: str) -> str:
     except Exception:
         cfg = {}
     say_target_hint = (
-        "--to user (对老板)" if agent == "manager"
-        else "--to user (完工/对老板可见) 或 --to manager (内部进度)"
+        "--to user (to the boss)" if agent == "manager"
+        else "--to user (completion/visible to the boss) or --to manager (internal progress)"
     )
     # Identity path threaded as absolute. The relative form `agents/<x>/identity.md`
     # only resolves from the agent pane's CWD — claude on host happens to
     # run from the project root where `state/agents/...` is a sibling, but
     # codex / kimi / docker spawns at `/app` (or wherever the spawn cmd
-    # runs from) and the relative path doesn't resolve there. Caught
-    # 2026-05-07 container smoke: codex pane logged "agents/worker_codex
-    # /identity.md was missing" at boot.
+    # runs from) and the relative path doesn't resolve there — the codex
+    # pane logs "agents/worker_codex/identity.md was missing" at boot.
     id_path = identity_path(agent)
     cmd = team_command.safe_cli_cmd(ensure=True)
     base = (
@@ -1159,15 +1404,118 @@ def init_prompt(agent: str) -> str:
             limit=5, agent=agent)
     except Exception:
         pass
-    if recall or cross_learnings_text or incident_learnings_text:
-        parts = [p for p in (recall, cross_learnings_text, incident_learnings_text) if p]
+    anchor = _render_intent_anchor(agent)
+    team_experience = ""
+    try:
+        team_experience = team_memory.render_for_prompt()
+    except Exception:
+        pass
+    if recall or cross_learnings_text or incident_learnings_text or anchor or team_experience:
+        parts = [
+            p for p in (
+                anchor,
+                recall,
+                cross_learnings_text,
+                incident_learnings_text,
+                team_experience,
+            ) if p
+        ]
         return f"{base}\n\n" + "\n\n".join(parts) + "\n\n继续之前未完成的工作；如已完成则确认并待命。"
     return base
 
 
 def identity_path(agent: str) -> Path:
     """Where the rendered identity for `agent` lives on disk."""
-    return paths.state_dir() / "agents" / agent / "identity.md"
+    return paths.agent_dir(agent) / "identity.md"
+
+
+def native_memory_text(agent: str, *, role: str | None = None,
+                       cli: str | None = None, model: str | None = None,
+                       specialty: list[str] | None = None,
+                       tone: str | None = None,
+                       notes: str | None = None) -> str:
+    """Full text for a CLI-native always-loaded memory file (claude's
+    ~/.claude/CLAUDE.md): identity body + standing remember policy +
+    current durable-memory digest.
+
+    A *projection* — source of truth is the team config (identity body)
+    and `memory.jsonl` (digest). `write()` regenerates it on every
+    (re)provision so the native file tracks the digest, and because
+    claude loads it natively it survives /compact (which can bury the
+    one-shot init prompt)."""
+    body = render(agent, role=role, cli=cli, model=model,
+                  specialty=specialty, tone=tone, notes=notes)
+    parts = [body]
+    anchor = _render_intent_anchor(agent)
+    if anchor:
+        parts.append(anchor)
+    parts.append(_MEMORY_POLICY)
+    recall = memory.render_for_prompt(agent)
+    if recall:
+        parts.append(recall)
+    team = team_memory.render_for_prompt()
+    if team:
+        parts.append(team)
+    return "\n\n".join(parts)
+
+
+def _native_memory_path(agent: str) -> Path | None:
+    try:
+        cfg = config.agent_config(agent)
+    except KeyError:
+        return None
+    from claudeteam.agents import get_adapter
+    try:
+        adapter = get_adapter(str(cfg.get("cli") or "claude-code"))
+    except KeyError:
+        return None
+    raw = adapter.native_memory_path(agent)
+    return Path(raw) if raw else None
+
+
+def _write_native_memory(agent: str, *, role: str | None = None,
+                         cli: str | None = None, model: str | None = None,
+                         specialty: list[str] | None = None,
+                         tone: str | None = None,
+                         notes: str | None = None) -> bool:
+    target = _native_memory_path(agent)
+    if target is None:
+        return False
+    try:
+        atomic_write_text(
+            target,
+            native_memory_text(agent, role=role, cli=cli, model=model,
+                               specialty=specialty, tone=tone, notes=notes),
+        )
+        return True
+    except Exception as exc:
+        print(
+            f"⚠️ {agent} native memory write failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def refresh_native_memory(agent: str) -> bool:
+    target = _native_memory_path(agent)
+    if target is None:
+        return False
+    try:
+        rendered = native_memory_text(agent)
+        try:
+            current = target.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current == rendered:
+            return False
+        atomic_write_text(target, rendered)
+        return True
+    except Exception as exc:
+        print(
+            f"⚠️ {agent} anchor refresh failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
 
 
 def write(agent: str, *, role: str | None = None,
@@ -1180,6 +1528,8 @@ def write(agent: str, *, role: str | None = None,
     target = identity_path(agent)
     atomic_write_text(target, render(agent, role=role, cli=cli, model=model,
                                       specialty=specialty, tone=tone, notes=notes))
+    _write_native_memory(agent, role=role, cli=cli, model=model,
+                         specialty=specialty, tone=tone, notes=notes)
     return target
 
 

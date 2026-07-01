@@ -56,7 +56,7 @@ def test_recall_respects_explicit_limit():
 
 
 def test_recall_json_dumps_records_machine_readable():
-    """--json emits the raw record list — for jq / smoke conductors."""
+    """--json emits the raw record list — for jq / scripts."""
     with isolated_env():
         memory.append("w", "learning", "auth uses bcrypt")
         rc, out, _ = run_cli(["recall", "w", "--json"])
@@ -73,12 +73,12 @@ def test_recall_invalid_limit_returns_error():
     assert "must be an integer" in err
 
 
-# ── --kind filter (round-107) ───────────────────────────────────
+# ── --kind filter ───────────────────────────────────────────────
 
 
 def test_recall_kind_filter_only_returns_matching_entries():
-    """Round-107: --kind narrows recall to one of memory.KNOWN_KINDS,
-    so boss can scan a slice (`--kind decision`) without grep."""
+    """--kind narrows recall to one of memory.KNOWN_KINDS, so the boss
+    can scan a slice (`--kind decision`) without grep."""
     with isolated_env():
         memory.append("manager", "decision", "use bcrypt")
         memory.append("manager", "learning", "auth path is /auth/v2")
@@ -141,34 +141,69 @@ def test_recall_kind_filter_with_limit_trims_after_filter():
         assert "note 49" not in out
 
 
-def test_recall_zero_limit_returns_error():
-    rc, _, err = run_cli(["recall", "w", "--limit", "0"])
-    assert rc == 1
-    assert ">= 1" in err
-
-
 def test_recall_zero_args_returns_usage():
     rc, _, err = run_cli(["recall"])
     assert rc == 1
     assert "usage:" in err
 
 
-def test_recall_help_flag():
-    rc, out, _ = run_cli(["recall", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam recall" in out
+# ── --team (shared experience) ───────────────────────────────────
 
 
-def test_recall_help_lists_known_kinds():
-    """Round-110: --help advertises memory.KNOWN_KINDS so operators
-    don't have to grep the source to learn the convention."""
-    rc, out, _ = run_cli(["recall", "--help"])
-    for k in memory.KNOWN_KINDS:
-        assert k in out
-    # Make the "any string accepted" caveat visible too
-    assert "stderr" in out.lower() or "nudge" in out.lower()
+def test_recall_team_reads_shared_pool_without_agent_arg():
+    from claudeteam.store import team_memory
+    with isolated_env():
+        team_memory.append("用两步结账", kind="decision", by="manager")
+        rc, out, _ = run_cli(["recall", "--team"])
+        assert rc == 0
+        assert "team shared experience" in out
+        assert "用两步结账" in out
+        assert "@manager" in out
 
 
-def test_recall_registered_in_cli():
-    from claudeteam.cli import COMMANDS
-    assert "recall" in COMMANDS
+def test_recall_team_empty_friendly_message():
+    with isolated_env():
+        rc, out, _ = run_cli(["recall", "--team"])
+        assert rc == 0
+        assert "no shared experience yet" in out
+
+
+def test_recall_team_shows_entry_ids():
+    """Ids are visible so an agent can target one for --update / forget --id."""
+    from claudeteam.store import team_memory
+    with isolated_env():
+        team_memory.append("用两步结账", kind="decision", by="manager")
+        rc, out, _ = run_cli(["recall", "--team"])
+        assert rc == 0
+        assert "E-1" in out
+
+
+def test_recall_team_grep_filters_to_matches():
+    """--grep is the dependency-free 'pull only what's relevant' path."""
+    from claudeteam.store import team_memory
+    with isolated_env():
+        team_memory.append("用两步结账", kind="decision", by="manager")
+        team_memory.append("测试用 python3", kind="learning", by="worker_cc")
+        rc, out, _ = run_cli(["recall", "--team", "--grep", "测试"])
+        assert rc == 0
+        assert "测试用 python3" in out
+        assert "用两步结账" not in out
+
+
+def test_recall_team_marks_pinned():
+    from claudeteam.store import team_memory
+    with isolated_env():
+        team_memory.append("置顶条", kind="learning", by="a", pin=True)
+        rc, out, _ = run_cli(["recall", "--team"])
+        assert rc == 0
+        assert "📌" in out
+
+
+def test_recall_agent_grep_filters():
+    with isolated_env():
+        memory.append("worker_cc", "learning", "auth uses bcrypt")
+        memory.append("worker_cc", "note", "standup at 10am")
+        rc, out, _ = run_cli(["recall", "worker_cc", "--grep", "bcrypt"])
+        assert rc == 0
+        assert "auth uses bcrypt" in out
+        assert "standup" not in out

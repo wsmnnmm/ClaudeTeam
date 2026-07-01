@@ -60,6 +60,20 @@ class CallRecorder:
         return self.result
 
 
+class KwRecorder:
+    """Like CallRecorder but for keyword-style callables (e.g. chat.send_text's
+    `sidecar_send=`) — records positional args as a tuple + kwargs verbatim, with
+    no `list()`-coercion of the first arg (which would char-split a string id)."""
+
+    def __init__(self, result=None):
+        self.calls: list[dict] = []
+        self.result = result
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": dict(kwargs)})
+        return self.result
+
+
 @contextlib.contextmanager
 def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None):
     """Set CLAUDETEAM_STATE_DIR (always) + optionally TEAM_FILE / RUNTIME_CONFIG.
@@ -170,7 +184,7 @@ def tmux_patch(**stubs):
 def captured_stderr():
     """Yield a StringIO bound to `sys.stderr` for the with-block.
 
-    R157: extracted from test_store_memory.py where 6 tests duplicated
+    Extracted from test_store_memory.py where several tests duplicated
     `import contextlib, io; err = io.StringIO(); with
     contextlib.redirect_stderr(err): ...`. Use when testing a function
     that writes to stderr directly (vs a CLI command — for those use

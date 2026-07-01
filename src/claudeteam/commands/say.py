@@ -27,7 +27,7 @@ from claudeteam.feishu.cards import simple_card
 from claudeteam.feishu.text import normalize_visible_escapes as _normalize_visible_escapes
 from claudeteam.runtime import artifact_gate, config, manager_action_guard, paths
 from claudeteam.store import local_facts
-from claudeteam.util import env_str, error_exit, pop_bool_flag, pop_flag, usage_error
+from claudeteam.util import env_str, error_exit, maybe_print_help, pop_bool_flag, pop_flag, usage_error
 
 
 USAGE = (
@@ -40,15 +40,18 @@ USAGE = (
 
 
 # Card colors per agent. manager → blue (fixed visual weight, "boss
-# answer" channel). Workers auto-cycle through _WORKER_PALETTE in
-# team-config order so each worker reads as a distinct color in chat —
-# 2026-05-09: previously every worker fell back to "green", making
-# multi-worker dispatch cards visually indistinguishable. Per-agent
+# answer" channel). EVERY OTHER agent auto-cycles through _AGENT_PALETTE in
+# team-config order so each agent's cards read as a DISTINCT color block in
+# chat (agents not named worker_* — dev/devops/expert/qa/… — would
+# otherwise all fall to the "blue" fallback = indistinguishable from each
+# other and from manager). Palette deliberately excludes blue (manager's) and has
+# 7 distinct entries so a typical team gets a unique color each. Per-agent
 # `card_color` in claudeteam.toml still wins (override).
 _AGENT_CARD_COLORS = {
     "manager": "blue",
 }
-_WORKER_PALETTE = ("green", "purple", "orange", "yellow")
+_AGENT_PALETTE = ("green", "purple", "orange", "yellow", "red", "turquoise")
+_WORKER_PALETTE = _AGENT_PALETTE
 _EMPTY_LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d+[.)]|[-*•])\s*$")
 _EMPTY_MEDIA_LIST_RE = re.compile(
     r"(截图|图片|标注图|附件)[^。\n]*[：:]\s*(?:[、,，` ]{2,}[。]?|[。])\s*(?:$|\n)")
@@ -685,24 +688,23 @@ def _has_boss_summary(text: str) -> bool:
 
 
 def _color_for(agent: str, cfg_color: str | None = None) -> str:
-    """Resolve card header color. Per-agent `card_color` (or legacy
-    `color`) in claudeteam.toml wins; else manager → blue (fixed);
-    else worker_* → cycle through `_WORKER_PALETTE` in team-config
-    order so multiple workers' cards are visually distinct; else
-    fallback blue."""
+    """Resolve card header color. Per-agent `card_color` (or legacy `color`)
+    in claudeteam.toml wins; else manager → blue (fixed, "boss answer"
+    weight); else EVERY OTHER agent → a distinct color cycled from
+    `_AGENT_PALETTE` by its position among non-manager agents in team-config
+    order, so each agent's cards are a different color block. Falls back to
+    the first palette color on any config hiccup."""
     if cfg_color:
         return cfg_color
-    if agent in _AGENT_CARD_COLORS:
+    if agent in _AGENT_CARD_COLORS:        # manager → blue
         return _AGENT_CARD_COLORS[agent]
-    if agent.startswith("worker"):
-        try:
-            agents = config.load_team().get("agents", {}) or {}
-            workers = [n for n in agents if n != "manager" and n.startswith("worker")]
-            idx = workers.index(agent) if agent in workers else 0
-        except Exception:
-            idx = 0
-        return _WORKER_PALETTE[idx % len(_WORKER_PALETTE)]
-    return "blue"
+    try:
+        agents = config.load_team().get("agents", {}) or {}
+        others = [n for n in agents if n != "manager"]
+        idx = others.index(agent) if agent in others else 0
+    except Exception:
+        idx = 0
+    return _AGENT_PALETTE[idx % len(_AGENT_PALETTE)]
 
 
 def _emoji_for(agent: str, cfg_emoji: str | None = None) -> str:
@@ -1094,6 +1096,8 @@ def _log_dedup(agent: str, message: str, image: str = "") -> None:
 
 
 def main(argv: list[str]) -> int:
+    if maybe_print_help(argv, USAGE):
+        return 0
     args = _parse(argv)
     if args is None:
         return usage_error(USAGE)
@@ -1114,7 +1118,7 @@ def main(argv: list[str]) -> int:
 
     chat = config.chat_id()
     if not chat:
-        return error_exit("❌ chat_id not set in runtime_config.json")
+        return error_exit("❌ chat_id not set in claudeteam.toml")
 
     profile = config.lark_profile()
 

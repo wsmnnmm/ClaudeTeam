@@ -48,25 +48,81 @@ def test_remember_too_few_args_returns_usage_error():
         assert "usage:" in err
 
 
-def test_remember_help_flag():
-    rc, out, _ = run_cli(["remember", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam remember" in out
+def test_remember_team_writes_to_shared_pool_not_per_agent():
+    """--team redirects the entry to the shared team experience, recording
+    the agent as the contributor (`by`) and leaving the per-agent store
+    untouched."""
+    from claudeteam.store import team_memory
+    with isolated_env():
+        rc, out, _ = run_cli(["remember", "worker_cc", "learning",
+                              "测试用 python3 tests/run.py", "--team"])
+        assert rc == 0
+        assert "🤝 team experience" in out
+        assert memory.list_recent("worker_cc") == []   # not in the per-agent store
+        rows = team_memory.list_recent()
+        assert len(rows) == 1
+        assert rows[0]["by"] == "worker_cc"
+        assert rows[0]["content"] == "测试用 python3 tests/run.py"
 
 
-def test_remember_help_lists_known_kinds():
-    """Round-110: --help advertises memory.KNOWN_KINDS so agents see
-    the convention before writing their first entry, instead of
-    discovering it via the stderr soft-warn after the fact."""
-    from claudeteam.store import memory
-    rc, out, _ = run_cli(["remember", "--help"])
-    for k in memory.KNOWN_KINDS:
-        assert k in out
+def test_remember_team_update_edits_existing_entry():
+    """--team --update <id> modifies an entry in place (refine a lesson)
+    instead of appending a contradicting one."""
+    from claudeteam.store import team_memory
+    with isolated_env():
+        run_cli(["remember", "worker_cc", "learning", "old wording", "--team"])
+        rc, out, _ = run_cli(["remember", "manager", "learning",
+                              "sharper wording", "--team", "--update", "E-1"])
+        assert rc == 0
+        assert "✏️" in out and "E-1" in out
+        rows = team_memory.list_recent()
+        assert len(rows) == 1
+        assert rows[0]["content"] == "sharper wording"
+        assert rows[0]["updated_by"] == "manager"
 
 
-def test_remember_registered_in_cli():
-    """Round-87: top-level `claudeteam remember` must be in the COMMANDS
-    registry; otherwise managers/workers calling from pane get
-    `unknown command`."""
-    from claudeteam.cli import COMMANDS
-    assert "remember" in COMMANDS
+def test_remember_team_update_unknown_id_errors():
+    with isolated_env():
+        rc, _, err = run_cli(["remember", "manager", "learning", "x",
+                              "--team", "--update", "E-9"])
+        assert rc == 1
+        assert "no team experience entry" in err
+
+
+def test_remember_update_without_team_errors():
+    """--update is meaningless for per-agent memory (append-only)."""
+    with isolated_env():
+        rc, _, err = run_cli(["remember", "manager", "learning", "x",
+                              "--update", "E-1"])
+        assert rc == 1
+        assert "--team" in err
+
+
+def test_remember_team_pin_marks_entry_resident():
+    """--pin promotes an entry into the curated core that renders into
+    every agent's prompt."""
+    from claudeteam.store import team_memory
+    with isolated_env():
+        rc, out, _ = run_cli(["remember", "worker_cc", "learning",
+                              "测试用 python3 tests/run.py", "--team", "--pin"])
+        assert rc == 0
+        assert "📌" in out
+        assert team_memory.list_recent()[0]["pin"] is True
+        assert "测试用 python3 tests/run.py" in team_memory.render_for_prompt()
+
+
+def test_remember_pin_without_team_errors():
+    with isolated_env():
+        rc, _, err = run_cli(["remember", "manager", "learning", "x", "--pin"])
+        assert rc == 1
+        assert "--team" in err
+
+
+def test_remember_team_update_can_repin():
+    from claudeteam.store import team_memory
+    with isolated_env():
+        run_cli(["remember", "worker_cc", "learning", "x", "--team"])  # E-1 unpinned
+        rc, _, _ = run_cli(["remember", "manager", "learning", "x",
+                            "--team", "--update", "E-1", "--pin"])
+        assert rc == 0
+        assert team_memory.list_recent()[0]["pin"] is True

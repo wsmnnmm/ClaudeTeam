@@ -17,7 +17,7 @@ bot_self / empty）不推进——它们没副作用，下次启动重新看见�
 - 类型：本机端到端（需要真 lark-cli + 真 chat_id + 真 OAuth profile）
 - 凭证：飞书 bot 凭证就够，不需要 user OAuth。提交 `780fd08` 之后
   catchup 自动尊重 `CLAUDETEAM_LARK_SEND_AS=bot`，调用 `chat-messages-list`
-  时用 bot 身份。R174 之前 catchup 默认 `--as user`，bot-only 的部署会失败
+  时用 bot 身份。早期 catchup 默认 `--as user`，bot-only 的部署会失败
 
 ## 前置条件
 
@@ -45,7 +45,7 @@ wait $ROUTER_PID 2>/dev/null
 # 3) router 不在期间，连发两条：
 #    "missed B"
 #    "@worker_codex check C"
-#    （两条都会路由到 manager——R174 后 @worker_codex 仍只进 manager 收件箱）
+#    （两条都会路由到 manager——@worker_codex 仍只进 manager 收件箱）
 
 # 4) 重启 router
 claudeteam router &
@@ -58,7 +58,7 @@ sleep 10   # 等 catchup 跑完
 1. router 启动日志（提交 `c0996a5` 之后看 `state/router.log`）出现
    `📥 catching up <N> missed message(s)`，N 等于停机期间漏掉的条数
 2. `claudeteam inbox manager` 拿到这两条："missed B" 和 "@worker_codex check C"
-   （**两条都到 manager**，R174 后 @worker_codex 不再分流）
+   （**两条都到 manager**，@worker_codex 不再分流）
 3. `claudeteam inbox worker_codex` 没有新行
 4. manager pane 的 banner 之后能看到这两段文本被注入
 5. live 订阅照常工作：再发一条新消息能即时被处理
@@ -74,7 +74,7 @@ sleep 10   # 等 catchup 跑完
 - 群里没有新消息：`pending: 0`，直接进 live
 - 在提交 `780fd08` 之前，bot-only 部署会因 catchup 默认 `--as user` 拿到
   `need_user_authorization` 错误。如果你看到这个，确认你的 router 是基于
-  R178 之后的代码
+  含该提交之后的代码
 
 ## 已知风险
 
@@ -83,7 +83,7 @@ sleep 10   # 等 catchup 跑完
    set 去重，但前提是 set 在进程内连续。如果你测的时候 `kill -9`（不走清理路径）
    再立刻重启，理论上有几毫秒的窗口看到一条消息被走两次的迹象（不会写两次
    收件箱，但 pane 注入可能重复）
-2. **R174 例外分支也走 catchup**——worker 自己发的卡，停机期间也算 missed
+2. **worker→manager 例外分支也走 catchup**——worker 自己发的卡，停机期间也算 missed
    message，重启会路由回 manager 收件箱。这通常是想要的；但如果停机时间长，
    manager 一上来会扎堆收到一堆 worker 回卡
 

@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import shlex
 
-from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
+from .base import AuthSlots, CliAdapter, MULTILINE_SUBMIT_KEYS
+from claudeteam.runtime.paths import agent_home
 
 
 class GeminiCliAdapter(CliAdapter):
@@ -23,10 +24,30 @@ class GeminiCliAdapter(CliAdapter):
         # gemini-cli has no --name flag; tag agent identity via env so
         # /proc and log-parsers can correlate output with which pane.
         # DISABLE_UPDATE_CHECK avoids a blocking prompt at startup.
+        # HOME=<agent_home> isolates each pane's ~/.gemini (auth cache +
+        # GEMINI.md memory) so siblings don't clobber one shared HOME.
         return (
+            f"HOME={shlex.quote(agent_home(agent))} "
             f"DISABLE_UPDATE_CHECK=1 GEMINI_AGENT={shlex.quote(agent)} "
             f"gemini --approval-mode=yolo"
         )
+
+    def display_model(self, model: str) -> str:
+        # gemini-cli selects its model via env/config (GEMINI_MODEL), not
+        # the team/argv model — so render the source, not a stale alias.
+        return "gemini 自身配置 (env/config)"
+
+    def native_memory_reloads(self) -> bool:
+        # gemini feeds GEMINI.md into every prompt and reloads it on /memory
+        # refresh, so an on-disk anchor rewrite reaches the running agent —
+        # the only non-claude CLI of the four that doesn't need a re-inject.
+        return True
+
+    def native_memory_path(self, agent: str) -> str:
+        # gemini loads ~/.gemini/GEMINI.md into every prompt and re-reads it
+        # on /memory refresh, so the anchor survives the CLI's compaction —
+        # the only one of the four non-claude CLIs that does.
+        return f"{agent_home(agent)}/.gemini/GEMINI.md"
 
     def ready_markers(self) -> list[str]:
         # TUI ready prompt; community gemini-cli wraps Ink so the trailing
@@ -34,23 +55,21 @@ class GeminiCliAdapter(CliAdapter):
         # the spawn-cmd echo doesn't accidentally match.
         return ["Gemini>", "Gemini CLI"]
 
-    def busy_markers(self) -> list[str]:
-        return [
-            *SPINNER_CHARS,
-            "Thinking", "Running tool", "Calling",
-        ]
-
     def process_name(self) -> str:
         return "gemini"
+
+    def auth_slots(self) -> AuthSlots:
+        # No long-term-token mode — api key, or its own oauth_creds (login).
+        return AuthSlots(
+            token_env=None,
+            api_key_envs=("GEMINI_API_KEY",),
+            login_credfile=".gemini/oauth_creds.json",
+        )
 
     def submit_keys(self) -> list[str]:
         # Ink-based UI, same submit pattern as Codex / Kimi
         return list(MULTILINE_SUBMIT_KEYS)
 
-    def rate_limit_markers(self) -> list[str]:
-        return [
-            "rate limit",
-            "quota exceeded",
-            "RESOURCE_EXHAUSTED",
-            "429",
-        ]
+    def compact_command(self) -> str:
+        # gemini-cli compacts context with /compress (not /compact).
+        return "/compress"

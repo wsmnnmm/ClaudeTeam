@@ -8,7 +8,7 @@ from pathlib import Path
 
 from helpers import attr_patch, isolated_env, run_cli, tmux_patch
 from claudeteam.commands import down as down_cmd
-from claudeteam.runtime import paths, watchdog
+from claudeteam.runtime import paths, wake, watchdog
 
 
 @contextlib.contextmanager
@@ -38,10 +38,10 @@ class _FakePopenProc:
     """subprocess.Popen-shaped fake good enough for both `watchdog.respawn`
     (which discards the proc) and `watchdog.list_orphan_pids` →
     `subprocess.run` (which uses Popen as context manager and calls
-    poll/communicate/wait/kill on the result). Round-65 round-67: hoisted
-    to module level so `_fake_popen` and `silent_popen` share one
-    Popen-contract surface — fixing a subprocess-internal contract change
-    only needs touching one class."""
+    poll/communicate/wait/kill on the result). Hoisted to module level
+    so `_fake_popen` and `silent_popen` share one Popen-contract surface
+    — fixing a subprocess-internal contract change only needs touching
+    one class."""
 
     def __init__(self, argv):
         self.argv = argv
@@ -110,8 +110,9 @@ def test_up_starts_session_and_spawns_two_daemons():
         capture_pane=lambda target, lines=80: "bypass permissions on\n? for shortcuts\n>",
         inject=lambda *a, **kw: True,
     )
-    with isolated_env(team=team), _fake_tmux(session_alive=False), \
-            _fake_popen() as popen_calls, _fake_alive([False, False]), extras:
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=False), \
+            _fake_popen() as popen_calls, _fake_alive([False, False]), extras, \
+            attr_patch(wake, inject_and_confirm=lambda *a, **k: True):  # fresh up → roll-call kick
         rc, out, _ = run_cli(["up"])
         assert rc == 0
         assert "team up" in out
@@ -121,7 +122,7 @@ def test_up_starts_session_and_spawns_two_daemons():
 
 def test_up_skips_session_when_already_running():
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=True), \
             _fake_popen() as popen_calls, _fake_alive([False, False]):
         rc, out, _ = run_cli(["up"])
         assert rc == 0
@@ -131,7 +132,7 @@ def test_up_skips_session_when_already_running():
 
 def test_up_skips_alive_daemons():
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=True), \
             _fake_popen() as popen_calls, _fake_alive([True, True]):
         rc, out, _ = run_cli(["up"])
         assert rc == 0
@@ -147,8 +148,8 @@ def test_up_help():
 
 
 def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
-    """REGRESSION (round-62, real bug): a daemon that fast-fails at
-    startup (e.g. chat_id missing in runtime_config) error_exits
+    """REGRESSION (real bug): a daemon that fast-fails at startup
+    (e.g. chat_id missing in runtime_config) error_exits
     BEFORE writing its pid file. up.py used to print
     '⚠️ launched but no pid file yet' and STILL return 0, masking
     the boot failure. Now treats absence-of-pidfile as failure."""
@@ -158,7 +159,7 @@ def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
         # Popen succeeds but the daemon fast-fails — never writes a pid
         return _FakePopenProc(argv)
 
-    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=True), \
             attr_patch(subprocess, Popen=silent_popen), \
             _fake_alive([False, False]):
         rc, out, err = run_cli(["up"])
@@ -170,15 +171,15 @@ def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
 
 
 def test_up_warns_when_daemon_spawn_fails():
-    """REGRESSION (round 7 D4): up was printing '✅ team up' even when
-    router/watchdog Popen raised OSError (e.g. 'claudeteam' not on PATH).
-    Now must say 'team up with errors' and return non-zero."""
+    """REGRESSION: up was printing '✅ team up' even when router/watchdog
+    Popen raised OSError (e.g. 'claudeteam' not on PATH). Now must say
+    'team up with errors' and return non-zero."""
     team = {"session": "S", "agents": {"manager": {}}}
 
     def boom_popen(argv, *args, **kwargs):
         raise OSError(2, "No such file or directory: 'claudeteam'")
 
-    with isolated_env(team=team), _fake_tmux(session_alive=True), \
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=True), \
             attr_patch(subprocess, Popen=boom_popen), \
             _fake_alive([False, False]):
         rc, out, err = run_cli(["up"])
@@ -195,7 +196,7 @@ def test_up_warns_when_daemon_spawn_fails():
 
 def test_down_skips_when_no_pid_files_and_no_session():
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=False):
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=False):
         rc, out, _ = run_cli(["down"])
         assert rc == 0
         assert "router: no pid file" in out
@@ -206,7 +207,7 @@ def test_down_skips_when_no_pid_files_and_no_session():
 def test_down_kills_alive_pid_then_tmux():
     """When pid files point to a fake process, down should SIGTERM and clean up."""
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team) as tmp, _fake_tmux(session_alive=True) as tx:
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}) as tmp, _fake_tmux(session_alive=True) as tx:
         # Use *our* pid as the pid in the file — we know we're alive,
         # and we'll intercept os.kill so we don't actually die.
         my_pid = os.getpid()
@@ -240,7 +241,7 @@ def test_down_kills_alive_pid_then_tmux():
 
 def test_down_handles_already_dead_pid():
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=False):
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=False):
         paths.ensure_state_dir()
         paths.router_pid_file().write_text("99999", encoding="utf-8")
 
@@ -265,7 +266,7 @@ def test_down_handles_corrupt_pid_file():
     should be removed and not blow up the down sequence — this is the
     pidlock.read_pid → None branch."""
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=False):
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=False):
         paths.ensure_state_dir()
         paths.router_pid_file().write_text("garbage-not-an-int", encoding="utf-8")
 
@@ -346,11 +347,11 @@ def test_down_kills_orphan_router_when_pid_file_missing():
 def test_down_returns_one_when_pid_refuses_to_die():
     """SIGTERM delivered, then SIGKILL escalation, then surface the
     warning — when both signals appear ineffective (kill -0 keeps
-    succeeding), down should warn + return non-zero. Smoke v3 bumped
-    grace 3s→10s SIGTERM + 2s post-SIGKILL = 12s total."""
+    succeeding), down should warn + return non-zero. Grace is 10s
+    SIGTERM + 2s post-SIGKILL = 12s total."""
     import time as _time
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team), _fake_tmux(session_alive=False):
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_test"}), _fake_tmux(session_alive=False):
         paths.ensure_state_dir()
         paths.router_pid_file().write_text("99999", encoding="utf-8")
 
@@ -366,8 +367,45 @@ def test_down_returns_one_when_pid_refuses_to_die():
         # pid file is NOT removed — operator needs to investigate
         assert paths.router_pid_file().exists()
         # Both SIGTERM and SIGKILL must have been attempted (escalation
-        # loop survived the smoke-v3 finding that 3s SIGTERM-only grace
-        # left daemons orphaned).
+        # loop guards against a 3s SIGTERM-only grace leaving daemons
+        # orphaned).
         import signal as _signal
         assert _signal.SIGTERM in signals_seen
         assert _signal.SIGKILL in signals_seen
+
+
+# ── up: manager-driven roll-call (autonomous self-check) ──────────
+
+
+def test_summon_roster_kicks_the_manager():
+    """On a fresh up, _summon_roster injects the roll-call instruction into the
+    MANAGER pane only — the manager then drives the dispatch + worker reports."""
+    from claudeteam.commands import up
+    from claudeteam.runtime import wake
+    kicked = []
+
+    def fake_inject(target, adapter, text, **k):
+        kicked.append((target.window, text))
+        return True
+
+    team = {"session": "S", "agents": {"manager": {"cli": "claude-code"},
+                                       "w_a": {"cli": "claude-code"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_t"}), \
+            attr_patch(wake, inject_and_confirm=fake_inject):
+        up._summon_roster()
+    assert len(kicked) == 1
+    window, text = kicked[0]
+    assert window == "manager"        # only the manager is kicked
+    assert "汇报" in text              # it's the roll-call instruction
+
+
+def test_summon_roster_noop_without_manager():
+    """No agent named `manager` → nobody to drive the roll-call; no-op."""
+    from claudeteam.commands import up
+    from claudeteam.runtime import wake
+    kicked = []
+    team = {"session": "S", "agents": {"w_a": {"cli": "claude-code"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_t"}), \
+            attr_patch(wake, inject_and_confirm=lambda *a, **k: kicked.append(1)):
+        up._summon_roster()
+    assert kicked == []

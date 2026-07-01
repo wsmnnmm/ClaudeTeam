@@ -13,7 +13,7 @@ watchdog 检测到 router pid 死了，会 respawn 新 router → 新 router 又
 开一条新订阅链。两个 subscribe 同时连飞书 → 飞书把事件**随机分给两边**，
 新 router 只看到子集，消息会"丢一半"。
 
-round-65 在 `runtime/watchdog.py` 加了 `reap_orphans(spec)`：respawn 前
+`runtime/watchdog.py` 里的 `reap_orphans(spec)`：respawn 前
 扫 `ps -eo pid,ppid,command`，找 PPID=1 且命令行同时包含 `@larksuite/cli`
 和 `+subscribe` 的进程，SIGTERM 掉。
 
@@ -65,7 +65,7 @@ ps -eo pid,ppid,command | grep '@larksuite/cli.*+subscribe' | grep -v grep
 
 ## 反例 — 没有 reap 时会发生什么（仅历史佐证，当前已修复）
 
-旧版本 round-65 之前没有 `reap_orphans`：
+早期版本没有 `reap_orphans`：
 
 - 步骤 5 会看到 **两条** `+subscribe`，一条 PPID=1（孤儿），一条 PPID=新 router
 - 飞书事件随机分给两边，新 router 的 `process_lines` 大约只看到 50% 消息
@@ -84,7 +84,7 @@ ps -eo pid,ppid,command | grep '@larksuite/cli.*+subscribe' | grep -v grep
 
 ## Why this is here
 
-round-65 之前老板在主机上手工 `kill -9 $(cat router.pid)` 测过守护重启 — 看上去 OK
+在主机上手工 `kill -9 $(cat router.pid)` 测守护重启时，表面看上去 OK
 （`claudeteam health` 全绿），实际飞书事件已经 50/50 分裂。Bug 只在群里发足够多消息
 才暴露。这个 playbook 把"看起来好但其实在丢消息"的隐性 bug 显式化。
 

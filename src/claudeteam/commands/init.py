@@ -15,12 +15,13 @@ from __future__ import annotations
 
 from claudeteam.runtime import config as _config, paths
 from claudeteam.util import (
-    error_exit, maybe_print_help, pop_bool_flag, pop_flag,
+    env_str, error_exit, maybe_print_help, pop_bool_flag, pop_flag,
     reject_extra_args,
 )
 
 
-USAGE = "usage: claudeteam init [--session NAME] [--force] [--upgrade]"
+USAGE = ("usage: claudeteam init [--session NAME] [--force] [--upgrade] "
+         "[--no-connect] [--quick]")
 
 
 # ── default schema as a string template (preserves comments) ─────
@@ -33,10 +34,12 @@ _DEFAULT_TOML_TEMPLATE = """\
 #                            → CLAUDETEAM_ROUTER_STALE_EVENT_THRESHOLD_S
 # 优先级: env > 本文件 > 代码硬编码默认
 
-# ── 部署常量（必填）─────────────────────────────────────────
-chat_id      = ""                         # 飞书群 chat_id（机器人加群后用 lark-cli 取）
+# ── 部署常量 ────────────────────────────────────────────────
+chat_id      = ""                         # 由 `claudeteam feishu connect` 注册建群后自动写入
 lark_profile = ""                         # lark-cli profile 名, 空字符串走默认
 default_model = "opus"                    # team.json agent 没指定 model 时回退到这里
+# App ID / App Secret 不写在这里：`feishu connect` 写入 state/feishu_app.json (0600)，
+# 同时供 sidecar 入站 + lark-cli 出站使用；env (FEISHU_APP_*) 仍可覆盖（Docker）。
 
 # ── [team]  团队成员 ──────────────────────────────────────
 [team]
@@ -44,6 +47,7 @@ session = "{session}"
 
 # 每个 agent 一个 [team.agents.<name>]
 #   cli         必填  claude-code | codex-cli | gemini-cli | kimi-code | qwen-code
+#                     | minimax | opencode | codewhale | openclaw | trae | hermes | pi
 #   role        必填  渲染进 identity.md
 #   model       可选  缺省走 default_model
 #   specialty   可选  list of strings, manager 派单时参考
@@ -306,13 +310,25 @@ def _upgrade_from_legacy(session: str) -> str:
 # ── main ─────────────────────────────────────────────────────────
 
 
+def _should_autoconnect(no_connect: bool, have_creds: bool) -> bool:
+    """Whether `init` should auto-drive `feishu connect`. Only on a real
+    interactive terminal — NEVER in CI / scripts / tests (no TTY), where an
+    interactive QR scan would hang the process. Off-TTY callers just get the
+    printed `claudeteam feishu connect` step instead. (A function so tests can
+    patch it without faking a TTY.)"""
+    import sys
+    return not no_connect and not have_creds and sys.stdin.isatty()
+
+
 def main(argv: list[str]) -> int:
     rest = list(argv)
     if maybe_print_help(rest, USAGE):
         return 0
     force = pop_bool_flag(rest, "--force")
     upgrade = pop_bool_flag(rest, "--upgrade")
-    session = pop_flag(rest, "--session") or "ClaudeTeam"
+    no_connect = pop_bool_flag(rest, "--no-connect")
+    quick = pop_bool_flag(rest, "--quick")
+    session = pop_flag(rest, "--session") or _config.default_session_name()
     if (rc := reject_extra_args(rest, USAGE)) is not None:
         return rc
 
@@ -343,10 +359,40 @@ def main(argv: list[str]) -> int:
         rt_path = _config.runtime_config_file()
         print(f"  legacy {team_path.name} + {rt_path.name} preserved as backup;")
         print(f"  remove them once you've verified `claudeteam health` is green.")
-    else:
-        print("Next:")
-        print(f"  - edit {cfg_path.name} to set chat_id + adjust agents")
+        return 0
+
+    # First-run bot registration — replaces the old manual Playwright
+    # bot-creator + `lark-cli config init`. Unless creds already exist or
+    # --no-connect (CI / scripted), drop straight into `feishu connect`
+    # (guided self-built app → scopes → group + creds + chat_id). `up` is
+    # deliberately NOT the hook: it's idempotent / headless / watchdog-driven,
+    # so an interactive prompt there would break restarts. `init` is the
+    # one-time interactive entry.
+    from claudeteam.feishu import lark as _lark
+    have_creds = bool(_lark.load_app_creds().get("app_id")
+                      or env_str("FEISHU_APP_ID"))
+    if _should_autoconnect(no_connect, have_creds):
+        from claudeteam.commands import feishu as _feishu
+        # --quick → the one-scan PersonalAgent device-flow QR; else the guided
+        # self-built-app flow. Both create the app + group + write chat_id.
+        rc = _feishu.main(["connect", "--quick"] if quick else ["connect"])
+        if rc != 0:
+            print("\n⚠️  注册未完成；稍后重跑 `claudeteam feishu connect` 即可。")
+            return rc
+        print("\nNext:")
         print("  - claudeteam install-hooks   # write .claude/commands/*.md")
-        print(f"  - claudeteam up              # tmux session '{session}' + router + watchdog")
+        print("  - claudeteam up              # 启动团队 + router + watchdog")
         print("  - claudeteam health          # verify green")
+        return 0
+
+    print("Next:")
+    if not have_creds:  # --no-connect: register later, by hand
+        print("  - claudeteam feishu connect  # 引导注册自建应用 + 建群（--quick 走扫码个人版）")
+    else:  # creds came from env (Docker .env) — but the group/chat_id still isn't set
+        print("  - 设置 chat_id：把团队群的 chat_id 填进 claudeteam.toml")
+        print("      （没有群？在一台能开浏览器的机器上跑 `claudeteam feishu connect` 建群，")
+        print("       把输出的 oc_... 复制进来——`up` 没有 chat_id 会直接报错）")
+    print("  - claudeteam install-hooks   # write .claude/commands/*.md")
+    print(f"  - claudeteam up              # tmux session '{session}' + router + watchdog")
+    print("  - claudeteam health          # verify green")
     return 0

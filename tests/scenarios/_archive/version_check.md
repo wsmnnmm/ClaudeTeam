@@ -2,7 +2,7 @@
 
 ## 场景
 
-shell 脚本 / CI gate / smoke conductor 想知道 "this host 上跑的是哪
+shell 脚本 / CI gate 想知道 "this host 上跑的是哪
 个 ClaudeTeam"。`claudeteam version` 在 stdout 打印一行 semver-ish
 字符串就够 —— 轻量到能 inline 在条件判断里。
 
@@ -29,7 +29,7 @@ if [ "$(claudeteam version)" != "0.1.0" ]; then
     exit 1
 fi
 
-# smoke conductor 提交报告时记录
+# CI 提交报告时记录
 SMOKE_VERSION=$(claudeteam version)
 ```
 

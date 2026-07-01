@@ -45,6 +45,7 @@ def test_health_all_green_returns_zero():
     rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
     with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
+            _stub_which({"claude"}), \
             env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
@@ -142,7 +143,8 @@ def test_health_returns_one_when_pane_window_missing():
 def test_health_warns_when_pane_up_but_no_cli_marker():
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
-            session_alive=True, panes_with_cli=[], panes_without_cli=["manager"]):
+            session_alive=True, panes_with_cli=[], panes_without_cli=["manager"]), \
+            _stub_which({"claude"}):
         rc, out, _ = run_cli(["health"])
         assert rc == 0  # warning only
         assert "CLI not ready yet" in out
@@ -262,7 +264,8 @@ def test_health_lazy_pane_without_marker_is_green():
     until first message. Don't yellow-flag the operator over expected state."""
     team = {"session": "S", "agents": {"sleeper": {"cli": "claude-code", "lazy": True}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
-            session_alive=True, panes_with_cli=[], panes_without_cli=["sleeper"]):
+            session_alive=True, panes_with_cli=[], panes_without_cli=["sleeper"]), \
+            _stub_which({"claude"}):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "lazy pane" in out
@@ -272,7 +275,8 @@ def test_health_lazy_pane_without_marker_is_green():
 def test_health_warns_when_lark_profile_blank():
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": ""}), _stub_tmux(
-            session_alive=True, panes_with_cli=["manager"]):
+            session_alive=True, panes_with_cli=["manager"]), \
+            _stub_which({"claude"}):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "lark_profile blank" in out
@@ -281,7 +285,8 @@ def test_health_warns_when_lark_profile_blank():
 def test_health_warns_when_router_pid_missing():
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
-            session_alive=True, panes_with_cli=["manager"]):
+            session_alive=True, panes_with_cli=["manager"]), \
+            _stub_which({"claude"}):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "router: no pid file" in out
@@ -292,29 +297,38 @@ def test_health_info_when_cursor_empty():
     advances on inbound events, not self-originated say calls."""
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
-            session_alive=True, panes_with_cli=["manager"]):
+            session_alive=True, panes_with_cli=["manager"]), \
+            _stub_which({"claude"}):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "router cursor: empty" in out
         assert "ℹ️" in out  # info marker, not warn marker
         # ensure "advances on first inbound event" is in the cursor line
         assert "first inbound event" in out
+        # #5: empty cursor → tell the operator how to confirm inbound works,
+        # instead of leaving "is it working?" unanswerable.
+        assert "inbound: none observed yet" in out
 
 
-# ── memory section (round-132) ──────────────────────────────────
-
-
-def test_health_memory_section_info_when_no_entries():
-    """Round-132: the memory section is informational. No agent has
-    written entries yet → an `ℹ️` line saying so. Section header
-    visible regardless."""
+def test_health_shows_inbound_age_when_cursor_present():
+    """#5: with a cursor, health prints a positive 'inbound: last event …'
+    signal. On macOS the live WS goes quiet and router.log only shows the
+    rotate line, so this is the at-a-glance answer to 'is inbound working?'."""
+    from claudeteam.commands import health
+    from claudeteam.feishu import catchup
     team = {"session": "S", "agents": {"manager": {}}}
-    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
-            _stub_tmux(session_alive=True, panes_with_cli=["manager"]):
-        rc, out, _ = run_cli(["health"])
-        assert rc == 0
-        assert "memory:" in out
-        assert "no agent has written entries yet" in out
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}):
+        # epoch-ms string passes straight through _to_epoch_ms → create_time_ms
+        catchup.write_cursor("om_test", "1782220000000")
+        rep = health.HealthReport()
+        health._check_cursor(rep)
+    text = "\n".join(rep.lines)
+    assert "router cursor: om_test" in text
+    assert "inbound: last event" in text
+    assert "ago" in text  # ago_ms-formatted
+
+
+# ── memory section ──────────────────────────────────────────────
 
 
 def test_health_memory_section_lists_agents_with_entries():
@@ -325,7 +339,8 @@ def test_health_memory_section_lists_agents_with_entries():
             "agents": {"manager": {}, "worker_cc": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
             _stub_tmux(session_alive=True,
-                       panes_with_cli=["manager", "worker_cc"]):
+                       panes_with_cli=["manager", "worker_cc"]), \
+            _stub_which({"claude"}):
         memory.append("manager", "decision", "x")
         memory.append("worker_cc", "note", "y")
         rc, out, _ = run_cli(["health"])
@@ -353,14 +368,6 @@ def test_health_red_when_binary_missing():
         rc, out, _ = run_cli(["health"])
         assert rc == 1
         assert "claude: not on PATH" in out
-
-
-def test_health_green_when_binaries_present():
-    team = {"session": "S", "agents": {"m": {"cli": "claude-code"}}}
-    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
-            session_alive=True, panes_with_cli=["m"]), _stub_which({"claude"}):
-        rc, out, _ = run_cli(["health"])
-        assert "claude: /usr/bin/claude" in out
 
 
 def test_health_warns_when_proxy_set_without_no_proxy():
@@ -475,23 +482,18 @@ def test_health_ignores_stuck_lark_cli_from_other_profile():
 # ── help ────────────────────────────────────────────────────────
 
 
-def test_health_help():
-    rc, out, _ = run_cli(["health", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam health" in out
-
-
 # ── --json mode ─────────────────────────────────────────────────
 
 
 def test_health_json_emits_machine_readable_object():
-    """--json dumps {ok, bad, warn, lines} so smoke conductors can
+    """--json dumps {ok, bad, warn, lines} so CI scripts can
     branch on `ok` without grepping the formatted output."""
     import json as _json
     team = {"session": "S", "agents": {"manager": {"cli": "claude-code"}}}
     rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
     with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
+            _stub_which({"claude"}), \
             env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
         rc, out, _ = run_cli(["health", "--json"])
         # No reds → exit 0

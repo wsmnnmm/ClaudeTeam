@@ -5,16 +5,21 @@ List unread messages for an agent. Read messages don't appear by default.
 from __future__ import annotations
 
 from claudeteam.store import local_facts
-from claudeteam.util import fmt_time_ms, usage_error
+from claudeteam.util import (
+    fmt_time_ms, maybe_print_help, reject_flag_as_agent, usage_error)
 
 
 USAGE = "usage: claudeteam inbox <agent>"
 
 
 def main(argv: list[str]) -> int:
+    if maybe_print_help(argv, USAGE):
+        return 0
     if len(argv) < 1:
         return usage_error(USAGE)
     agent = argv[0]
+    if (rc := reject_flag_as_agent(agent, USAGE)) is not None:
+        return rc
     local_facts.touch_heartbeat(agent)
     msgs = local_facts.list_messages(agent, unread_only=True)
     if not msgs:

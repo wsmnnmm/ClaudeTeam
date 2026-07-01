@@ -62,6 +62,13 @@ const STATE_DIR = path.join(__dirname, '.state');
 
 const SCOPES_JSON = fs.readFileSync(SCOPES_FILE, 'utf-8').replace(/\s+/g, ' ').trim();
 
+// The drive browser is launched with a TCP CDP endpoint so the agent
+// fallback can attach to the SAME logged-in browser (connectOverCDP)
+// when a stage fails. Override the port with FEISHU_BOT_CDP_PORT if
+// 9222 collides with another chromium on the host.
+const CDP_PORT = parseInt(process.env.FEISHU_BOT_CDP_PORT || '9222', 10);
+const CDP_ENDPOINT = `http://127.0.0.1:${CDP_PORT}`;
+
 
 function log(msg) {
   console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
@@ -276,14 +283,108 @@ async function scrollToBottom(page) {
 
 // --- stages ---
 
+// Click the first button whose accessible name matches any of `names`.
+// Feishu re-labels buttons across releases (e.g. "Batch import/export
+// scopes" ↔ "Import/Export") — trying a few variants beats hard-failing
+// on one exact string when the only thing that changed is the wording.
+async function clickAnyButton(scope, names, opts = {}) {
+  const timeout = opts.timeout || 8000;
+  let lastErr;
+  // Proven path FIRST (don't regress what works): accessible-role button.
+  for (const name of names) {
+    try {
+      await scope.getByRole('button', { name }).first().click({ timeout });
+      return name;
+    } catch (e) { lastErr = e; }
+  }
+  // Multi-strategy fallbacks (idea borrowed from Hoper-J/feishu-bot-bootstrap):
+  // Feishu frequently renders a "button" as a non-semantic <div>/<span>, which
+  // getByRole('button') misses. Try exact text, then a clickable-tag :has-text,
+  // so a relabel-to-div doesn't hard-fail when the visible text is unchanged.
+  for (const name of names) {
+    for (const loc of [
+      scope.getByText(name, { exact: true }).first(),
+      scope.locator(`:is([role="button"],a,span,div):has-text("${name}")`).last(),
+    ]) {
+      try { await loc.click({ timeout: 2500 }); return name; }
+      catch (e) { lastErr = e; }
+    }
+  }
+  throw lastErr || new Error(`no button matched any of: ${names.join(' / ')}`);
+}
+
+// Robustly load `text` into the (single) Monaco editor inside `scope`.
+// Monaco is the most UI-drift-prone surface in the whole flow (the
+// import-scopes failure that bit us was a view-lines click going
+// invisible), so try the hardest-to-break strategy first and degrade:
+//   1. Monaco model API — window.monaco.editor.getModels()[0].setValue()
+//      bypasses the DOM entirely; survives any view-lines/textarea churn
+//   2. focus the hidden textarea.inputarea + clipboard Cmd+V
+//   3. force-click .view-lines to grab focus + keyboard.insertText
+//      (types it in — no clipboard permission needed)
+// Returns the winning strategy name; throws if the editor never holds
+// the payload (→ drive hands the stage to the agent fallback).
+async function fillMonaco(page, scope, text) {
+  const editor = scope.locator('.monaco-editor').first();
+  await editor.waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForTimeout(600);
+
+  const taLen = async () => {
+    try {
+      return await scope.locator('.monaco-editor textarea.inputarea').first()
+        .evaluate(el => el.value.length);
+    } catch (e) { return 0; }
+  };
+  const clear = async () => {
+    await page.keyboard.press('Meta+A').catch(() => {});
+    await page.keyboard.press('Backspace').catch(() => {});
+  };
+
+  // Strategy 1: Monaco model API (most robust — no DOM dependency)
+  const viaApi = await page.evaluate((t) => {
+    try {
+      const m = window.monaco;
+      const models = m && m.editor && m.editor.getModels ? m.editor.getModels() : [];
+      if (models && models.length) { models[0].setValue(t); return true; }
+    } catch (e) {}
+    return false;
+  }, text).catch(() => false);
+  if (viaApi && (await taLen()) >= 200) return 'monaco-api';
+
+  // Strategy 2: focus the real textarea + clipboard paste
+  try {
+    await scope.locator('.monaco-editor textarea.inputarea').first().focus({ timeout: 3000 });
+  } catch (e) {
+    await scope.locator('.monaco-editor .view-lines').first()
+      .click({ force: true, timeout: 5000 }).catch(() => {});
+  }
+  await clear();
+  await page.evaluate(async (t) => {
+    try { await navigator.clipboard.writeText(t); } catch (e) {}
+  }, text);
+  await page.keyboard.press('Meta+V');
+  await page.waitForTimeout(800);
+  if ((await taLen()) >= 200) return 'clipboard-paste';
+
+  // Strategy 3: type the payload straight in (no clipboard needed)
+  await clear();
+  await page.keyboard.insertText(text);
+  await page.waitForTimeout(500);
+  if ((await taLen()) >= 200) return 'insert-text';
+
+  throw new Error(
+    `import-scopes: Monaco editor never accepted the payload ` +
+    `(textarea <200 chars after monaco-api + paste + insertText). ` +
+    `Feishu UI likely changed — agent fallback should paste it by hand.`);
+}
+
 async function stage_create_app(page, _ctx, state) {
   log('Stage 1/7 create-app: creating custom app...');
   // Client-side check: bot name must be ≤32 chars. Feishu form validates
   // this with a red "Enter up to 32 characters" notice and refuses to
   // navigate, but our pollForUrl just times out and we threw a useless
-  // "never navigated to capability page". Caught 2026-05-08 dryrun: agent
-  // wasted 3 retries before realizing the name was 35 chars. Throw
-  // upfront with the actual cause.
+  // "never navigated to capability page". Throw upfront with the actual
+  // cause instead.
   if (state.appName && state.appName.length > 32) {
     throw new Error(
       `app creation: appName "${state.appName}" is ${state.appName.length} ` +
@@ -335,42 +436,20 @@ async function stage_add_bot(page, _ctx, state) {
 }
 
 async function stage_import_scopes(page, _ctx, state) {
-  // Opens "Batch import/export scopes" → Monaco editor → paste full JSON →
-  // "Next, Review New Scopes" → "Add".
+  // Opens "Batch import/export scopes" → load the JSON into the Monaco
+  // editor → "Next, Review New Scopes" → "Add". The editor load is the
+  // fragile part; fillMonaco() handles it with 3 fallback strategies
+  // (monaco-API setValue → focus textarea + Cmd+V → keyboard.insertText)
+  // and throws if none land, so drive can hand the stage to the agent.
   //
-  // The mechanism that actually works (2026-05-08 verified end-to-end:
-  // 232/234 tenant scopes + nearly all user scopes hit Monaco's model
-  // and reach the review dialog as "Newly added scopes (232)"):
-  //
-  //   1. CLICK `.view-lines` (the visible text layer) with `force: true`
-  //      to bypass Playwright's aria-hidden actionability complaint.
-  //      Why click and not `.focus()` on the underlying textarea: a
-  //      programmatic focus on the hidden inputarea puts it in IME-only
-  //      mode, where Monaco renders synthetic edits in the visual layer
-  //      but won't update its underlying TextModel. A real click goes
-  //      through Monaco's full mouse-down → cursor-position → enter-edit
-  //      pipeline, putting the editor in a state where Cmd+V actually
-  //      runs the paste command on the model.
-  //   2. `Cmd+A` + `Backspace` to clear (Monaco's pre-fill is the bot's
-  //      current scope JSON; we want a clean slate).
-  //   3. `clipboard.writeText(SCOPES_JSON)` from page context → OS
-  //      clipboard.
-  //   4. `keyboard.press('Meta+v')` → Playwright synthesises Cmd+V at the
-  //      CDP level (`Input.dispatchKeyEvent` with isTrusted=true). Monaco
-  //      reads the OS clipboard via the paste handler and applies the
-  //      content via its INSERT command — model updates, dialog parses
-  //      the full JSON, review screen shows the full scope list.
-  //
-  // Path attempts that DON'T work (recorded so future maintainers don't
-  // lose another afternoon to them):
-  //   - synthetic `ClipboardEvent('paste', {clipboardData: dt})` dispatched
-  //     on the textarea — renders text in view-lines but doesn't go
-  //     through Monaco's command pipeline; model never updates.
-  //   - `keyboard.type(SCOPES_JSON, {delay:0})` — same outcome; ~4s typing
-  //     visible but model stays at pre-fill.
-  //   - `el.focus()` on textarea + `keyboard.press('Meta+v')` — focus
-  //     alone doesn't enter Monaco's edit state; same partial render
-  //     without model update.
+  // Monaco paste approaches that DON'T work (recorded so nobody re-loses
+  // an afternoon to them — keep them OUT of fillMonaco):
+  //   - synthetic `ClipboardEvent('paste', …)` on the textarea — renders
+  //     in view-lines but skips Monaco's command pipeline; model never updates
+  //   - `keyboard.type(json, {delay:0})` — same; ~4s of typing, model stays
+  //     at pre-fill (note: `keyboard.insertText` is different — it fires one
+  //     `insertText` input event Monaco's paste handler DOES process)
+  //   - bare `el.focus()` + Cmd+V — focus alone doesn't enter edit state
   log('Stage 3/7 import-scopes: importing ~480 permissions...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/auth`);
   // Wait long enough for Monaco to fully render — 2s isn't enough on a
@@ -417,48 +496,19 @@ async function stage_import_scopes(page, _ctx, state) {
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: /^(Add|添加|确认添加|申请开通)$/ }).click();
   await page.waitForTimeout(3000);
-  // Post-import verification: how many of what we paste actually got
-  // through Feishu's filter (some sensitive scopes need admin approval
-  // and won't auto-activate — caller logs it for the operator).
-  const expected = JSON.parse(SCOPES_JSON).scopes;
-  const expectedFlat = new Set([...(expected.tenant || []), ...(expected.user || [])]);
-  const actualResp = await page.evaluate(async (appId) => {
-    try {
-      const r = await fetch(`/developers/v1/scope/applied/${appId}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      });
-      return await r.json();
-    } catch (e) { return { error: e.message }; }
-  }, state.appId);
-  const applied = new Set();
-  for (const s of (actualResp?.data?.scopes || [])) {
-    if (s.scope) applied.add(s.scope);
-    else if (s.scopeId) applied.add(s.scopeId);
-    else if (s.name) applied.add(s.name);
-  }
-  const missing = [...expectedFlat].filter(s => !applied.has(s));
-  log(`scope verification: ${applied.size} applied · ${missing.length} of ${expectedFlat.size} requested didn't activate`);
-  // Bringup B3 (2026-05-08): many tenants gate non-IM scopes (Calendar
-  // / Docs / Wiki / Base / Mail / Contact) behind admin approval. Calling
-  // the "didn't activate" warning loud without context made operators
-  // think the bot was unusable. Classify by IM-core vs advanced so the
-  // operator knows ClaudeTeam's basic flow still works.
-  const IM_CORE = ['im:message', 'im:chat:create', 'im:chat:read'];
-  const coreApplied = IM_CORE.filter(s => applied.has(s));
-  const coreMissing = IM_CORE.filter(s => !applied.has(s));
-  if (missing.length) {
-    if (coreMissing.length === 0) {
-      log(`  ✅ IM core scopes (${coreApplied.join(', ')}) granted — ClaudeTeam's basic flow will work`);
-      log(`  ℹ Advanced scopes (Calendar / Docs / Wiki / Base / Mail / Contact) commonly need admin approval in your tenant`);
-    } else {
-      log(`  ⚠️ IM core scope(s) MISSING (${coreMissing.join(', ')}) — ClaudeTeam's basic flow may fail`);
-    }
-    log(`  hints: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ` (+${missing.length - 6} more)` : ''}`);
-    log(`  manually grant any missing at https://open.feishu.cn/app/${state.appId}/auth`);
-  }
-  log('Permissions imported');
+  // Confirm the import dialog went through. We deliberately do NOT query
+  // /scope/applied here: Feishu only ACTIVATES requested scopes once a
+  // version is PUBLISHED (stage 7), so pre-publish this endpoint always
+  // reads ~0 — which used to false-alarm "IM core MISSING — may fail" and
+  // send operators chasing a non-problem (the scopes were fine, just not
+  // published yet). The real, meaningful applied-scope check now runs
+  // post-publish in stage_publish().
+  const requested = new Set([
+    ...(JSON.parse(SCOPES_JSON).scopes.tenant || []),
+    ...(JSON.parse(SCOPES_JSON).scopes.user || []),
+  ]);
+  log(`Permissions imported: ${requested.size} scopes requested ` +
+      `(Feishu activates them on publish — verified at stage 7)`);
 }
 
 async function stage_data_range(page, _ctx, _state) {
@@ -579,8 +629,8 @@ async function stage_callbacks(page, _ctx, state) {
 async function stage_publish(page, _ctx, state) {
   // Version create → Save → Publish, with a data-range reconfigure
   // detour when the version's tenant scopes include any that need
-  // explicit data-range (any organization-level scope does). 2026-05-08
-  // dryrun_docker_v2 caught this — the page-level Save stays disabled
+  // explicit data-range (any organization-level scope does). The
+  // page-level Save stays disabled
   // until the operator clicks the "Configure" link next to the red
   // "Please request the required data permissions" notice, walks
   // through a side-drawer dialog (sidebar with red-dotted unconfigured
@@ -654,14 +704,25 @@ async function stage_publish(page, _ctx, state) {
         await nextRedTab.click().catch(() => {});
         await page.waitForTimeout(1500);
       }
+      await page.waitForTimeout(400);
+      // Save this group (the dialog's own size-sm Save).
+      await drDialog.getByRole('button', { name: 'Save', exact: true }).first()
+        .click({ timeout: 4000 }).catch(() => {});
+      await page.waitForTimeout(1500);
     }
-    // Close side dialog if still open
+    // Close the dialog so only the page-level Save remains (avoids the strict
+    // "2 Save buttons" match on the page Save below).
     await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1000);
+    await drDialog.getByRole('button', { name: 'Close' }).first()
+      .click({ timeout: 1000 }).catch(() => {});
+    await page.waitForTimeout(1000);
     await scrollToBottom(page);
   }
-  // Now page-level Save should be enabled
-  await pageSave.click({ timeout: 10000 });
+  // Now page-level Save should be enabled. Scope the click to the page rail so
+  // a still-open data-range dialog's Save can't trigger a strict 2-match.
+  await page.locator('#app-layout-main')
+    .getByRole('button', { name: 'Save', exact: true }).first().click({ timeout: 10000 });
   await page.waitForTimeout(3000);
   // "Submit the release request?" confirm dialog auto-pops
   const confirmDialog = page.locator('[role="dialog"]').first();
@@ -677,9 +738,9 @@ async function stage_publish(page, _ctx, state) {
   // *which row's copy icon* we click — find the table row whose
   // label cell text matches /App Secret/i and click the copy icon
   // INSIDE that row. Don't filter by `svg` alone (matches eye/refresh
-  // icons too — verified 2026-05-08 verify run captured the SCOPES_JSON
-  // from prior clipboard.writeText instead of secret because the
-  // wrong icon was clicked + the previous clipboard content lingered).
+  // icons too — the wrong icon would capture the SCOPES_JSON from a
+  // prior clipboard.writeText instead of the secret, because the wrong
+  // icon was clicked + the previous clipboard content lingered).
   //
   // Also clear OS clipboard with a noop write before clicking to
   // surface a real failure (if Feishu's copy doesn't fire we'd read
@@ -696,7 +757,7 @@ async function stage_publish(page, _ctx, state) {
     // Feishu's copy handler" cleanly. Without it, a failed click
     // silently leaves the previous clipboard content (e.g. the 14k
     // SCOPES_JSON paste from stage 3) and we'd shovel that into
-    // state.appSecret. The verify-v1 dryrun caught exactly this.
+    // state.appSecret.
     const SENTINEL = '__CT_SENTINEL__';
     try { await navigator.clipboard.writeText(SENTINEL); } catch (e) {}
     // Two paths to find the right copy button — both must agree:
@@ -790,16 +851,92 @@ async function stage_publish(page, _ctx, state) {
       `Check https://open.feishu.cn/app/${state.appId}/version for status.`);
   }
   log(`  tenant_token swap OK · token=${verify.tenant_access_token.slice(0, 12)}...`);
+
+  // The version is published, but scopes only become EFFECTIVE after the
+  // tenant admin reviews it — UNLESS the admin enabled 免审 (no-review), in
+  // which case it's effective almost immediately (with up to ~1-2 min of
+  // propagation). We do NOT trust the private /developers console scope
+  // endpoint we used before: it lags publish, reports console-internal names,
+  // and false-alarmed "IM core MISSING" right after publish even though the
+  // scopes were fine (there is no official "list granted scopes" API). Instead
+  // we PROBE the real IM API with the bot's tenant_access_token and classify by
+  // Feishu error code — the authoritative signal. Advisory only (never throws):
+  // the token swap above already proved the app is usable.
+  log('Stage 7/7 verify: probing IM scope (functional, with backoff)...');
+  const probeImScope = (token) => page.evaluate(async (tok) => {
+    try {
+      const r = await fetch('https://open.feishu.cn/open-apis/im/v1/chats?page_size=1', {
+        headers: { Authorization: 'Bearer ' + tok },
+      });
+      const j = await r.json();
+      return { code: j.code, msg: j.msg };
+    } catch (e) { return { code: -1, msg: e.message }; }
+  }, token);
+
+  // code 0 → scope ACTIVE; 230027 → not (yet) effective — version pending admin
+  // review, or scopes truly missing; 99991663 → token problem, NOT a scope
+  // issue. Scopes can take ~1-2 min to propagate, so retry with backoff (~90s)
+  // before judging — this is what eliminates the +6s false-negative.
+  const BACKOFF_S = [3, 7, 15, 25, 40];
+  let probe = await probeImScope(verify.tenant_access_token);
+  let waitedS = 0;
+  for (const delay of BACKOFF_S) {
+    if (probe.code === 0 || probe.code === 99991663) break;
+    await page.waitForTimeout(delay * 1000);
+    waitedS += delay;
+    probe = await probeImScope(verify.tenant_access_token);
+  }
+  const after = waitedS ? ` after ~${waitedS}s` : '';
+  if (probe.code === 0) {
+    log(`  ✅ IM scope ACTIVE${after} (im/v1/chats probe ok) — ClaudeTeam ready`);
+  } else if (probe.code === 230027) {
+    log(`  ⚠️ IM scope NOT effective${after} (code 230027). The published version is ` +
+        `likely PENDING TENANT-ADMIN REVIEW — approve it in the admin console, or enable ` +
+        `免审 (no-review) for self-built apps, then re-check. ` +
+        `Scopes: https://open.feishu.cn/app/${state.appId}/auth`);
+  } else if (probe.code === 99991663) {
+    log(`  ⚠️ tenant_access_token rejected (99991663) — a token/credential issue, NOT a ` +
+        `scope problem; re-run verify or re-check the app secret.`);
+  } else {
+    log(`  ⚠️ IM scope probe inconclusive${after} (code=${probe.code} msg=${probe.msg}) — ` +
+        `verify manually at https://open.feishu.cn/app/${state.appId}/auth`);
+  }
 }
 
+// Each stage carries enough metadata that, on failure, we can hand a
+// self-contained brief to the agent fallback: what to accomplish
+// (goal), where (url), and which doc section spells out the clicks
+// (doc). `url` is a function of appId because most stages live under
+// /app/<appId>/...; create-app has no appId yet.
 const STAGES = [
-  { id: 'create-app',    fn: stage_create_app,    summary: 'Create custom app, capture appId' },
-  { id: 'add-bot',       fn: stage_add_bot,       summary: 'Add Bot capability' },
-  { id: 'import-scopes', fn: stage_import_scopes, summary: 'Import ~480 permission scopes' },
-  { id: 'data-range',    fn: stage_data_range,    summary: 'Set data access range = All' },
-  { id: 'events',        fn: stage_events,        summary: 'Subscribe message events (persistent connection)' },
-  { id: 'callbacks',     fn: stage_callbacks,     summary: 'Enable card callback' },
-  { id: 'publish',       fn: stage_publish,       summary: 'Create version + publish' },
+  { id: 'create-app',    fn: stage_create_app,    summary: 'Create custom app, capture appId',
+    goal: 'Create an enterprise custom app (name + desc) and capture its App ID from the URL',
+    url: () => 'https://open.feishu.cn/app',
+    doc: 'Stage 1 — create-app' },
+  { id: 'add-bot',       fn: stage_add_bot,       summary: 'Add Bot capability',
+    goal: 'Add the Bot capability to the app so it can send cards / receive messages',
+    url: (id) => `https://open.feishu.cn/app/${id}/capability`,
+    doc: 'Stage 2 — add-bot' },
+  { id: 'import-scopes', fn: stage_import_scopes, summary: 'Import ~480 permission scopes',
+    goal: 'Batch-import the permission scopes from feishu_scopes.json (or at minimum the IM core scopes)',
+    url: (id) => `https://open.feishu.cn/app/${id}/auth`,
+    doc: 'Stage 3 — import-scopes' },
+  { id: 'data-range',    fn: stage_data_range,    summary: 'Set data access range = All',
+    goal: 'Set the data access range to "All"',
+    url: (id) => `https://open.feishu.cn/app/${id}/auth`,
+    doc: 'Stage 4 — data-range' },
+  { id: 'events',        fn: stage_events,        summary: 'Subscribe message events (persistent connection)',
+    goal: 'Set subscription mode to persistent connection and subscribe the message events (im.message.receive_v1)',
+    url: (id) => `https://open.feishu.cn/app/${id}/event`,
+    doc: 'Stage 5 — events' },
+  { id: 'callbacks',     fn: stage_callbacks,     summary: 'Enable card callback',
+    goal: 'Enable the card.action.trigger callback on persistent connection',
+    url: (id) => `https://open.feishu.cn/app/${id}/event`,
+    doc: 'Stage 6 — callbacks' },
+  { id: 'publish',       fn: stage_publish,       summary: 'Create version + publish',
+    goal: 'Create a version and publish it so the app goes live (and capture the App Secret)',
+    url: (id) => `https://open.feishu.cn/app/${id}/version`,
+    doc: 'Stage 7 — publish' },
 ];
 
 const STAGE_IDS = STAGES.map(s => s.id);
@@ -824,6 +961,9 @@ async function runStage(page, context, stage, state) {
   } catch (e) {
     state.lastError = { stage: stage.id, message: e.message, at: new Date().toISOString() };
     saveState(state);
+    // Screenshot the failure so the operator/agent can SEE which control
+    // drifted (create used to skip this — only drive wrote the handoff).
+    try { await writeFailureHandoff(page, state, stage, e); } catch (_e) {}
     throw e;
   }
   state.completedStages = state.completedStages || [];
@@ -853,6 +993,62 @@ function cmdFilePath(appName) {
 
 function clearCmd(appName) {
   try { fs.unlinkSync(cmdFilePath(appName)); } catch (e) {}
+}
+
+// --- agent failure handoff ---
+// When a stage's automation breaks (Feishu UI drift), drive doesn't
+// give up — it hands the stage to the agent. The handoff is two
+// artifacts the agent can consume without scraping the log:
+//   .state/<app>.<stage>.fail.png  — full-page screenshot of the
+//                                    failure (agent is multimodal: Read it)
+//   .state/<app>.failure.json      — structured brief: goal, target URL,
+//                                    doc section, cookie file, CDP endpoint
+// The agent attaches to the same browser via CDP (or opens its own with
+// the saved cookies), finishes the stage by hand, then `echo skip`.
+function failureFilePath(appName) {
+  return path.join(STATE_DIR, `${appName}.failure.json`);
+}
+
+function clearFailure(appName) {
+  try { fs.unlinkSync(failureFilePath(appName)); } catch (e) {}
+}
+
+async function writeFailureHandoff(page, state, stage, err) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const shot = path.join(STATE_DIR, `${state.appName}.${stage.id}.fail.png`);
+  let shotPath = null;
+  try {
+    await page.screenshot({ path: shot, fullPage: true });
+    shotPath = shot;
+  } catch (e) {
+    // fullPage can fail on oversized/detached pages — fall back to viewport
+    try { await page.screenshot({ path: shot }); shotPath = shot; } catch (e2) {}
+  }
+  // Dump the open dialog's HTML (or the body) so the agent can read exact class
+  // names when a screenshot isn't enough to pin a selector.
+  try {
+    let html = '';
+    try { html = await page.locator('[role="dialog"]').first().evaluate(el => el.outerHTML); }
+    catch (e) { html = await page.evaluate(() => document.body.innerHTML.slice(0, 300000)); }
+    fs.writeFileSync(path.join(STATE_DIR, `${state.appName}.${stage.id}.dom.html`), html || '');
+  } catch (e) {}
+  const currentUrl = (() => { try { return page.url(); } catch (e) { return null; } })();
+  const handoff = {
+    appName: state.appName,
+    appId: state.appId,
+    stage: stage.id,
+    goal: stage.goal,
+    targetUrl: stage.url ? stage.url(state.appId) : null,
+    currentUrl,
+    instructions: `docs/setup_feishu_bot.md → "${stage.doc}"`,
+    cookieFile: COOKIE_FILE,
+    cdpEndpoint: CDP_ENDPOINT,
+    screenshot: shotPath,
+    error: (err.message || '').split('\n').slice(0, 4).join(' '),
+    at: new Date().toISOString(),
+  };
+  try { fs.writeFileSync(failureFilePath(state.appName), JSON.stringify(handoff, null, 2)); } catch (e) {}
+  return handoff;
 }
 
 async function waitForCmd(appName, validCmds = ['next', 'redo', 'quit']) {
@@ -903,13 +1099,20 @@ Drive mode — RECOMMENDED entry point for AI agents:
                   the App Secret, writes it to .state/<name>.json,
                   and exits cleanly. The user only scans QR on first
                   ever run (cookies persist).
-                  Pauses ONLY when a stage fails — then the agent
-                  writes one of:
+                  Pauses ONLY when a stage fails. On failure drive
+                  auto-writes a handoff for the agent:
+                    .state/<name>.<stage>.fail.png  — page screenshot
+                    .state/<name>.failure.json      — goal/url/cookie/cdp
+                  and keeps the browser open on a CDP endpoint
+                  (default http://127.0.0.1:9222, FEISHU_BOT_CDP_PORT).
+                  The agent finishes that one stage — attach to the same
+                  browser via connectOverCDP, or open its own with the
+                  saved cookies — then writes one of:
                     echo skip            > .state/<name>.cmd
                     echo "redo <stage>"  > .state/<name>.cmd
                     echo quit            > .state/<name>.cmd
-                  - skip: agent fixed it manually in the open browser
-                  - redo: drive re-runs that stage
+                  - skip: agent finished the stage (CDP/cookie takeover)
+                  - redo: drive re-runs that stage's automation
                   - quit: close browser and exit
 
 Login only (rarely needed; drive auto-logs in):
@@ -1026,13 +1229,22 @@ async function cmd_drive(name, desc) {
       let stageFailed = false;
       try {
         await runStage(page, context, next, state);
+        clearFailure(name);  // succeeded → drop any stale handoff
       } catch (e) {
         stageFailed = true;
+        const h = await writeFailureHandoff(page, state, next, e);
         log(`❌ Stage [${next.id}] failed: ${e.message.split('\n')[0]}`);
-        log(`   Browser stays open. Fix the page manually then send:`);
-        log(`     'skip'        — you completed [${next.id}] by hand, mark done`);
-        log(`     'redo ${next.id}' — drive re-tries the same stage`);
-        log(`     'quit'        — close browser and exit`);
+        log(`   📸 screenshot: ${h.screenshot || '(capture failed)'}`);
+        log(`   📋 handoff:    ${failureFilePath(name)}`);
+        log(`   🤖 AGENT FALLBACK — finish THIS one stage, then 'skip':`);
+        log(`      1. Read the screenshot to see the live page state`);
+        log(`      2. Attach to THIS browser: chromium.connectOverCDP("${h.cdpEndpoint}")`);
+        log(`         (or open your own browser + load ${path.basename(COOKIE_FILE)})`);
+        log(`      3. Goal: ${h.goal}`);
+        log(`         Page: ${h.targetUrl || h.currentUrl}`);
+        log(`         Steps: ${h.instructions}`);
+        log(`      4. echo skip > ${cmdFilePath(name)}`);
+        log(`   (or 'redo ${next.id}' to retry automation · 'quit' to stop)`);
       }
       // Happy path: stage just succeeded → loop straight into the next
       // stage. Only block on a command file when something failed (or
@@ -1051,7 +1263,8 @@ async function cmd_drive(name, desc) {
         }
         state.lastError = null;
         saveState(state);
-        log(`⏭  Marked [${next.id}] as done (manual takeover).`);
+        clearFailure(name);
+        log(`⏭  Marked [${next.id}] as done (agent takeover).`);
         continue;
       }
       if (cmd.startsWith('redo ')) {

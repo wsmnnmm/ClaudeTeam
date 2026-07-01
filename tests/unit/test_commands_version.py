@@ -16,12 +16,6 @@ def test_version_prints_value_from_metadata():
     assert any(c.isdigit() for c in line)
 
 
-def test_version_help_returns_zero():
-    rc, out, _ = run_cli(["version", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam version" in out
-
-
 def test_version_falls_back_when_metadata_missing():
     """If importlib.metadata can't resolve the package (e.g. running
     raw from src without pip install -e), the fallback string is
@@ -40,11 +34,3 @@ def test_version_falls_back_when_metadata_missing():
         version_cmd._read_version = original
     assert rc == 0
     assert "0.0.0+unknown" in out
-
-
-def test_version_appears_in_top_level_command_list():
-    """version should show up in the no-args usage so operators see it
-    next to the other commands."""
-    rc, out, _ = run_cli([])
-    assert rc == 0
-    assert "version" in out

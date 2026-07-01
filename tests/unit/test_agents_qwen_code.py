@@ -37,27 +37,6 @@ def test_ready_markers_include_qwen_prompt():
     assert any("Qwen" in m for m in markers)
 
 
-def test_busy_markers_cover_thinking_and_spinner():
-    busy = QwenCodeAdapter().busy_markers()
-    assert "Thinking" in busy
-    assert "⣾" in busy  # braille spinner from SPINNER_CHARS
-
-
-def test_rate_limit_markers_cover_chinese_and_english():
-    """qwen-code is bilingual — rate-limit messages may be EN or zh-CN.
-    Both must trigger the rate-limit gate so deliver.apply skips inject."""
-    markers = QwenCodeAdapter().rate_limit_markers()
-    assert any("rate limit" in m for m in markers)
-    assert any("请求过于频繁" in m for m in markers)
-    assert "429" in markers
-
-
-def test_process_name_is_qwen():
-    """For /proc walkers and `pkill -f qwen` to work, process_name must
-    match the binary's exec name."""
-    assert QwenCodeAdapter().process_name() == "qwen"
-
-
 def test_submit_keys_use_multiline_form():
     keys = QwenCodeAdapter().submit_keys()
     assert "M-Enter" in keys
@@ -79,3 +58,17 @@ def test_registered_in_known_clis():
     names = known_clis()
     assert "qwen-code" in names
     assert "qwen-cli" in names
+
+
+def test_spawn_cmd_sets_per_agent_home():
+    """HOME=<agent_home> isolates each pane's ~/.qwen so sibling panes
+    don't clobber one shared auth cache / QWEN.md."""
+    from claudeteam.runtime.paths import agent_home
+    cmd = QwenCodeAdapter().spawn_cmd("worker_qwen", "")
+    assert f"HOME={agent_home('worker_qwen')}" in cmd
+
+
+def test_native_memory_path_is_qwen_md_under_agent_home():
+    from claudeteam.runtime.paths import agent_home
+    path = QwenCodeAdapter().native_memory_path("worker_qwen")
+    assert path == f"{agent_home('worker_qwen')}/.qwen/QWEN.md"

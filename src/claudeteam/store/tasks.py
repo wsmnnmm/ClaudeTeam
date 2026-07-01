@@ -1,21 +1,24 @@
 """Local task store — coordination cards across agents.
 
 One JSON file (`$CLAUDETEAM_STATE_DIR/tasks.json`) with shape:
-    {"tasks": [...], "_meta": {"last_id": N}}
+    {"tasks": [...], "intents": [...], "_meta": {"last_id": N, "last_intent_id": M}}
 
 Each task:
-    {id, title, description, assignee, creator,
+    {id, title, description, assignee, creator, intent_id,
      topic,
      parent_task_id,
-     status, artifact_path, reviewed_by, reviewed_at,
+     status, awaiting, approval_note, paused_by, paused_at,
+     artifact_path, reviewed_by, reviewed_at,
      founder_stage, stage_exit_evidence, evidence_action, non_goal,
      issue_class, current_segment, next_natural_window, base_absorb_needed,
      created_at, updated_at, completed_at}
 
-Pure file-locked CRUD; lifecycle (assignment, completion, etc.) is whatever
-the agents agree on — the store is opinion-free.
+Each intent (immutable verbatim record of the boss's original words):
+    {id, raw_text, source_msg, key_points, creator, created_at}
 
-Status vocabulary: 待处理 / 进行中 / 待验收 / 已完成 / 已取消
+Status vocabulary: 待处理 / 进行中 / 需审批 / 待验收 / 已完成 / 已取消
+The `需审批` state is a hard suspend: it can only be entered via pause()
+and left via approve()/reject(), never via generic update().
 """
 from __future__ import annotations
 
@@ -25,8 +28,9 @@ from claudeteam.runtime import paths
 from claudeteam.util import flock, now_ms, read_json, write_json
 
 
-VALID_STATUSES = {"待处理", "进行中", "待验收", "已完成", "已取消"}
+VALID_STATUSES = {"待处理", "进行中", "需审批", "待验收", "已完成", "已取消"}
 DEFAULT_STATUS = "待处理"
+SUSPEND_STATUS = "需审批"
 TERMINAL_STATUSES = {"已完成", "已取消"}
 VALID_ISSUE_CLASSES = {"local-business", "cross-team", "base-common"}
 VALID_CURRENT_SEGMENTS = {
@@ -91,6 +95,22 @@ def repair_invalid_statuses(*, dry_run: bool = False) -> list[dict]:
             _save(data)
     return changed
 
+# Legal moves for the generic update() path. Terminals are frozen: a
+# 已完成/已取消 task can never be resurrected by a stray `task update`
+# — reopening is an explicit new task, not a silent status flip (a
+# revived task would also re-anchor a stale intent into the assignee's
+# CLAUDE.md). 待处理 → 已完成 stays legal so the everyday
+# `task done <T-n>` shortcut works without a ceremonial 进行中 hop.
+# 需审批 is absent on purpose: both directions are gated by
+# pause()/approve()/reject() before this map is consulted.
+LEGAL_TRANSITIONS: dict[str, set[str]] = {
+    "待处理": {"进行中", "待验收", "已完成", "已取消"},
+    "进行中": {"待处理", "待验收", "已完成", "已取消"},
+    "待验收": {"进行中", "已完成", "已取消"},
+    "已完成": set(),
+    "已取消": set(),
+}
+
 
 def _file() -> Path:
     return paths.state_dir() / "tasks.json"
@@ -101,11 +121,16 @@ def _locked():
 
 
 def _load() -> dict:
-    return read_json(_file(), {"tasks": [], "_meta": {"last_id": 0}})
+    return read_json(_file(), {"tasks": [], "intents": [],
+                               "_meta": {"last_id": 0, "last_intent_id": 0}})
 
 
 def _save(data: dict) -> None:
     write_json(_file(), data)
+
+
+def _find(data: dict, task_id: str) -> dict | None:
+    return _find_task(data, task_id)
 
 
 def _capture_artifact_incident(task: dict, missing: list[str]) -> None:
@@ -304,6 +329,12 @@ def _open_child_tasks(data: dict, parent_task_id: str) -> list[dict]:
     ]
 
 
+def _set_status(task: dict, status: str) -> None:
+    task["status"] = status
+    task["completed_at"] = now_ms() if status in TERMINAL_STATUSES else None
+    task["updated_at"] = now_ms()
+
+
 def _inherit_parent_truth_surface(data: dict, parent_task_id: str, *,
                                   issue_class: str,
                                   base_absorb_needed: str) -> tuple[str, str]:
@@ -332,6 +363,7 @@ def _task_repo_root() -> Path:
 
 def create(assignee: str, title: str, *,
            description: str = "", creator: str = "",
+           intent_id: str = "",
            topic: str = "",
            parent_task_id: str = "",
            artifact_path: str = "",
@@ -348,8 +380,9 @@ def create(assignee: str, title: str, *,
         raise ValueError("title cannot be empty")
     with _locked():
         data = _load()
-        data["_meta"]["last_id"] = data["_meta"].get("last_id", 0) + 1
-        tid = f"T-{data['_meta']['last_id']}"
+        meta = data.setdefault("_meta", {})
+        meta["last_id"] = meta.get("last_id", 0) + 1
+        tid = f"T-{meta['last_id']}"
         now = now_ms()
         parent = _normalize_parent_task_id(parent_task_id, data=data, task_id=tid)
         inherited_issue_class, inherited_base_absorb = _inherit_parent_truth_surface(
@@ -364,9 +397,14 @@ def create(assignee: str, title: str, *,
             "description": description,
             "assignee": assignee,
             "creator": creator,
+            "intent_id": intent_id,
             "topic": _clean_topic(topic),
             "parent_task_id": parent,
             "status": DEFAULT_STATUS,
+            "awaiting": "",
+            "approval_note": "",
+            "paused_by": "",
+            "paused_at": None,
             "artifact_path": artifact_path,
             "reviewed_by": "",
             "reviewed_at": None,
@@ -424,7 +462,20 @@ def update(task_id: str, *, status: str | None = None,
                 continue
             prior_status = str(task.get("status") or "")
             if status is not None:
-                if status in {"待验收", "已完成"} and not _force:
+                if SUSPEND_STATUS in (status, prior_status):
+                    raise ValueError(
+                        "需审批 transitions must use task pause/approve/reject, not update")
+                status_changes = status != prior_status
+                if status_changes:
+                    allowed = LEGAL_TRANSITIONS.get(prior_status, set())
+                    if status not in allowed:
+                        raise ValueError(
+                            f"illegal transition: {prior_status} → {status}"
+                            + (f" (from {prior_status} only: "
+                               f"{' / '.join(sorted(allowed))})"
+                               if allowed else f" ({prior_status} is terminal — "
+                                               f"reopen by creating a new task)"))
+                if status_changes and status in {"待验收", "已完成"} and not _force:
                     open_children = _open_child_tasks(data, task_id)
                     if open_children:
                         child_ids = ", ".join(
@@ -434,7 +485,7 @@ def update(task_id: str, *, status: str | None = None,
                             f"task {task_id}: cannot mark {status} with open child tasks: "
                             f"{child_ids}"
                         )
-                if status == "已完成" and not _force:
+                if status_changes and status == "已完成" and not _force:
                     existing = str(task.get("artifact_path") or "").strip()
                     incoming = str(artifact_path or "").strip()
                     resolved = incoming or existing
@@ -461,11 +512,8 @@ def update(task_id: str, *, status: str | None = None,
                             f"(who accepted the artifact). Set reviewed_by or "
                             f"use _force=True to bypass."
                         )
-                task["status"] = status
-                if status in TERMINAL_STATUSES:
-                    task["completed_at"] = now_ms()
-                else:
-                    task["completed_at"] = None
+                if status_changes:
+                    _set_status(task, status)
             if assignee is not None:
                 task["assignee"] = assignee
             if title is not None:
@@ -559,6 +607,96 @@ def list_tasks(*, status: str | None = None,
         ]
     rows.sort(key=lambda t: int(t["id"].split("-")[1]) if "-" in t["id"] else 0)
     return rows
+
+
+def create_intent(raw_text: str, *, source_msg: str = "",
+                  key_points: str = "", creator: str = "user") -> str:
+    """Persist the boss's verbatim words as an immutable intent; return I-<n>."""
+    if not raw_text.strip():
+        raise ValueError("intent raw_text cannot be empty")
+    with _locked():
+        data = _load()
+        meta = data.setdefault("_meta", {})
+        meta["last_intent_id"] = meta.get("last_intent_id", 0) + 1
+        iid = f"I-{meta['last_intent_id']}"
+        data.setdefault("intents", []).append({
+            "id": iid,
+            "raw_text": raw_text,
+            "source_msg": source_msg,
+            "key_points": key_points,
+            "creator": creator,
+            "created_at": now_ms(),
+        })
+        _save(data)
+        return iid
+
+
+def get_intent(intent_id: str) -> dict | None:
+    for intent in _load().get("intents", []):
+        if intent.get("id") == intent_id:
+            return intent
+    return None
+
+
+def pause(task_id: str, *, awaiting: str = "user",
+          approval_note: str = "", paused_by: str = "") -> bool:
+    """进行中 → 需审批. Returns False unless the task is currently 进行中."""
+    with _locked():
+        data = _load()
+        task = _find(data, task_id)
+        if task is None or task.get("status") != "进行中":
+            return False
+        _set_status(task, SUSPEND_STATUS)
+        task["awaiting"] = awaiting
+        task["approval_note"] = approval_note
+        task["paused_by"] = paused_by
+        task["paused_at"] = now_ms()
+        _save(data)
+        return True
+
+
+def approve(task_id: str, *, done: bool = False, note: str = "") -> bool:
+    """需审批 → 进行中 or 已完成."""
+    with _locked():
+        data = _load()
+        task = _find(data, task_id)
+        if task is None or task.get("status") != SUSPEND_STATUS:
+            return False
+        _set_status(task, "已完成" if done else "进行中")
+        task["awaiting"] = ""
+        task["approval_note"] = note
+        _save(data)
+        return True
+
+
+def reject(task_id: str, *, feedback: str = "", cancel: bool = False) -> bool:
+    """需审批 → 进行中 or 已取消."""
+    with _locked():
+        data = _load()
+        task = _find(data, task_id)
+        if task is None or task.get("status") != SUSPEND_STATUS:
+            return False
+        _set_status(task, "已取消" if cancel else "进行中")
+        task["awaiting"] = ""
+        task["approval_note"] = feedback
+        _save(data)
+        return True
+
+
+def void(task_id: str, *, reason: str = "", voided_by: str = "") -> bool:
+    """Explicitly tombstone a task to 已取消, including a completed task."""
+    with _locked():
+        data = _load()
+        task = _find(data, task_id)
+        if task is None or task.get("status") == "已取消":
+            return False
+        _set_status(task, "已取消")
+        task["awaiting"] = ""
+        task["approval_note"] = reason
+        task["paused_by"] = voided_by
+        task["paused_at"] = now_ms()
+        _save(data)
+        return True
 
 
 def audit_tasks(*, assignee: str | None = None,

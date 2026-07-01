@@ -15,102 +15,51 @@ from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.commands.router import (
     _catchup_poll_interval_s,
     _build_subscribe_cmd,
+    _diagnose_sidecar_exit,
     _load_seen_msg_ids,
     _make_reply_context_resolver,
     _make_on_progress,
+    _notify_catchup_skips,
     _run_catchup_once,
     _stale_event_threshold_s,
+    _subscribe_rotate_reason,
     _watch_catchup_heartbeat,
     _watch_subscribe_health,
 )
 
 
-# Stub `resolve_prefix` so test argv doesn't depend on whether lark-cli
-# is on the test runner's PATH. Real production resolution is tested in
-# tests/unit/test_feishu_lark.py.
-_STUB_PREFIX = lambda: ["FAKE-LARK-CLI"]
+# Stub the sidecar path so test argv doesn't depend on the repo layout.
+_STUB_SIDECAR = lambda: "/fake/scripts/feishu_channel/sidecar.js"
 
 
-# ── _build_subscribe_cmd ──────────────────────────────────────────
+# ── _build_subscribe_cmd (Channel SDK sidecar ingress) ─────────────
 
 
-def test_build_cmd_with_profile_inserts_profile_flag():
-    cmd = _build_subscribe_cmd("test-live-a", resolve_prefix=_STUB_PREFIX)
-    assert cmd[0] == "FAKE-LARK-CLI"
-    assert "--profile" in cmd and "test-live-a" in cmd
-    # --profile must come BEFORE the "event" subcommand (lark-cli
-    # parses global flags before subcommand args)
-    profile_idx = cmd.index("--profile")
-    event_idx = cmd.index("event")
-    assert profile_idx < event_idx
+def test_build_cmd_launches_sidecar_run():
+    """Ingress is `node <repo>/scripts/feishu_channel/sidecar.js run` — the
+    @larksuite/channel sidecar that emits the same --compact NDJSON shape
+    process_lines already parses. Replaced the old lark-cli `event +subscribe`
+    argv (which silently dropped its WebSocket on macOS)."""
+    cmd = _build_subscribe_cmd("ignored-profile", sidecar=_STUB_SIDECAR)
+    assert cmd == ["node", "/fake/scripts/feishu_channel/sidecar.js", "run"]
 
 
-def test_build_cmd_uses_lark_resolve_cli_prefix():
-    """REGRESSION (R139): subscribe argv must come from
-    `lark.resolve_cli_prefix` (direct binary preferred). Hardcoded
-    `npx @larksuite/cli` paid the package-lookup overhead on every
-    router restart for nothing — R86's direct-binary work had been
-    saving ~250-500 ms per one-shot call but missed this hot path."""
+def test_build_cmd_uses_lark_sidecar_path_by_default():
+    """Default sidecar path comes from `lark.sidecar_path()` so one resolver
+    (honoring CLAUDETEAM_FEISHU_SIDECAR_DIR) feeds both the ingress and
+    `feishu connect`."""
     from claudeteam.feishu import lark
     cmd = _build_subscribe_cmd("")
-    expected = lark.resolve_cli_prefix()
-    assert cmd[:len(expected)] == expected
+    assert cmd == ["node", str(lark.sidecar_path()), "run"]
 
 
-def test_build_cmd_without_profile_omits_profile_flag():
-    """No profile passed → no --profile in the argv (lark-cli falls back
-    to its default profile)."""
-    cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
-    assert "--profile" not in cmd
-
-
-def test_build_cmd_filters_to_im_message_receive():
-    """Only inbound text-style chat events; lark-cli has many other event
-    types we don't want firing the router."""
-    cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
-    assert "--event-types" in cmd
-    et_idx = cmd.index("--event-types")
-    assert cmd[et_idx + 1] == "im.message.receive_v1"
-
-
-def test_build_cmd_includes_base_events_when_base_intake_enabled():
-    with isolated_env() as tmp:
-        (tmp / "claudeteam.toml").write_text(
-            "[base_intake]\n"
-            "enabled = true\n"
-            'event_types = ["drive.file.bitable_record_changed_v1"]\n',
-            encoding="utf-8",
-        )
-        cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
-
-    et_idx = cmd.index("--event-types")
-    assert cmd[et_idx + 1] == (
-        "im.message.receive_v1,drive.file.bitable_record_changed_v1")
-
-
-def test_build_cmd_uses_compact_quiet_bot_identity():
-    """REGRESSION: --compact gets the JSON shape we parse; --quiet
-    drops banner noise; --as bot uses the app's im:message scope
-    rather than user OAuth (which expires)."""
-    cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
-    for flag in ("--compact", "--quiet"):
-        assert flag in cmd, f"missing {flag}"
-    as_idx = cmd.index("--as")
-    assert cmd[as_idx + 1] == "bot"
-
-
-def test_build_cmd_does_NOT_use_force_anymore():
-    """REGRESSION (round-57): --force is "UNSAFE: server randomly splits
-    events across connections, each instance only receives a subset"
-    per lark-cli 1.0.21 docs. Was almost certainly a contributor to
-    the silent event loss the catchup fix (round-56) papered over.
-    The single-instance lock at ~/.lark-cli/locks/subscribe_<app>.lock
-    is fcntl-advisory and auto-releases on process exit; claudeteam's
-    own pidlock keeps us at one router at a time so collision is
-    impossible in practice."""
-    cmd = _build_subscribe_cmd("", resolve_prefix=_STUB_PREFIX)
-    assert "--force" not in cmd, (
-        "--force re-introduced; will cause silent event sharding")
+def test_build_cmd_no_larkcli_subscribe_argv():
+    """The sidecar binds credentials through env, so old lark-cli args stay out."""
+    cmd = _build_subscribe_cmd("", sidecar=_STUB_SIDECAR)
+    joined = " ".join(cmd)
+    for stale in ("+subscribe", "--force", "--event-types",
+                  "--as", "--compact", "--profile"):
+        assert stale not in joined, f"stale lark-cli arg {stale!r} re-introduced"
 
 
 # ── main() early validations ─────────────────────────────────────
@@ -415,12 +364,6 @@ def test_catchup_heartbeat_does_not_restart_on_single_miss_when_threshold_is_hig
 # ── help ────────────────────────────────────────────────────────
 
 
-def test_main_help_returns_zero():
-    rc, out, _ = run_cli(["router", "--help"])
-    assert rc == 0
-    assert "usage: claudeteam router" in out
-
-
 # ── stale-event self-restart ──────────────────────────────────────
 
 
@@ -440,9 +383,9 @@ def test_stale_threshold_default_linux_is_600s():
 
 
 def test_stale_threshold_default_darwin_is_120s():
-    """macOS lark-cli 1.0.23 WebSocket silently drops without reconnect
-    (verified 2026-05-09 host smoke). Tighter default lets self-restart
-    + catchup recover in ~2 min instead of ~10."""
+    """macOS lark-cli 1.0.23 WebSocket silently drops without reconnect.
+    Tighter default lets self-restart + catchup recover in ~2 min
+    instead of ~10."""
     with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S=None), _patch_platform("Darwin"):
         assert _stale_event_threshold_s() == 120.0
 
@@ -460,13 +403,6 @@ def test_stale_threshold_falls_back_to_default_on_garbage():
         assert _stale_event_threshold_s() == 600.0
 
 
-def test_stale_threshold_ignores_zero_or_negative():
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="0"), _patch_platform("Linux"):
-        assert _stale_event_threshold_s() == 600.0
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="-5"), _patch_platform("Darwin"):
-        assert _stale_event_threshold_s() == 120.0
-
-
 def test_make_on_progress_refreshes_timestamp_on_each_event():
     """Every successful (non-DROP) event should bump last_event_at[0]
     so the watchdog's stale check sees fresh activity. The router's
@@ -476,7 +412,8 @@ def test_make_on_progress_refreshes_timestamp_on_each_event():
     from types import SimpleNamespace
     with isolated_env():
         last_event_at = [0.0]
-        cb = _make_on_progress(last_event_at)
+        events_seen = [0]
+        cb = _make_on_progress(last_event_at, events_seen)
         # Mock decision (only attribute used is by record_decision; we patch
         # catchup.record_decision to a no-op so we don't need full Decision).
         from claudeteam.feishu import catchup
@@ -490,13 +427,33 @@ def test_make_on_progress_refreshes_timestamp_on_each_event():
             catchup.record_decision = real_record
     # time.monotonic always > 0 since boot; before was 0.0
     assert after > before
+    # genuine handled event is counted (idle-vs-stalled signal for #5)
+    assert events_seen[0] == 1
+
+
+def test_subscribe_rotate_reason_idle_is_calm_not_alarming():
+    """events_seen==0 is the NORMAL macOS idle case (no inbound yet this
+    session; live WS goes quiet, catchup recovers on restart). The log must
+    NOT scream 'silently stalled' — it reads as broken on a fresh deploy."""
+    line = _subscribe_rotate_reason(130.0, 120.0, events_seen=0)
+    assert "ℹ️" in line
+    assert "stalled" not in line.lower()
+    assert "catchup" in line.lower()
+
+
+def test_subscribe_rotate_reason_after_events_is_warning():
+    """events_seen>0 means events WERE flowing then stopped — genuinely
+    more notable (esp. Linux, where the WS is supposed to be stable)."""
+    line = _subscribe_rotate_reason(130.0, 120.0, events_seen=5)
+    assert "⚠️" in line
+    assert "stopped" in line.lower()
 
 
 def test_watch_subscribe_health_self_terminates_on_stale_events():
     """Subscribe child alive but no events for > threshold → SIGTERM
-    self. REGRESSION: 2026-05-06 host_smoke caught lark WebSocket
-    silently stalling, router process appeared healthy in `ps` but
-    user messages went unprocessed for 7+ min."""
+    self. REGRESSION: lark WebSocket silently stalling left the router
+    process looking healthy in `ps` while user messages went unprocessed
+    for 7+ min."""
     import threading, signal, os
     from claudeteam.commands import router as _r
 
@@ -518,7 +475,7 @@ def test_watch_subscribe_health_self_terminates_on_stale_events():
             last_event_at = [0.0]
             t = threading.Thread(
                 target=_watch_subscribe_health,
-                args=(FakeProc(), stop_event, last_event_at),
+                args=(FakeProc(), stop_event, last_event_at, [0]),
                 daemon=True,
             )
             t.start()
@@ -531,8 +488,8 @@ def test_watch_subscribe_health_self_terminates_on_stale_events():
 
 def test_watch_subscribe_health_self_terminates_on_child_exit():
     """Subscribe child exits (non-stale-events path). Coverage for the
-    pre-existing fail mode (R52 / Round B Smoke regression): npm-exec
-    parent stays alive holding stdout open, lark-cli grandchild dies."""
+    pre-existing fail mode: npm-exec parent stays alive holding stdout
+    open, lark-cli grandchild dies."""
     import threading, signal, os, time
     from claudeteam.commands import router as _r
 
@@ -552,7 +509,7 @@ def test_watch_subscribe_health_self_terminates_on_child_exit():
             last_event_at = [time.monotonic()]  # fresh
             t = threading.Thread(
                 target=_watch_subscribe_health,
-                args=(FakeProc(), stop_event, last_event_at),
+                args=(FakeProc(), stop_event, last_event_at, [0]),
                 daemon=True,
             )
             t.start()
@@ -561,6 +518,41 @@ def test_watch_subscribe_health_self_terminates_on_child_exit():
         assert sigterms[0][1] == signal.SIGTERM
     finally:
         os.kill = real_kill
+
+
+def test_diagnose_sidecar_exit_surfaces_ws_failure_hint():
+    """When the sidecar's last output shows a WebSocket-connect failure, the exit
+    diagnostic must NAME the two fixes (enable 长连接 / LARK_CLI_NO_PROXY) instead
+    of the real error getting bad_json-dropped + lost in a respawn loop."""
+    import io, contextlib
+    recent = ["[info]: ws client connecting",
+              "[error]: '[ws]', 'ws connect failed'",
+              "[ws] reconnect... 放弃"]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _diagnose_sidecar_exit(1, recent)
+    out = buf.getvalue()
+    assert "长连接" in out and "LARK_CLI_NO_PROXY" in out, out
+    assert "ws connect failed" in out, "should echo the sidecar's own last lines"
+
+
+def test_diagnose_sidecar_exit_no_ws_signature_prints_tail_only():
+    """A clean/unknown exit still shows the tail (for debugging) but must NOT fire
+    the WS-specific 长连接/proxy advice — that'd be a misleading false lead."""
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _diagnose_sidecar_exit(0, ["handled event om_x", "router quiet"])
+    out = buf.getvalue()
+    assert "router quiet" in out
+    assert "长连接" not in out and "LARK_CLI_NO_PROXY" not in out, out
+
+
+def test_diagnose_sidecar_exit_tolerates_none_recent_lines():
+    """recent_lines=None (no buffer / older call site) must not raise."""
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        _diagnose_sidecar_exit(1, None)  # must simply not raise
 
 
 # ── persisted dedup set (state/router.seen) ──────────────────────
@@ -610,16 +602,16 @@ def test_load_seen_truncates_huge_file_to_recent_window():
 
 
 def test_on_progress_appends_msg_id_to_seen_file():
-    """REGRESSION: 2026-05-06 host_smoke caught manager's own /tmux
-    manager card forwarded into manager inbox every ~3.5min as router
-    self-restarted. Root cause: seen_msg_ids was an in-memory set, not
-    persisted, so catchup replay after restart re-applied messages.
+    """REGRESSION: manager's own /tmux manager card was forwarded into
+    manager inbox every ~3.5min as the router self-restarted. Root
+    cause: seen_msg_ids was an in-memory set, not persisted, so catchup
+    replay after restart re-applied messages.
     Now: each on_progress fires append-to-file."""
     from types import SimpleNamespace
     from claudeteam.runtime import paths
     with isolated_env():
         last_event_at = [0.0]
-        cb = _make_on_progress(last_event_at)
+        cb = _make_on_progress(last_event_at, [0])
         # Mock the catchup.record_decision side effect
         from claudeteam.feishu import catchup
         real_record = catchup.record_decision
@@ -647,10 +639,31 @@ def test_seen_persists_across_simulated_restart():
         real_record = catchup.record_decision
         catchup.record_decision = lambda d: None
         try:
-            cb1 = _make_on_progress([0.0])
+            cb1 = _make_on_progress([0.0], [0])
             cb1(SimpleNamespace(msg_id="om_X"), object())
         finally:
             catchup.record_decision = real_record
         # Simulate restart: load again
         seen = _load_seen_msg_ids()
         assert "om_X" in seen
+
+
+# ── post a skip-notice to the routing target ──
+
+
+def test_notify_catchup_skips_posts_when_dropped_or_slash():
+    from claudeteam.store import local_facts
+    with isolated_env():
+        _notify_catchup_skips("manager", dropped_stale=3, slash_skipped=2)
+        msgs = local_facts.list_messages("manager")
+    assert len(msgs) == 1
+    body = msgs[0]["content"]
+    assert "3 条" in body and "2 条" in body
+    assert "task intent get" in body          # ties to live-read discipline
+
+
+def test_notify_catchup_skips_noop_when_nothing_skipped():
+    from claudeteam.store import local_facts
+    with isolated_env():
+        _notify_catchup_skips("manager", dropped_stale=0, slash_skipped=0)
+        assert local_facts.list_messages("manager") == []

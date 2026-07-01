@@ -27,8 +27,8 @@ for _p in (SRC, TESTS):
 def _discover(filt: str = "") -> list[tuple[str, str]]:
     """Return [(stem, sub), ...]. If `filt` given, keep modules whose
     stem contains the substring (so `python3 tests/run.py usage` runs
-    only test_commands_usage / test_*usage*). Boss-flagged 2026-05-05:
-    full suite is too slow during dev — let me filter."""
+    only test_commands_usage / test_*usage*) — handy for filtering when
+    the full suite is too slow during dev."""
     out = []
     for sub in ("unit", "integration"):
         for path in sorted((ROOT / "tests" / sub).glob("test_*.py")):

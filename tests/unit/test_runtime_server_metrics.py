@@ -1,8 +1,8 @@
 """Tests for runtime/server_metrics.py — host CPU/mem/disk/docker/agent
-collector that backs the R166 /health card."""
+collector that backs the /health card."""
 from __future__ import annotations
 
-from helpers import FakeProc
+from helpers import FakeProc, attr_patch
 from claudeteam.runtime import server_metrics
 
 
@@ -30,8 +30,8 @@ def _no_proc(_path):
 
 
 def test_host_cpu_reads_proc_loadavg_when_present():
-    """R172 primary path: /proc/loadavg directly read so it works
-    inside the slim Docker image without procps."""
+    """Primary path: /proc/loadavg directly read so it works inside the
+    slim Docker image without procps."""
     proc_data = {"/proc/loadavg": "0.42 0.85 1.23 1/123 1234\n"}
     cpu = server_metrics._host_cpu(
         read_proc=lambda p: proc_data.get(p),
@@ -75,8 +75,8 @@ def test_host_cpu_uses_cpu_count_when_nproc_returns_garbage():
 
 
 def test_host_mem_reads_proc_meminfo_when_present():
-    """R172 primary path: /proc/meminfo parse so /health works
-    inside slim Docker images (no `free` binary)."""
+    """Primary path: /proc/meminfo parse so /health works inside slim
+    Docker images (no `free` binary)."""
     meminfo = (
         "MemTotal:       16384000 kB\n"   # 16 GB
         "MemFree:         2048000 kB\n"
@@ -212,7 +212,7 @@ def test_collect_server_load_returns_full_data_shape():
         read_proc=_no_proc)
     assert set(data.keys()) == {"host", "containers", "agents", "alarms"}
     assert set(data["host"].keys()) == {"cpu", "mem", "disk"}
-    # All None when run returns rc=1
+    # All None when host probes report unavailable
     assert data["host"] == {"cpu": None, "mem": None, "disk": None}
     assert data["containers"] == []
     assert data["agents"] == []
