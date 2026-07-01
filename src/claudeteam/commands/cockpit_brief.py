@@ -104,7 +104,7 @@ def _collect_rows(root: Path, team_dirs: list[Path], *,
         for source in sources
         if str(source.get("key") or "") and str(source.get("label") or "")
     }
-    remote_base = remote_state_dir or cockpit_sync._default_remote_state_dir(root)
+    remote_base = remote_state_dir or cockpit_sync._default_remote_state_dirs(root, team_dirs)
     remote_dirs = cockpit_sync._remote_snapshot_dirs(remote_base)
     remote_labels = {
         path: cockpit_sync._remote_label(path, registry_labels=registry_labels)

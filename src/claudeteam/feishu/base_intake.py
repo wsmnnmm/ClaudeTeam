@@ -546,7 +546,7 @@ def _remote_state_dir(root: Path) -> Path | None:
     ) or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return cockpit_sync._default_remote_state_dir(root)
+    return cockpit_sync._default_remote_state_dirs(root, cockpit_sync._discover(root))
 
 
 def _remote_snapshot_for_label(root: Path, label: str) -> Path | None:
