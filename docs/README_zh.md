@@ -28,8 +28,9 @@
 > **一键部署 —— 把下面这段话粘给你的 coding agent（Claude Code / Codex / Kimi / Gemini / Qwen 都行）：**
 >
 > ```
-> 克隆 https://github.com/zylMozart/ClaudeTeam.git，读 docs/DEPLOYMENT_zh.md，
-> 然后从头到尾带我跑起一支团队（如果还没飞书 App 也帮我建一个）。
+> 克隆 https://github.com/zylMozart/ClaudeTeam.git，读 docs/DEPLOYMENT_zh.md，按里面
+> 「让 coding agent 替你部署」那套协议走：先问我入场问题（我装了并登录了哪些 CLI、
+> 飞书用 quick 还是免 @），起团队，再逐个 pane 验证过了，才告诉我搞定。
 > ```
 
 ---
@@ -63,7 +64,7 @@
 ## 快速开始
 
 前置依赖、安装、完整分步（host & Docker）都在 **[docs/DEPLOYMENT_zh.md](DEPLOYMENT_zh.md)**
-—— 4 步、从上到下。装好之后的核心流程：
+—— 5 步、从上到下。装好之后的核心流程：
 
 ```bash
 claudeteam init --no-connect       # 写 claudeteam.toml（默认：manager + 1 个 claude worker）
@@ -167,7 +168,7 @@ role = "数据分析员工"
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/DEPLOYMENT_zh.md`](DEPLOYMENT_zh.md) | Host 部署（4 步）/ 配置 schema / 模型后端 / 多团队隔离 / 故障排查 |
+| [`docs/DEPLOYMENT_zh.md`](DEPLOYMENT_zh.md) | Host 部署（5 步）/ 配置 schema / 模型后端 / 多团队隔离 / 故障排查 |
 | [`docs/DEPLOYMENT_docker_zh.md`](DEPLOYMENT_docker_zh.md) | Docker / 服务器部署 |
 | [`CLAUDE.md`](../CLAUDE.md) | 改代码前的内部规范 |
 

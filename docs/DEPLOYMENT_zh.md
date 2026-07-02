@@ -4,11 +4,13 @@
 
 # 部署指南（Host）
 
-把一个 ClaudeTeam 团队跑起来——**跟着下面 4 步一条条敲就行**。配置、模型后端、故障排查
+把一个 ClaudeTeam 团队跑起来——**跟着下面 5 步一条条敲就行**。配置、模型后端、故障排查
 在后面。要用 Docker / 服务器部署 → 另见 [Docker 部署](DEPLOYMENT_docker_zh.md)。
 
-> **让 coding agent 替你部署？** 告诉它：*读这份文档，一步步带我走；遇到要选的（用哪些
-> agent CLI？我有没有飞书 App？）**先问我、别瞎猜**。*
+> **让 coding agent 替你部署？** 别让它自由发挥——我们见到的装崩案例，全是 agent 不问就
+> **瞎猜**一个团队编制，然后 `health` 一绿就说好了、根本没进 pane 看过。它动手前，先把它指到
+> 后面的 **[coding-agent 部署协议](#让-coding-agent-替你部署)**：**先问操作者那几个入场问题**，
+> 起团队后**逐个 pane 验证**，再回报「团队起来了」。
 
 ---
 
@@ -46,7 +48,14 @@ pip install -e .
 > 只装/用你需要的 agent CLI。默认团队全是 `claude-code`，所以装个 `claude` 就能跑通；
 > `codex` 等其它 CLI 按需再装。
 
+> 上面的 `.venv` 只是*一种*装法。conda / pipx / 系统 python 都行——唯一要求是：你 `up` 的那个
+> shell 里 `claudeteam` **和**你的 agent CLI 都能在 `PATH` 上解析到。所以下面的 PATH 修法说的是
+> 「`claudeteam` 装进的那个 env」，不是死抠 `.venv`。
+
 ## 第 2 步 · 配团队
+
+> ▶ **Agent：** 先跟操作者把编制定下来（规则 1，问题 1–2）。`[team.agents.*]` **只**用那些
+> 装了*且*登录了的 CLI——除非 `codex` 两项都过了，否则别把默认的 `worker_codex` 示例留在里面。
 
 ```bash
 claudeteam init --no-connect      # 写出 claudeteam.toml（默认：manager + 1 个 claude worker）
@@ -69,6 +78,10 @@ role  = "Codex 员工"
 > agent 渲染出来的身份。
 
 ## 第 3 步 · 连飞书（扫一下，建好机器人 + 群）
+
+> ▶ **Agent：** 先看他是不是已经有 `state/feishu_app.json` + `chat_id` 了——有就整步跳过。
+> 没有的话，**就在这一步跟操作者一起选模式**（把下面 `--quick` 和不带参数的取舍讲给他听）——
+> 别默默用默认。扫二维码这个动作本身是操作者来做。
 
 ```bash
 claudeteam feishu connect --quick     # 扫一次码就行，哪台机器都能跑（群里要 @ 机器人）
@@ -110,10 +123,17 @@ claudeteam feishu connect             # 浏览器自动建一个「群里免 @�
 
 </details>
 
-> 想一条命令搞定第 2+3 步（用默认团队、不改 agent）？`claudeteam init --quick`——写默认配置 +
-> 扫码连飞书（想群里免 @ 就用 `claudeteam init`，走浏览器自动化）。
+> **一条命令搞定第 2+3 步**（仅限默认团队）：`claudeteam init --quick` 写默认配置 *+* 扫码连
+> 飞书；不带参数的 `claudeteam init` 一样，只是走免 @ 的浏览器流程。速查：
+> `init --no-connect` = 只写配置、稍后再连 · `init --quick` = 配置 + 扫码连 · `init` = 配置 +
+> 浏览器（免 @）连。
+>
+> ▶ **Agent：** `init --quick` / `init` 这两个一步到位的形式，**一条命令里同时把默认编制和飞书模式
+> 都定死了**——只有当操作者已经确认了**编制**（规则 1）*并且*选好了**飞书模式**（第 3 步），才用它们。
+> 要是还有一样没定，就走显式的第 2 步（`init --no-connect`）+ 第 3 步，让每个决定都是真选择，
+> 而不是你偷偷塞过去的默认。
 
-## 第 4 步 · 起团队 + 验证
+## 第 4 步 · 起团队
 
 ```bash
 claudeteam install-hooks      # 装斜杠命令钩子（必须在 up 之前）
@@ -121,15 +141,91 @@ claudeteam up                 # 起 tmux 团队 + router + watchdog
 claudeteam health             # 基础设施自检：binaries / env / tmux / router / watchdog
 ```
 
-**真正起来了的判据是看飞书群**：一次全新 `up` 后，主管会**发起全员点名**、每个 worker 逐一
-在群里汇报。看到这个 = 成。然后 `@manager 你好` → 约 30 秒内回复。
+`up` 起一个 tmux 会话（每 agent 一个窗口）+ router + watchdog，然后踢 manager 在群里发起点名。
+`health` 应当全绿（容忍一条 `lark_profile blank` ⚠️）。**但 `health` 全绿只代表基础设施起来了——
+先走第 5 步再信任这个团队。**
 
-> ⚠️ **`health` 全绿 ≠ 团队能用**——它只查基础设施（进程/tmux/守护），不查每个 agent 的 CLI
-> 是否真登录可用。**以群里点名为准**。点不动？多半是某个 agent CLI 本机没登录（跑一下
-> `claude` 登录）、或那个 CLI 没装。可选手动探针（群里输入）：`/health`（每 agent + router +
-> watchdog 卡片）、`/team`（每 agent ♥ 心跳 < 30 秒）。
+## 第 5 步 · 逐个 pane 验证
+
+`health` 全绿 ≠ 团队能用：它从不往 agent *里面*看。每个 CLI 还得真的启动、登录、并吞下自己的
+身份 prompt——所以**每个 pane 都看一眼**。对编制里的**每个** agent：
+
+```bash
+claudeteam team               # 每 agent 一行：状态 + ♥ 心跳 —— 但死 pane 不会出现在这里，
+                              # 所以别停在这；把编制里每个 agent 都 peek 一遍（死的那个恰恰最该看）：
+for a in $(grep -oE '^\[team\.agents\.[^]]+\]' claudeteam.toml | sed -E 's/.*agents\.([^]]+)\]/\1/'); do
+  echo "===== $a ====="; claudeteam peek "$a" 40
+done
+```
+
+逐个 pane 对下表——**碰到 ❌ 先修完再往下**：
+
+| pane 里显示 | 判定 | 修法 |
+| --- | --- | --- |
+| CLI REPL 起来了，注入的身份/点名被回应了，没有报错横幅 | ✅ 健康 | — |
+| `claude: not found` / `codex: not found` | ❌ PATH | 你从一个 `claude`/`claudeteam` 解析不到的 shell `up` 了 → 从 `claudeteam` 装进的那个 shell/env（`.venv`、conda、pipx …）重新 `up`，再 `claudeteam down && up` |
+| "Not logged in" / 一个登录或授权提示 | ❌ 没登录 | 本机把那个 CLI 登录了（`claude`、`codex login` …）；claude 的话 `down && up` 重新落一份凭证——见 [Not logged in](#claude-pane-报-not-logged-inmacos-host) |
+| "update available" / 一个版本提示（codex 尤其） | ❌ 被挡住 | `tmux send-keys -t <session>:<agent> 3 Enter`（Skip until next version）→ `claudeteam reidentify <agent>` |
+| 只有裸 shell 提示符或空 buffer，没 CLI 横幅 | ❌ 没起来 | ~30 秒后再 `peek` 一次；还是裸的 → 那个 CLI 其实没装好 / 不在 PATH |
+| `invalid api key` / 一个 base_url 报错（BYOK CLI） | ❌ 后端配错 | 查 secrets `.env` 里的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`——见 [模型后端](#每个-agent-的模型后端凭证--端点) |
+
+**然后是活信号——飞书群。** 一次全新 `up` 后，主管会**发起全员点名**、每个 worker 逐一汇报；
+然后 `@manager 你好` → 约 30 秒内回复。可选群里探针：`/team`（每 agent ♥ 心跳 < 30 秒）、
+`/health`（每 agent + router + watchdog 卡片）。
+
+只有当**每个 pane 都 ✅** *并且*群里点名到位了，团队才算真起来了——对操作者要说的是这个，
+不是 `health` 全绿。
 
 **拆除：** `claudeteam down`（停掉、保留状态）· `claudeteam reset`（连状态一起清）。
+
+---
+
+## 让 coding agent 替你部署
+
+一个 coding agent（Claude Code / Codex / …）来驱动这次部署，应当按**三条规则、依次**走——
+它们把上面这 5 步裹上「先问 + 逐个 pane 验证」的纪律，防止一次无人看管的安装悄悄跑歪。
+
+### 规则 1 · 先问再动——入场问题
+
+在跑**任何东西**之前，把下面这组简短的入场问题问操作者，然后把方案复述一遍、等他点头。
+别猜任何默认值——这里猜错，正是后面团队变哑巴的根因。
+
+1. **本机装了、并且登录了哪些 agent CLI？**
+   **能自己测的就别问**——装没装你自己查：
+   ```bash
+   for c in claude codex gemini qwen kimi; do printf '%s: ' "$c"; command -v "$c" || echo "(未安装)"; done
+   ```
+   每个能解析到的，再问操作者确认它**登录了**（没登录的 CLI 起来就是一个*死 pane*——这是团队
+   静默的头号原因）。**团队编制里只放两项都过的 CLI。** `codex` 没装 + 没登录，就别在团队里放
+   `codex` worker。从 CLI 外面你*没法*彻底确认「登录了」，所以这仍是个值得问的真问题——它能在你
+   建起一堆将来还要拆掉的 pane **之前**先把编制裁好。而且不管操作者怎么答，
+   [第 5 步](#第-5-步--逐个-pane-验证)才是**每个 agent 的最终关卡——包括 `claude` 主管**（没登录的
+   CLI 在那里就是个死 pane）：每个都当成**未确认、直到它的 pane 变 ✅**。拿不准时宁可**先少放几个
+   agent、每个验通了再加**；别因为操作者说了句「都登录了」就跳过第 5 步。
+2. **团队编制**——默认那套全 `claude` 的 2-agent 团队，[`templates/`](../templates/) 里的领域
+   模板（software-dev / research / marketing / data / content），还是自定义编制？**manager 必须是
+   `claude-code`**（它负责点名）——操作者要是选了模板，`up` 前打开它的 `claudeteam.toml`、确认
+   lead/manager 那个 agent 的 `cli` 是 `claude-code`。把最终 agent 名单跟操作者确认。
+
+（飞书注册模式——`--quick` 还是不带参数——是另一个独立决定；你在**第 3 步**跟操作者一起选，
+那里把取舍摆得清清楚楚，不用提前塞进入场问题里。）
+
+然后把**方案复述一遍**——比如*「编制 = manager + worker_cc，都是 claude-code，跑在你本机现成的
+claude 登录上」*——操作者点头了再往下走。
+
+### 规则 2 · 照步骤走；读代码是最后手段
+
+下面第 1–5 步就是*全部*流程——照着跑，别自己从源码里逆推一条路子出来。某步出问题了，按这个
+顺序排查：(1) [常见故障](#常见故障)表，(2) 失败命令自己的输出/日志，(3) 带着那段输出找操作者。
+**读源码是*最后*手段、不是第一手段**——它不是禁区，但只有当你真的把步骤跑过、撞上了上面几步都
+解不了的问题，才去翻它；而且是读来诊断那个具体故障，仍然要把问题抛给操作者，而不是闷头改代码。
+
+### 规则 3 · 回报成功前，逐个 pane 验证
+
+`claudeteam health` 转绿只证明**基础设施**起来了——router、watchdog、tmux——**不**代表每个
+agent 的 CLI 真的启动 + 登录了。`up` 之后，走 [第 5 步](#第-5-步--逐个-pane-验证)、把**每个** pane
+都看一眼。只有当每个 pane 都是健康、已加载身份的 REPL **并且**主管的群里点名到位了，才对操作者
+说「团队起来了」。
 
 ---
 
@@ -331,9 +427,10 @@ cd /path/to/team-b && claudeteam up
 
 ### pane 里 `claude: not found` / `codex: not found`
 
-pane 继承启动它的那个 shell 的 `$PATH`。如果你开了个新终端、忘了
-`source .venv/bin/activate`，pane 就没有项目 venv。从一个能解析到 agent CLI 的 shell
-重新 `up`。
+pane 继承启动它的那个 shell 的 `$PATH`。如果你开了个新终端、忘了激活 `claudeteam` 装进的那个
+env（`.venv`，或你的 conda / pipx / 系统 python env），pane 就解析不到那些 CLI。从一个
+`command -v claudeteam` **和** `command -v claude`（以及编制里其它 agent CLI）都能解析到的
+shell 重新 `up`。
 
 ### claude pane 报 "Not logged in"（macOS host）
 

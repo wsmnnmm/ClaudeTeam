@@ -28,9 +28,10 @@
 > **Deploy by pasting this to your coding agent (Claude Code, Codex, Kimi, Gemini, Qwen, …):**
 >
 > ```
-> Clone https://github.com/zylMozart/ClaudeTeam.git, read docs/DEPLOYMENT.md,
-> then walk me through bringing up a team end-to-end (including the Feishu app
-> if I don't have one yet).
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read docs/DEPLOYMENT.md and
+> follow its "Deploying with a coding agent" protocol: ask me the intake
+> questions first (which CLIs I have + are logged in, quick vs no-@ Feishu),
+> bring the team up, then verify every agent's pane before telling me it's done.
 > ```
 
 ---
@@ -64,7 +65,7 @@ The default team is all Claude Code, so `claude` alone runs it; the rest are opt
 ## Quick start
 
 Prerequisites, install, and the full step-by-step (host & Docker) live in
-**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — 4 steps, top to bottom. The core flow once installed:
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — 5 steps, top to bottom. The core flow once installed:
 
 ```bash
 claudeteam init --no-connect       # write claudeteam.toml (default: manager + 1 claude worker)
@@ -176,7 +177,7 @@ registration and the WebSocket event ingress.
 
 | Doc | What's in it |
 | --- | ------------ |
-| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host setup (4 steps), config schema, model backends, multi-team isolation, troubleshooting |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host setup (5 steps), config schema, model backends, multi-team isolation, troubleshooting |
 | [`docs/DEPLOYMENT_docker.md`](docs/DEPLOYMENT_docker.md) | Docker / server deploy |
 | [`CLAUDE.md`](CLAUDE.md) | Building rules — read before changing code |
 

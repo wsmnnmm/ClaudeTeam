@@ -4,13 +4,16 @@
 
 # Deployment Guide (Host)
 
-Get a ClaudeTeam crew running — **just follow the 4 steps below, top to bottom**.
+Get a ClaudeTeam crew running — **just follow the 5 steps below, top to bottom**.
 Config, model-backend, and troubleshooting reference live further down. Deploying
 on Docker / a server → see [Docker deploy](DEPLOYMENT_docker.md).
 
-> **Driving this with a coding agent?** Tell it: *read this doc, walk me through
-> it; when there's a choice (which agent CLIs? do I already have a Feishu app?)
-> **ask me, don't guess**.*
+> **Driving this with a coding agent?** Don't let it free-run — the botched
+> installs we see are all an agent *guessing* the roster instead of asking, then
+> calling `health` green without ever looking inside the panes. Before it starts,
+> point it at the **[coding-agent deploy protocol](#deploying-with-a-coding-agent)**
+> further down: **ask the operator the intake questions first**, then **verify
+> every agent's pane** before telling them the team is up.
 
 ---
 
@@ -53,7 +56,17 @@ pip install -e .
 > Install only the agent CLIs you'll use. The default team is all `claude-code`,
 > so `claude` alone runs it; add `codex` etc. only if you want them.
 
+> The `.venv` above is just *one* way. conda / pipx / system-python all work too
+> — the only requirement is that `claudeteam` **and** your agent CLIs resolve on
+> `PATH` in the shell you run `up` from. So the PATH fixes below say "the env
+> `claudeteam` is installed in," not literally `.venv`.
+
 ## Step 2 · Configure your team
+
+> ▶ **Agent:** resolve the roster with the operator first (Rule 1, questions
+> 1–2). Build `[team.agents.*]` from **only** the CLIs that are installed *and*
+> logged in — don't leave the default `worker_codex`-style examples in unless
+> `codex` passed both checks.
 
 ```bash
 claudeteam init --no-connect      # writes claudeteam.toml (default: manager + 1 claude worker)
@@ -78,6 +91,11 @@ role  = "Codex worker"
 > identity before `up`.
 
 ## Step 3 · Connect Feishu (scan once → bot + group built)
+
+> ▶ **Agent:** first check whether they already have `state/feishu_app.json` + a
+> `chat_id` — if so, skip this step. Otherwise **this is where you pick the mode
+> with the operator** (walk them through the `--quick` vs no-flag trade-offs
+> below) — don't silently default. The QR scan itself is the operator's to do.
 
 ```bash
 claudeteam feishu connect --quick     # one scan, runs anywhere (you @ the bot in groups)
@@ -124,11 +142,20 @@ deep-link, publish) — the robust fallback when the browser automation can't ru
 
 </details>
 
-> Want one command for Steps 2+3 (default team, no agent edits)?
-> `claudeteam init --quick` — writes the default config and scan-connects Feishu in one go
-> (use `claudeteam init` for the no-@ browser flow).
+> **One command for Steps 2+3** (default team only): `claudeteam init --quick`
+> writes the default config *and* scan-connects Feishu in one go; plain
+> `claudeteam init` does the same but with the no-@ browser flow. Quick
+> reference: `init --no-connect` = config only, connect later · `init --quick` =
+> config + scan-connect · `init` = config + browser (no-@) connect.
+>
+> ▶ **Agent:** the one-shot `init --quick` / `init` forms **bake in the default
+> roster _and_ the Feishu mode in a single command** — only reach for them
+> *after* the operator has confirmed the **roster** (Rule 1) *and* picked the
+> **Feishu mode** (Step 3). If either
+> is still open, use the explicit Step 2 (`init --no-connect`) + Step 3 so each
+> decision stays a real choice, not a default you smuggled past them.
 
-## Step 4 · Launch + verify
+## Step 4 · Launch
 
 ```bash
 claudeteam install-hooks      # install slash-command hooks (MUST run before up)
@@ -136,16 +163,44 @@ claudeteam up                 # start the tmux crew + router + watchdog
 claudeteam health             # infra self-check: binaries / env / tmux / router / watchdog
 ```
 
-**The real signal is your Feishu group**: on a fresh `up` the manager **posts a
-roll-call** and each worker reports in. See that = you're up. Then `@manager 你好`
-→ reply in ~30 s.
+`up` starts a tmux session (one window per agent) + the router + the watchdog,
+then kicks the manager to run a group roll-call. `health` should be green (one
+`lark_profile blank` ⚠️ is tolerable). **But green `health` only means the
+infrastructure is up — go to Step 5 before you trust the team.**
 
-> ⚠️ **Green `health` ≠ a working team** — it checks infrastructure (processes /
-> tmux / daemons), not whether each agent's CLI is actually authenticated. **Go by
-> the group roll-call.** No response? Usually an agent CLI isn't logged in on this
-> machine (run `claude` to log in) or that CLI isn't installed. Optional manual
-> probes (type in the group): `/health` (per-agent + router + watchdog card),
-> `/team` (each agent's ♥ heartbeat < 30 s).
+## Step 5 · Verify each agent's pane
+
+Green `health` ≠ a working team: it never looks *inside* an agent. Each CLI still
+has to have actually launched, authenticated, and swallowed its identity prompt —
+so **look at every pane**. For **each** agent in your roster:
+
+```bash
+claudeteam team               # one line per agent that reported — but a DEAD pane won't appear here,
+                              # so don't stop at this; peek EVERY rostered agent (dead ones are
+                              # exactly the ones you need to see):
+for a in $(grep -oE '^\[team\.agents\.[^]]+\]' claudeteam.toml | sed -E 's/.*agents\.([^]]+)\]/\1/'); do
+  echo "===== $a ====="; claudeteam peek "$a" 40
+done
+```
+
+Read each pane and match it against this table — **fix a ❌ before moving on**:
+
+| What the pane shows | Verdict | Fix |
+| --- | --- | --- |
+| CLI REPL is up, the injected identity / roll-call was answered, no error banner | ✅ healthy | — |
+| `claude: not found` / `codex: not found` | ❌ PATH | you `up`'d from a shell where `claude`/`claudeteam` don't resolve → re-`up` from the shell/env `claudeteam` is installed in (`.venv`, conda, pipx, …), then `claudeteam down && up` |
+| "Not logged in" / a login or auth prompt | ❌ not authed | log that CLI in on this machine (`claude`, `codex login`, …); for claude, `down && up` re-materialises creds — see [Not logged in](#not-logged-in-in-a-claude-pane-macos-host) |
+| "update available" / a version prompt (codex especially) | ❌ blocked | `tmux send-keys -t <session>:<agent> 3 Enter` (Skip until next version) → `claudeteam reidentify <agent>` |
+| bare shell prompt or empty buffer, no CLI banner | ❌ didn't spawn | `peek` again after ~30 s; still bare → that CLI isn't really installed / on PATH |
+| `invalid api key` / a base_url error (BYOK CLIs) | ❌ backend misconfig | check `OPENAI_BASE_URL` / `OPENAI_API_KEY` in the secrets `.env` — see [Model backend](#model-backend-per-agent-credentials--endpoint) |
+
+**Then the live signal — the Feishu group.** On a fresh `up` the manager **posts
+a roll-call** and each worker reports in; then `@manager 你好` → reply in ~30 s.
+Optional in-group probes: `/team` (each agent's ♥ heartbeat < 30 s), `/health`
+(per-agent + router + watchdog card).
+
+Only once **every pane is ✅** *and* the group roll-call landed is the team
+really up — that, not green `health`, is what you tell the operator.
 
 **Tear down:** `claudeteam down` (stop, keep state) · `claudeteam reset` (also wipe state).
 
@@ -153,6 +208,71 @@ Optional: if you want to add ECC to ClaudeTeam, prefer installing it
 into ClaudeTeam's isolated per-agent homes rather than the operator's
 real global CLI homes. See
 [`docs/ecc-minimal-integration.md`](ecc-minimal-integration.md).
+
+---
+
+## Deploying with a coding agent
+
+A coding agent (Claude Code / Codex / …) driving this deploy should follow
+**three rules, in order** — they wrap the 5 steps above with the ask-first +
+verify-panes discipline that keeps an unattended install from quietly going
+wrong.
+
+### Rule 1 · Ask before you act — the intake
+
+Before running *anything*, ask the operator this short intake, then say the plan
+back and get a nod. Never guess a default; a wrong guess here is exactly what
+produces a dead team later.
+
+1. **Which agent CLIs are installed _and logged in_ on this machine?**
+   Check *install* yourself — don't ask what you can test:
+   ```bash
+   for c in claude codex gemini qwen kimi; do printf '%s: ' "$c"; command -v "$c" || echo "(not installed)"; done
+   ```
+   For each that resolves, ask the operator to confirm it's **logged in** (a CLI
+   that isn't logged in comes up as a *dead pane* — this is the #1 cause of a
+   silent team). **The roster only contains CLIs that pass both checks.** Don't
+   put a `codex` worker in the team if `codex` isn't installed + logged in. You
+   *can't* fully verify "logged in" from outside the CLI, so this stays a real
+   question worth asking — it prunes the roster **before** you build panes you'd
+   have to tear down. And whatever the operator answers,
+   [Step 5](#step-5--verify-each-agents-pane) is the **final gate for every agent
+   — the `claude` manager included** (a not-logged-in CLI is a dead pane there):
+   treat each one as **unconfirmed until its pane is ✅**. When unsure, start with
+   fewer agents and add more once each is proven; never skip Step 5 just because
+   the operator said "they're all logged in."
+2. **Roster shape** — the default 2-agent all-`claude` team, a domain template
+   from [`templates/`](../templates/) (software-dev / research / marketing /
+   data / content), or a custom roster? The **manager must be `claude-code`**
+   (it drives the roll-call) — if the operator picks a template, open its
+   `claudeteam.toml` and confirm the lead/manager agent's `cli` is `claude-code`
+   before `up`. Confirm the final agent list with the operator.
+
+(The Feishu registration mode — `--quick` vs no-flag — is its own decision; you
+make it *with* the operator at **Step 3**, where the trade-offs are laid out. No
+need to front-load it into the intake.)
+
+Then **state the plan back** — e.g. *"roster = manager + worker_cc, both
+claude-code, on your existing local claude login"* — and only proceed on a yes.
+
+### Rule 2 · Follow the steps; read code only as a last resort
+
+Steps 1–5 are the *whole* procedure — run them as written rather than
+reverse-engineering your own path from the source. When something fails, work it
+in this order: (1) the [Common failures](#common-failures) table, (2) the
+failing command's own output / logs, (3) escalate to the operator with that
+output. **Reading the source is the *last* resort, not the first** — it isn't
+off-limits, but reach for it only *after* you've actually run the steps and hit
+a problem none of the above resolves; then read to diagnose that specific
+failure, and still surface it to the operator rather than silently editing code.
+
+### Rule 3 · Verify every pane before you declare success
+
+`claudeteam health` going green proves the **infrastructure** is up — router,
+watchdog, tmux — **not** that each agent's CLI actually booted and
+authenticated. After `up`, walk [Step 5](#step-5--verify-each-agents-pane) and
+eyeball **every** pane. Only tell the operator "the team is up" once every pane
+is a healthy, identity-loaded REPL **and** the manager's group roll-call landed.
 
 ---
 
@@ -504,8 +624,10 @@ still silent, check the manager's `claude` login (entries below).
 ### `claude: not found` / `codex: not found` in a pane
 
 Panes inherit the launching shell's `$PATH`. If you opened a fresh terminal and
-forgot `source .venv/bin/activate`, the pane has no project venv. Re-`up` from a
-shell where the agent CLIs resolve.
+forgot to activate the env `claudeteam` is installed in (a `.venv`, or your
+conda / pipx / system-python env), the pane can't resolve the CLIs. Re-`up` from
+a shell where **both** `command -v claudeteam` and `command -v claude` (and any
+other agent CLI in your roster) resolve.
 
 ### "Not logged in" in a claude pane (macOS host)
 
