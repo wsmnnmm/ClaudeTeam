@@ -357,8 +357,6 @@ def main(argv: list[str]) -> int:
     try:
         while True:
             watchdog.supervise(specs, states, alert_fn=alert_fn)
-            if reap_agents:
-                _reap_dead_agents(last_respawn, reap_cooldown_s)
             now = time.time()
             if now - last_network_probe >= network_probe_interval_s:
                 _run_network_probe(alert_fn=alert_fn)
