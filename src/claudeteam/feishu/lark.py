@@ -118,9 +118,15 @@ def _profile_app_credentials(profile: str, *, home: str | None = None) -> tuple[
         if not isinstance(app, dict):
             continue
         if str(app.get("name") or "").strip() == profile:
+            secret = app.get("appSecret")
+            # Lark-cli stores secrets as {"source": "keychain", "id": ...}
+            # on macOS — str() on the dict gives garbage. Return empty for
+            # those; callers (subprocess_env) fall back to feishu_app.json.
+            if isinstance(secret, dict):
+                return str(app.get("appId") or "").strip(), ""
             return (
                 str(app.get("appId") or "").strip(),
-                str(app.get("appSecret") or "").strip(),
+                str(secret or "").strip(),
             )
     return "", ""
 
@@ -374,12 +380,26 @@ def subprocess_env(profile: str | None = None) -> dict[str, str]:
     prof_app_id = ""
     prof_app_secret = ""
     if not (env.get("LARKSUITE_CLI_APP_ID") or env.get("FEISHU_APP_ID")):
-        prof = (profile or env.get("LARK_CLI_PROFILE") or "").strip()
-        prof_app_id, prof_app_secret = _profile_app_credentials(
-            prof, home=env.get("HOME"))
-        if prof_app_id and prof_app_secret:
-            bootstrap_env["LARKSUITE_CLI_APP_ID"] = prof_app_id
-            bootstrap_env["LARKSUITE_CLI_APP_SECRET"] = prof_app_secret
+        # Try state/feishu_app.json first (plaintext credentials written by
+        # `feishu connect` — works on both macOS and Linux/Docker).
+        creds = load_app_creds()
+        app_id = str(creds.get("app_id", "") or "").strip()
+        app_secret = str(creds.get("app_secret", "") or "").strip()
+        if app_id and app_secret:
+            bootstrap_env["LARKSUITE_CLI_APP_ID"] = app_id
+            bootstrap_env["LARKSUITE_CLI_APP_SECRET"] = app_secret
+        else:
+            # Fall back to lark-cli config.json (macOS keychain path).
+            # Returns empty secret when lark-cli stores it as a keychain
+            # dict ref — that's fine, the tenant-token fetch below will
+            # see incomplete creds and skip, letting lark-cli's own
+            # keychain path take over on macOS host.
+            prof = (profile or env.get("LARK_CLI_PROFILE") or "").strip()
+            prof_app_id, prof_app_secret = _profile_app_credentials(
+                prof, home=env.get("HOME"))
+            if prof_app_id and prof_app_secret:
+                bootstrap_env["LARKSUITE_CLI_APP_ID"] = prof_app_id
+                bootstrap_env["LARKSUITE_CLI_APP_SECRET"] = prof_app_secret
     token = _ensure_tenant_token(source_env=bootstrap_env)
     if token:
         # lark-cli refuses to start if TENANT_ACCESS_TOKEN is set without a
